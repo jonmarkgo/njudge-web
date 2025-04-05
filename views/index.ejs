@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dip Adjudicator - Start Session</title>
+    <style>
+        body { font-family: sans-serif; line-height: 1.6; padding: 20px; max-width: 600px; margin: auto; }
+        label { display: block; margin-bottom: 5px; }
+        input[type="email"] { width: 100%; padding: 8px; margin-bottom: 10px; box-sizing: border-box; }
+        button { padding: 10px 15px; cursor: pointer; }
+        .error { color: red; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Dip Adjudicator Interface</h1>
+    <p>Enter your email address to start interacting with the adjudicator.</p>
+
+    <% if (typeof error !== 'undefined' && error) { %>
+        <p class="error"><%= error %></p>
+    <% } %>
+
+    <form action="/start" method="POST">
+        <label for="email">Your Email:</label>
+        <input type="email" id="email" name="email" required placeholder="you@example.com">
+        <button type="submit">Start Session</button>
+    </form>
+</body>
+</html>

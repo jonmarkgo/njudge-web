@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dip Adjudicator Interface - <%= power %> (<%= game %>)</title> <%# Updated Title %>
+    <style>
+        /* Same styles as before */
+        body { font-family: sans-serif; line-height: 1.6; padding: 20px; max-width: 900px; margin: auto; }
+        .container { display: flex; gap: 20px; }
+        .generator { flex: 1; }
+        .output-section { flex: 1; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        select, input[type="text"], textarea {
+            width: 100%; padding: 8px; margin-bottom: 10px; box-sizing: border-box; border: 1px solid #ccc;
+        }
+        textarea { min-height: 100px; font-family: monospace; }
+        #output { background-color: #f4f4f4; border: 1px solid #ddd; padding: 10px; white-space: pre-wrap; word-wrap: break-word; min-height: 200px; max-height: 500px; overflow-y: auto; font-family: monospace; font-size: 0.9em; }
+        button { padding: 10px 15px; cursor: pointer; margin-top: 10px; }
+        .command-options { border: 1px dashed #eee; padding: 10px; margin-top: 5px; margin-bottom: 10px; background-color: #fafafa;}
+        .command-options label { font-weight: normal; }
+        .command-options input[type="text"] { margin-bottom: 5px; }
+        .hidden { display: none; }
+        h2 { border-bottom: 1px solid #ccc; padding-bottom: 5px; }
+        .user-info { background-color: #eef; padding: 5px 10px; margin-bottom: 15px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; } /* Use flexbox */
+    </style>
+</head>
+<body>
+    <h1>Dip Adjudicator Interface</h1>
+    <div class="user-info">
+        <%# Display user info and current game/power %>
+        <span>
+            User: <strong><%= email %></strong> |
+            Game: <strong><%= game %></strong> |
+            Power: <strong><%= power %></strong>
+        </span>
+        <%# Add a Sign Out Button using a form %>
+        <form action="/signoff" method="POST" style="margin: 0;">
+             <button type="submit">Sign Out</button>
+        </form>
+    </div>
+
+    <div class="container">
+        <div class="generator">
+            <h2>Command Generator (In-Game)</h2>
+
+            <label for="command-type">Command Type:</label>
+            <select id="command-type">
+                <option value="">-- Select Command --</option>
+                <%# Only show commands relevant AFTER signing on %>
+                <optgroup label="Game Info (Current)">
+                    <option value="LIST">LIST (Current Game)</option>
+                    <option value="HISTORY">HISTORY (Current Game)</option>
+                    <option value="SUMMARY">SUMMARY (Current Game)</option>
+                    <option value="WHOGAME">WHOGAME (Current Game)</option>
+                </optgroup>
+                <optgroup label="In-Game Player">
+                    <option value="ORDERS">Enter Orders</option>
+                    <option value="SET WAIT">SET WAIT</option>
+                    <option value="SET NOWAIT">SET NO WAIT</option>
+                    <option value="SET ABSENCE">SET ABSENCE</option>
+                    <option value="SET NOABSENCE">SET NO ABSENCE</option>
+                    <option value="SET DRAW">SET DRAW</option>
+                    <option value="SET NODRAW">SET NO DRAW</option>
+                    <option value="PRESS">PRESS</option>
+                    <option value="BROADCAST">BROADCAST</option>
+                    <option value="DIARY">DIARY</option>
+                    <option value="RESIGN">RESIGN</option>
+                    <option value="SET PASSWORD">SET PASSWORD (Own)</option>
+                    <option value="SET ADDRESS">SET ADDRESS (Own)</option>
+                 </optgroup>
+                 <optgroup label="Future/Conditional Orders">
+                    <option value="PHASE">PHASE (Future Orders)</option>
+                    <option value="IF">IF (Conditional Orders)</option>
+                    <option value="CLEAR">CLEAR Future Orders</option>
+                 </optgroup>
+                 <optgroup label="Master Only (If Applicable)">
+                     <%# Keep master commands if the user might be a master %>
+                    <option value="SET">SET Game Option</option>
+                    <option value="PROCESS">PROCESS Turn</option>
+                    <option value="ROLLBACK">ROLLBACK</option>
+                    <option value="EJECT">EJECT</option>
+                    <option value="BECOME">BECOME Player</option>
+                 </optgroup>
+                 <optgroup label="General">
+                     <option value="GET">GET File</option>
+                     <option value="HELP">HELP</option>
+                     <option value="VERSION">VERSION</option>
+                 </optgroup>
+            </select>
+
+            <!-- Dynamic Options Area -->
+            <div id="command-options-area"></div>
+
+            <label for="generated-command">Generated Command / Manual Input:</label>
+            <textarea id="generated-command" placeholder="Select options above or type command here directly. Do NOT include SIGN OFF."></textarea>
+
+            <button id="send-command">Send Command to Dip</button>
+        </div>
+
+        <div class="output-section">
+            <h2>Adjudicator Output</h2>
+            <div id="output">Output will appear here...</div>
+        </div>
+    </div>
+
+    <script src="/js/client.js"></script>
+</body>
+</html>
