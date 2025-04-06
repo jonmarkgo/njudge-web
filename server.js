@@ -1592,6 +1592,7 @@ function requireEmail(req, res, next) {
 
 // Middleware to require authentication for API routes
 function requireAuth(req, res, next) {
+    console.log(`[Auth Check] Middleware entered for path: ${req.path}, User: ${req.session?.email}`); // Roo Debug Log
     if (req.session && req.session.email) {
         // Attach userId (email) to the request object for convenience in route handlers
         req.userId = req.session.email;
@@ -2370,6 +2371,7 @@ app.delete('/api/games/:gameName', requireAuth, async (req, res) => {
 // Provides combined map data (geometry, metadata, game state) for rendering.
 app.get('/api/map/:gameName/:phase?', requireAuth, async (req, res) => { // Roo: Added requireAuth
     const { gameName, phase } = req.params;
+    console.log(`[Map API Request] Handler Reached. gameName: ${gameName}, phase: ${phase}, user: ${req.userId}`); // Roo Debug Log
     console.log(`[Map API Request] Handler Reached. gameName: ${gameName}, phase: ${phase}, user: ${req.userId}`); // Roo Debug Log
 
     if (!gameName) {
