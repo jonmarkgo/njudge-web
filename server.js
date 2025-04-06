@@ -359,7 +359,8 @@ const getUserPreferences = (userId) => {
                 rows.forEach(row => {
                     try {
                         // Attempt to parse if it looks like JSON, otherwise return as string
-                        if ((row.preference_value ? .startsWith('{') && row.preference_value ? .endsWith('}')) || (row.preference_value ? .startsWith('[') && row.preference_value ? .endsWith(']'))) {
+                        if ((row.preference_value && row.preference_value.startsWith('{') && row.preference_value.endsWith('}')) ||
+                            (row.preference_value && row.preference_value.startsWith('[') && row.preference_value.endsWith(']'))) {
                             preferences[row.preference_key] = JSON.parse(row.preference_value);
                         } else {
                             preferences[row.preference_key] = row.preference_value;
@@ -655,7 +656,7 @@ const parseListOutput = (gameName, output) => {
                 }
             } else if (observerMatch) {
                 // Observer regex might need adjustment based on actual output format
-                const email = observerMatch[1].trim().match(emailRegex) ? .[0];
+                const email = observerMatch[1].trim().match(emailRegex) ? observerMatch[1].trim().match(emailRegex)[0] : null;
                 if (email && !gameState.observers.includes(email)) {
                     gameState.observers.push(email);
                     console.log(`[Parser LIST ${gameName}] Parsed Observer: ${email}`);
@@ -747,16 +748,16 @@ const parseWhogameOutput = (gameName, output) => {
         const powerMatch = trimmedLine.match(/^(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice)\s*:\s*(.*)/i);
         if (masterMatch) {
             const detail = masterMatch[1].trim();
-            const email = detail.match(emailRegex) ? .[0];
+            const email = detail.match(emailRegex) ? detail.match(emailRegex)[0] : null;
             if (email && !masters.includes(email)) masters.push(email);
         } else if (observerMatch) {
             const detail = observerMatch[1].trim();
-            const email = detail.match(emailRegex) ? .[0];
+            const email = detail.match(emailRegex) ? detail.match(emailRegex)[0] : null;
             if (email && !observers.includes(email)) observers.push(email);
         } else if (powerMatch) {
             const power = powerMatch[1];
             const detail = powerMatch[2].trim();
-            const email = detail.match(emailRegex) ? .[0];
+            const email = detail.match(emailRegex) ? detail.match(emailRegex)[0] : null;
             const name = email ? detail.replace(email, '').replace(/[()]/g, '').trim() : detail;
             players.push({ power: power, email: email || null, name: name || null, status: 'Unknown' }); // Status needs update from LIST
         }
@@ -1178,10 +1179,10 @@ const getRecommendedCommands = (gameState, userEmail) => {
         const userIsPlayer = !!myPlayerInfo;
         const userIsObserver = Array.isArray(gameState.observers) && gameState.observers.includes(userEmail) && !userIsPlayer && !userIsMaster;
 
-        const phase = gameState.currentPhase ? .toUpperCase() || 'UNKNOWN';
+        const phase = (gameState.currentPhase && gameState.currentPhase.toUpperCase()) || 'UNKNOWN';
         // Ensure status check is case-insensitive and handles potential null/undefined
-        const status = gameState.status ? .toUpperCase() || 'UNKNOWN';
-        const playerStatus = myPlayerInfo ? .status ? .toUpperCase() || 'UNKNOWN';
+        const status = (gameState.status && gameState.status.toUpperCase()) || 'UNKNOWN';
+        const playerStatus = (myPlayerInfo && myPlayerInfo.status && myPlayerInfo.status.toUpperCase()) || 'UNKNOWN';
         const isActivePlayer = userIsPlayer && !['CD', 'RESIGNED', 'ABANDONED', 'ELIMINATED'].includes(playerStatus);
 
         console.log(`[getRecommendedCommands] Role Check: Master=${userIsMaster}, Player=${userIsPlayer}, Observer=${userIsObserver}, ActivePlayer=${isActivePlayer}`);
@@ -1203,20 +1204,20 @@ const getRecommendedCommands = (gameState, userEmail) => {
                 if (phase.endsWith('M') || phase.endsWith('R') || phase.endsWith('B') || phase.endsWith('A')) {
                     recommendations.recommended.push('ORDERS');
                 }
-                if (gameState.settings ? .press !== 'None') {
+                if (gameState.settings && gameState.settings.press !== 'None') {
                     recommendations.recommended.push('PRESS', 'BROADCAST');
                 }
-                if (gameState.settings ? .wait !== false) recommendations.recommended.push('SET WAIT');
-                if (gameState.settings ? .dias !== false || gameState.settings ? .dias === undefined) {
+                if (gameState.settings && gameState.settings.wait !== false) recommendations.recommended.push('SET WAIT');
+                if (gameState.settings && (gameState.settings.dias !== false || gameState.settings.dias === undefined)) {
                     recommendations.recommended.push('SET DRAW');
                 }
-                if (gameState.settings ? .concessions !== false) {
+                if (gameState.settings && gameState.settings.concessions !== false) {
                     recommendations.recommended.push('SET CONCEDE');
                 }
                 recommendations.recommended.push('DIARY');
             }
             // Observer recommendations
-            else if (userIsObserver && gameState.settings ? .observerPress !== 'none' && gameState.settings ? .press !== 'None') {
+            else if (userIsObserver && gameState.settings && gameState.settings.observerPress !== 'none' && gameState.settings && gameState.settings.press !== 'None') {
                 console.log("[getRecommendedCommands] User is Observer with Press rights.");
                 recommendations.recommended.push('PRESS', 'BROADCAST');
             }
@@ -1237,7 +1238,7 @@ const getRecommendedCommands = (gameState, userEmail) => {
         } else if (status === 'PAUSED') {
             console.log("[getRecommendedCommands] Status: PAUSED");
             if (userIsMaster) recommendations.recommended.push('RESUME', 'TERMINATE');
-            if (gameState.settings ? .press !== 'None' && (isActivePlayer || (userIsObserver && gameState.settings ? .observerPress !== 'none'))) {
+            if (gameState.settings && gameState.settings.press !== 'None' && (isActivePlayer || (userIsObserver && gameState.settings && gameState.settings.observerPress !== 'none'))) {
                 recommendations.recommended.push('PRESS', 'BROADCAST');
             }
             recommendations.recommended.push('LIST', 'HISTORY', 'SUMMARY', 'WHOGAME');
@@ -1493,7 +1494,7 @@ async function getMapData(gameName, phase, res) { // Added res parameter
         console.log(`[getMapData] Determined variant: ${variant}`); // Roo Debug Log
         const historyOutput = await executeDipCommand(judgeEmail, 'HISTORY', gameName);
         if (!historyOutput || historyOutput.error) {
-            console.error(`[Map Data Error] Failed to fetch history for ${gameName}:`, historyOutput ? .error || 'No output');
+            console.error(`[Map Data Error] Failed to fetch history for ${gameName}:`, historyOutput ? historyOutput.error : 'No output');
             return null;
             console.log(`[getMapData] Phase not provided, determining latest phase...`); // Roo Debug Log
         }
