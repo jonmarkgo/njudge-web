@@ -1429,22 +1429,28 @@ const executeDipCommand = (email, command, targetGame = null, targetPassword = n
  * @returns {Promise<object|null>} - Combined map data or null if essential data is missing.
  */
 async function getMapData(gameName, phase) {
+    console.log(`[getMapData] Entering with gameName: ${gameName}, phase: ${phase}`); // Roo Debug Log
     console.log(`[Map Data] Fetching map data for game: ${gameName}, phase: ${phase || 'latest'}`);
     try {
         // 1. Get basic game info (like variant) and potentially latest phase if needed
         const basicGameState = await getGameState(gameName);
+        console.error(`[getMapData Error] Game not found: ${gameName}`); // Roo Debug Log
         if (!basicGameState) {
             console.error(`[Map Data Error] Game not found: ${gameName}`);
+        console.log(`[getMapData] Fetched gameState:`, gameState ? gameState.name : 'Not Found'); // Roo Debug Log
             return null;
         }
         const variantName = basicGameState.variant || 'Standard'; // Default to Standard if not set
 
+        console.error(`[getMapData Error] Variant not found for game: ${gameName}`); // Roo Debug Log
         // 2. Fetch full game history
         // Use judgeEmail or a system identity for fetching public data
+    console.log(`[getMapData] Determined variant: ${variant}`); // Roo Debug Log
         const historyOutput = await executeDipCommand(judgeEmail, 'HISTORY', gameName);
         if (!historyOutput || historyOutput.error) {
             console.error(`[Map Data Error] Failed to fetch history for ${gameName}:`, historyOutput?.error || 'No output');
             return null;
+        console.log(`[getMapData] Phase not provided, determining latest phase...`); // Roo Debug Log
         }
 
         // 3. Parse history
@@ -1453,12 +1459,14 @@ async function getMapData(gameName, phase) {
             console.error(`[Map Data Error] Failed to parse history or no phases found for ${gameName}`);
             // Return basic info if history parsing fails but we have variant/map info?
             // For now, let's return null as state is crucial.
+            console.log(`[getMapData] Parsed history output for latest phase:`, historyData ? 'Success' : 'Failure'); // Roo Debug Log
             return null;
         }
 
         // 4. Determine the target phase code
         let targetPhaseCode = phase;
         if (!targetPhaseCode) {
+            console.error(`[getMapData Error] Failed to parse history to find latest phase for game: ${gameName}`); // Roo Debug Log
             // Find the latest phase from parsed history keys
             const phaseKeys = Object.keys(parsedHistory.phases).sort(); // Simple sort often works for standard phases
             // TODO: Implement more robust phase sorting if needed (e.g., considering year and season)
@@ -1467,32 +1475,40 @@ async function getMapData(gameName, phase) {
         }
 
         const phaseData = parsedHistory.phases[targetPhaseCode];
+    console.log(`[getMapData] Target phase determined as: ${targetPhase}`); // Roo Debug Log
         if (!phaseData) {
             console.error(`[Map Data Error] Target phase ${targetPhaseCode} not found in history for ${gameName}`);
             return null; // Phase not found
         }
 
+        console.error(`[getMapData Error] Latest phase could not be determined for game: ${gameName}`); // Roo Debug Log
         // 5. Get province metadata from .info file (using cache)
         const provinceMetadata = await parseMapInfoFile(variantName);
         if (!provinceMetadata) {
             console.error(`[Map Data Error] Failed to parse map info file for variant: ${variantName}`);
             // Proceed without province metadata? Or fail? Let's proceed for now.
         }
+        console.log(`[getMapData] Parsed map info file result:`, mapInfo ? 'Success' : 'Failure/Cached'); // Roo Debug Log
 
         // 6. Construct SVG path and read SVG file content
         const svgPath = path.join('scripts', 'mapit', 'maps', `${variantName}.svg`);
+        console.error(`[getMapData Error] Failed to parse map info file for variant: ${variant}`); // Roo Debug Log
         let svgContent = null;
         try {
             svgContent = await fsPromises.readFile(svgPath, 'utf-8');
             console.log(`[Map Data] Successfully read SVG file: ${svgPath}`);
         } catch (err) {
             if (err.code === 'ENOENT') {
+    console.log(`[getMapData] Constructed SVG path: ${svgPath}`); // Roo Debug Log
                 console.warn(`[Map Data] SVG file not found, expected at: ${svgPath}. Proceeding without SVG content.`);
             } else {
                 console.error(`[Map Data Error] Error reading SVG file ${svgPath}:`, err);
+        console.warn(`[getMapData Warn] SVG file not found at path: ${svgPath}`); // Roo Debug Log
             }
+        console.log(`[getMapData] Attempting to read SVG file...`); // Roo Debug Log
             // Proceed without SVG content if not found or error reading
         }
+        console.log(`[getMapData] SVG file read successfully.`); // Roo Debug Log
 
         // 7. Combine data
         const mapData = {
@@ -1510,12 +1526,14 @@ async function getMapData(gameName, phase) {
         };
 
         console.log(`[Map Data] Successfully assembled map data for ${gameName} / ${targetPhaseCode}`);
+    console.log(`[getMapData] Returning success with SVG content.`); // Roo Debug Log
         return mapData;
 
     } catch (error) {
         console.error(`[Map Data Fatal Error] Unexpected error fetching map data for ${gameName} / ${phase || 'latest'}:`, error);
         return null;
     }
+    console.error(`[getMapData Error] Unexpected error in getMapData for ${gameName}, phase ${phase}:`, error); // Roo Debug Log
 }
 
 
@@ -2345,6 +2363,7 @@ app.delete('/api/games/:gameName', requireAuth, async (req, res) => {
 });
 
 
+    console.log(`[Map API Request] Received gameName: ${gameName}, phase: ${phase}`); // Roo Debug Log
 // --- Map Data API Endpoint ---
 
 // GET /api/map/:gameName/:phase?
