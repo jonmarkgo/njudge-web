@@ -1770,11 +1770,13 @@ async function syncDipMaster() {
             throw new Error(`File not found: ${dipMasterPath}. Set DIP_MASTER_PATH in .env or ensure it's relative to DIP_BINARY_PATH.`);
         }
         const masterContent = fs.readFileSync(dipMasterPath, 'utf8');
+
         // Split into chunks based on the '-' delimiter line (allowing for optional CR)
-        const gameChunks = masterContent.split(/\n-\r?\n/);
+        // First normalize line endings and then split
+        const normalizedContent = masterContent.replace(/\r\n/g, '\n');
+        const gameChunks = normalizedContent.split(/\n-\n/);
 
         // Regex to capture game name and phase/status from the first line of a chunk
-        // Updated to handle more variations in game names and statuses
         const gameLineRegex = /^([a-zA-Z0-9_]{1,8})\s+\S+\s+([SFUW]\d{4}[MRB][X]?|Forming|Paused|Finished|Terminated)\b/i;
 
         gameChunks.forEach((chunk) => {
