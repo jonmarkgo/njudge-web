@@ -1428,7 +1428,7 @@ const executeDipCommand = (email, command, targetGame = null, targetPassword = n
  * @param {string} [phase] - The specific phase (e.g., 'S1901M'). If omitted, fetches the latest phase.
  * @returns {Promise<object|null>} - Combined map data or null if essential data is missing.
  */
-async function getMapData(gameName, phase) {
+async function getMapData(gameName, phase, res) { // Added res parameter
     console.log(`[getMapData] Entering with gameName: ${gameName}, phase: ${phase}`); // Roo Debug Log
     console.log(`[Map Data] Fetching map data for game: ${gameName}, phase: ${phase || 'latest'}`);
     try {
@@ -1531,9 +1531,16 @@ async function getMapData(gameName, phase) {
 
     } catch (error) {
         console.error(`[Map Data Fatal Error] Unexpected error fetching map data for ${gameName} / ${phase || 'latest'}:`, error);
-        return null;
+        // Send 500 response directly if headers haven't been sent
+        if (res && !res.headersSent) {
+             res.status(500).json({
+                 error: "Failed to generate map data.",
+                 details: error.message || 'An unexpected error occurred.'
+             });
+        }
+        // Do not return null here; response is handled. Let the function return undefined implicitly.
     }
-    console.error(`[getMapData Error] Unexpected error in getMapData for ${gameName}, phase ${phase}:`, error); // Roo Debug Log
+    // Removed redundant console.error log from outside the catch block
 }
 
 
@@ -2386,26 +2393,34 @@ app.get('/api/map/:gameName/:phase?', requireAuth, async (req, res) => { // Roo:
     }
 
     try {
-        const mapData = await getMapData(gameName, phase);
+        const mapData = await getMapData(gameName, phase, res); // Pass res
 
-        if (!mapData) {
-            // Distinguish between 'game not found' and 'error fetching data'?
-            // For now, use 404 if the core data couldn't be assembled.
-            // Check if game exists first?
-            const gameExists = await getGameState(gameName);
-            if (!gameExists) {
-                 return res.status(404).json({ error: `Game '${gameName}' not found.` });
-            } else {
-                 // Game exists, but data couldn't be fully assembled (e.g., history error, phase error)
-                 return res.status(500).json({ error: `Could not retrieve complete map data for game '${gameName}' phase '${phase || 'latest'}'. Check server logs.` });
-            }
+        // If getMapData encountered an unexpected error, it sent the response and returned undefined.
+        // Check if the response was already sent by getMapData's catch block.
+        if (res.headersSent) {
+            return; // Stop processing in the handler
         }
 
-        res.json(mapData);
-
+        if (!mapData) {
+            // getMapData returned null due to an *expected* issue (e.g., game not found internally, history fail)
+            const gameExists = await getGameState(gameName); // Check if game actually exists
+            if (!gameExists) {
+                 // Game genuinely not found
+                 return res.status(404).json({ error: `Game '${gameName}' not found.` });
+            } else {
+                 // Game exists, but getMapData couldn't assemble data (expected failure path)
+                 return res.status(500).json({ error: `Could not retrieve complete map data for game '${gameName}' phase '${phase || 'latest'}'. Check server logs for expected failures.` });
+            }
+        } else {
+             // Success: getMapData returned valid data
+             res.json(mapData);
+        }
     } catch (error) {
-        console.error(`[API Error] Failed to get map data for ${gameName} / ${phase || 'latest'}:`, error);
-        res.status(500).json({ error: 'An internal server error occurred while fetching map data.' });
+        // Catch errors occurring *within the route handler itself* (e.g., getGameState fails)
+        console.error(`[Map API Route Error] Unexpected error in route handler for ${gameName}:`, error);
+        if (!res.headersSent) { // Ensure response hasn't been sent already
+             res.status(500).json({ error: 'An unexpected error occurred processing the map request.' });
+        }
     }
 });
 

@@ -93,7 +93,7 @@ async function saveUserPreferences() {
     console.log("Saving user preferences:", userPreferences);
     try {
         const response = await fetch('/api/user/preferences', {
-            method: 'PUT',
+            method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(userPreferences)
         });
