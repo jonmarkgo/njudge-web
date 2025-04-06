@@ -1569,6 +1569,12 @@ app.use(session({
     cookie: { secure: process.env.NODE_ENV === 'production', httpOnly: true, maxAge: 1000 * 60 * 60 * 24 * 7 } // 1 week
 }));
 
+// Roo Debug: Log all requests after session middleware
+app.use((req, res, next) => {
+  console.log(`[Request Logger] Path: ${req.path}, Method: ${req.method}, User: ${req.session?.email}`);
+  next();
+});
+
 // Middleware to ensure email is in session
 function requireEmail(req, res, next) {
     if (!req.session.email) {
