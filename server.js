@@ -1724,35 +1724,51 @@ async function syncDipMaster() {
             throw new Error(`File not found: ${dipMasterPath}. Set DIP_MASTER_PATH in .env or ensure it's relative to DIP_BINARY_PATH.`);
         }
         const masterContent = fs.readFileSync(dipMasterPath, 'utf8');
-        const lines = masterContent.split('\n');
-        // Regex to capture game name (alphanumeric, 1-8 chars) and phase/status
+        // Split into chunks based on the '-' delimiter line (allowing for optional CR)
+        const gameChunks = masterContent.split(/\n-\r?\n/);
+        // Regex to capture game name (alphanumeric, 1-8 chars) and phase/status from the *first* line of a chunk
         const gameLineRegex = /^([a-zA-Z0-9]{1,8})\s+\S+\s+([SFUW]\d{4}[MRB][X]?|Forming|Paused|Finished|Terminated)\b/i;
 
-        lines.forEach((line) => {
-            const trimmedLine = line.trim();
-            if (trimmedLine.length > 0 && !trimmedLine.startsWith('#')) {
-                const match = trimmedLine.match(gameLineRegex);
-                if (match) {
-                    const gameName = match[1];
-                    const phaseOrStatus = match[2];
-                    if (gameName && gameName !== 'control' && !gamesFromMaster[gameName]) {
-                        gamesFromMaster[gameName] = { name: gameName, status: 'Unknown', currentPhase: 'Unknown' };
-                        // Distinguish phase from status
-                        if (/^[SFUW]\d{4}[MRB][X]?$/i.test(phaseOrStatus)) {
-                            gamesFromMaster[gameName].currentPhase = phaseOrStatus;
-                            gamesFromMaster[gameName].status = 'Active'; // Assume active if phase looks valid
-                        } else {
-                            // Use Forming, Paused etc. as status, ensure proper casing
-                            const statusLower = phaseOrStatus.toLowerCase();
-                            if (statusLower === 'forming') gamesFromMaster[gameName].status = 'Forming';
-                            else if (statusLower === 'paused') gamesFromMaster[gameName].status = 'Paused';
-                            else if (statusLower === 'finished') gamesFromMaster[gameName].status = 'Finished';
-                            else if (statusLower === 'terminated') gamesFromMaster[gameName].status = 'Terminated';
-                            else gamesFromMaster[gameName].status = 'Unknown'; // Fallback
-                        }
-                        console.log(`[Sync] Found game: ${gameName}, Status/Phase: ${phaseOrStatus} in ${dipMasterPath}`);
+        gameChunks.forEach((chunk) => {
+            const chunkLines = chunk.trim().split('\n'); // Split chunk into lines
+            if (chunkLines.length === 0 || chunkLines[0].trim().length === 0) return; // Skip empty chunks
+
+            // Find the game definition line (usually the first non-comment line)
+            let gameName = null;
+            let phaseOrStatus = null;
+            for (const line of chunkLines) {
+                 const trimmedLine = line.trim();
+                 if (trimmedLine.length > 0 && !trimmedLine.startsWith('#')) {
+                     const match = trimmedLine.match(gameLineRegex);
+                     if (match) {
+                         gameName = match[1];
+                         phaseOrStatus = match[2];
+                         break; // Found the game line for this chunk
+                     }
+                     // Optional: Break if a non-matching, non-comment line is found first? Depends on file strictness.
+                 }
+            }
+
+            if (gameName && gameName !== 'control') { // Ensure a game was found and it's not the control entry
+                 if (!gamesFromMaster[gameName]) { // Process each game name only once (in case of duplicates in file)
+                    gamesFromMaster[gameName] = { name: gameName, status: 'Unknown', currentPhase: 'Unknown' };
+                    // Distinguish phase from status
+                    if (/^[SFUW]\d{4}[MRB][X]?$/i.test(phaseOrStatus)) {
+                        gamesFromMaster[gameName].currentPhase = phaseOrStatus;
+                        gamesFromMaster[gameName].status = 'Active'; // Assume active if phase looks valid
+                    } else {
+                        // Use Forming, Paused etc. as status, ensure proper casing
+                        const statusLower = phaseOrStatus.toLowerCase();
+                        if (statusLower === 'forming') gamesFromMaster[gameName].status = 'Forming';
+                        else if (statusLower === 'paused') gamesFromMaster[gameName].status = 'Paused';
+                        else if (statusLower === 'finished') gamesFromMaster[gameName].status = 'Finished';
+                        else if (statusLower === 'terminated') gamesFromMaster[gameName].status = 'Terminated';
+                        else gamesFromMaster[gameName].status = 'Unknown'; // Fallback
                     }
-                }
+                    console.log(`[Sync] Found game chunk for: ${gameName}, Status/Phase: ${phaseOrStatus} in ${dipMasterPath}`);
+                 } else {
+                     console.warn(`[Sync] Duplicate game name '${gameName}' found in ${dipMasterPath}. Skipping subsequent entry.`);
+                 }
             }
         });
         console.log(`[Sync] Found ${Object.keys(gamesFromMaster).length} potential games in ${dipMasterPath}`);
