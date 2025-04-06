@@ -2363,13 +2363,14 @@ app.delete('/api/games/:gameName', requireAuth, async (req, res) => {
 });
 
 
-    console.log(`[Map API Request] Received gameName: ${gameName}, phase: ${phase}`); // Roo Debug Log
+
 // --- Map Data API Endpoint ---
 
 // GET /api/map/:gameName/:phase?
 // Provides combined map data (geometry, metadata, game state) for rendering.
-app.get('/api/map/:gameName/:phase?', async (req, res) => {
+app.get('/api/map/:gameName/:phase?', requireAuth, async (req, res) => { // Roo: Added requireAuth
     const { gameName, phase } = req.params;
+    console.log(`[Map API Request] Handler Reached. gameName: ${gameName}, phase: ${phase}, user: ${req.userId}`); // Roo Debug Log
 
     if (!gameName) {
         return res.status(400).json({ error: 'Game name is required.' });
