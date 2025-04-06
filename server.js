@@ -1569,12 +1569,6 @@ app.use(session({
     cookie: { secure: process.env.NODE_ENV === 'production', httpOnly: true, maxAge: 1000 * 60 * 60 * 24 * 7 } // 1 week
 }));
 
-// Roo Debug: Log all requests after session middleware
-app.use((req, res, next) => {
-  console.log(`[Request Logger] Path: ${req.path}, Method: ${req.method}, User: ${req.session?.email}`);
-  next();
-});
-
 // Middleware to ensure email is in session
 function requireEmail(req, res, next) {
     if (!req.session.email) {
@@ -1598,7 +1592,6 @@ function requireEmail(req, res, next) {
 
 // Middleware to require authentication for API routes
 function requireAuth(req, res, next) {
-    console.log(`[Auth Check] Middleware entered for path: ${req.path}, User: ${req.session?.email}`); // Roo Debug Log
     if (req.session && req.session.email) {
         // Attach userId (email) to the request object for convenience in route handlers
         req.userId = req.session.email;
@@ -1927,65 +1920,6 @@ app.delete('/api/user/search-bookmarks/:name', requireAuth, async (req, res) => 
 });
 
 
-// --- Saved Search Bookmark API Endpoints ---
-
-// GET all saved search bookmarks for the logged-in user
-app.get('/api/user/search-bookmarks', requireAuth, async (req, res) => {
-    const userId = req.session.email;
-    try {
-        const bookmarks = await getSavedSearches(userId);
-        res.json({ success: true, bookmarks });
-    } catch (err) {
-        console.error(`[API Error] /api/user/search-bookmarks GET for ${userId}:`, err);
-        res.status(500).json({ success: false, message: "Failed to retrieve saved searches." });
-    }
-});
-
-// POST to save/update a search bookmark for the logged-in user
-app.post('/api/user/search-bookmarks', requireAuth, async (req, res) => {
-    const userId = req.session.email;
-    const { name, params } = req.body;
-
-    if (!name || typeof name !== 'string' || name.trim().length === 0) {
-        return res.status(400).json({ success: false, message: "Bookmark name is required." });
-    }
-    if (!params || typeof params !== 'object') {
-        return res.status(400).json({ success: false, message: "Search parameters (params) object is required." });
-    }
-
-    try {
-        await saveSavedSearch(userId, name.trim(), params);
-        res.json({ success: true, message: `Bookmark '${name.trim()}' saved successfully.` });
-    } catch (err) {
-        console.error(`[API Error] /api/user/search-bookmarks POST for ${userId}:`, err);
-        res.status(500).json({ success: false, message: "Failed to save bookmark." });
-    }
-});
-
-// DELETE a specific search bookmark for the logged-in user
-app.delete('/api/user/search-bookmarks/:name', requireAuth, async (req, res) => {
-    const userId = req.session.email;
-    // Decode the name from the URL parameter
-    const bookmarkName = decodeURIComponent(req.params.name);
-
-    if (!bookmarkName) {
-         return res.status(400).json({ success: false, message: "Bookmark name parameter is required." });
-    }
-
-    try {
-        const deleted = await deleteSavedSearch(userId, bookmarkName);
-        if (deleted) {
-            res.json({ success: true, message: `Bookmark '${bookmarkName}' deleted successfully.` });
-        } else {
-            res.status(404).json({ success: false, message: `Bookmark '${bookmarkName}' not found.` });
-        }
-    } catch (err) {
-        console.error(`[API Error] /api/user/search-bookmarks DELETE for ${userId}:`, err);
-        res.status(500).json({ success: false, message: "Failed to delete bookmark." });
-    }
-});
-
-
 // Main dashboard route
 
 // --- News API Endpoints ---
@@ -2289,97 +2223,13 @@ app.post('/execute-dip', requireEmail, async (req, res) => {
              isSignOnOrObserveSuccess: false
         });
 
-// Endpoint to add a new game
-app.post('/api/games', requireAuth, async (req, res) => {
-    // Basic implementation: requires gameName and variant in the body.
-    // TODO: Extend to handle more complex ADDGAME parameters (press, deadlines, players etc.)
-    const { gameName, variant, ...otherOptions } = req.body;
-    const userEmail = req.session.email;
-
-    if (!gameName || !variant) {
-        return res.status(400).json({ error: 'Missing required parameters: gameName, variant' });
-    }
-
-    // Construct the ADDGAME command string - basic version
-    // This might need refinement based on the exact njudge dip CLI syntax for options
-    let commandParts = ['ADDGAME', gameName, variant];
-    // Example: Add other options if they exist (needs specific CLI format knowledge)
-    // Object.entries(otherOptions).forEach(([key, value]) => {
-    //     commandParts.push(`${key.toUpperCase()}=${value}`); // Placeholder format
-    // });
-    const command = commandParts.join(' ');
-
-    console.log(`[API /api/games POST] User ${userEmail} attempting command: ${command}`);
-
-    try {
-        // Using executeDipCommand to run the ADDGAME command
-        const result = await executeDipCommand(userEmail, command, gameName, null, variant);
-        console.log(`[API /api/games POST] Command successful for ${gameName}. Output:\n${result.stdout}`);
-        // Optionally trigger a game list refresh here
-        res.status(201).json({ message: `Game '${gameName}' creation initiated.`, output: result.stdout });
-    } catch (error) {
-        console.error(`[API /api/games POST] Error executing ADDGAME command for ${gameName}:`, error);
-        // Try to provide more specific status codes based on common errors
-        const statusCode = error.output?.includes('Spawn failed') ? 503 :
-                           error.stderr?.includes('already exists') ? 409 : // Conflict
-                           500; // Default internal server error
-        res.status(statusCode).json({
-            error: `Failed to add game '${gameName}'.`,
-            details: error.stderr || error.message || 'Unknown error',
-            stdout: error.stdout // Include stdout as it might contain partial info
-        });
-    }
-});
-
-// Endpoint to remove a game
-app.delete('/api/games/:gameName', requireAuth, async (req, res) => {
-    const { gameName } = req.params;
-    // Password might be needed for REMOVEGAME, potentially passed in body
-    const { password } = req.body;
-    const userEmail = req.session.email;
-
-    if (!gameName) {
-        // Should not happen with route definition, but good practice
-        return res.status(400).json({ error: 'Missing gameName in path parameter.' });
-    }
-
-    // Construct the REMOVEGAME command string
-    const command = `REMOVEGAME ${gameName}`;
-
-    console.log(`[API /api/games DELETE] User ${userEmail} attempting command: ${command} for game ${gameName}`);
-
-    try {
-        // Pass password to executeDipCommand if provided
-        const result = await executeDipCommand(userEmail, command, gameName, password);
-        console.log(`[API /api/games DELETE] Command successful for ${gameName}. Output:\n${result.stdout}`);
-        // Optionally trigger game list refresh or remove from DB here
-        res.status(200).json({ message: `Game '${gameName}' removal initiated.`, output: result.stdout });
-    } catch (error) {
-        console.error(`[API /api/games DELETE] Error executing REMOVEGAME command for ${gameName}:`, error);
-         // Try to provide more specific status codes
-        const statusCode = error.output?.includes('Spawn failed') ? 503 :
-                           error.stderr?.includes('No such game') ? 404 : // Not Found
-                           error.stderr?.includes('incorrect password') ? 401 : // Unauthorized (or 403 Forbidden)
-                           500; // Default internal server error
-        res.status(statusCode).json({
-            error: `Failed to remove game '${gameName}'.`,
-            details: error.stderr || error.message || 'Unknown error',
-            stdout: error.stdout
-        });
-    }
-});
-
-
 
 // --- Map Data API Endpoint ---
 
 // GET /api/map/:gameName/:phase?
 // Provides combined map data (geometry, metadata, game state) for rendering.
-console.log(`[Route Definition Check] Defining GET /api/map/:gameName/:phase?`); // Roo Debug Log
 app.get('/api/map/:gameName/:phase?', requireAuth, async (req, res) => { // Roo: Added requireAuth
     const { gameName, phase } = req.params;
-    console.log(`[Map API Request] Handler Reached. gameName: ${gameName}, phase: ${phase}, user: ${req.userId}`); // Roo Debug Log
-    console.log(`[Map API Request] Handler Reached. gameName: ${gameName}, phase: ${phase}, user: ${req.userId}`); // Roo Debug Log
 
     if (!gameName) {
         return res.status(400).json({ error: 'Game name is required.' });
@@ -2414,7 +2264,6 @@ app.get('/api/map/:gameName/:phase?', requireAuth, async (req, res) => { // Roo:
 // --- User Preference API Endpoints ---
 
 // GET all preferences for the logged-in user
-console.log(`[Route Definition Check] Defining GET /api/user/preferences`); // Roo Debug Log
 app.get('/api/user/preferences', requireAuth, async (req, res) => {
     try {
         const preferences = await getUserPreferences(req.userId);
