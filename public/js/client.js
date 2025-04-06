@@ -55,8 +55,8 @@ async function fetchUserPreferences() {
     try {
         const response = await fetch('/api/user/preferences');
         if (!response.ok) {
-            if (response.status === 404) { // No preferences saved yet is okay
-                console.log("No existing user preferences found, using defaults.");
+            if (response.status === 404 || response.status === 401) { // 404 No prefs saved yet, 401 Not logged in
+                console.log("No existing user preferences found or user not authenticated, using defaults.");
                 userPreferences = JSON.parse(JSON.stringify(defaultPreferences));
             } else {
                 throw new Error(`HTTP error! status: ${response.status}`);
@@ -93,9 +93,9 @@ async function saveUserPreferences() {
     console.log("Saving user preferences:", userPreferences);
     try {
         const response = await fetch('/api/user/preferences', {
-            method: 'POST',
+            method: 'PUT', // Use PUT to update/replace preferences
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(userPreferences)
+            body: JSON.stringify(userPreferences) // Send the whole object
         });
         const result = await response.json();
         if (result.success) {
@@ -194,7 +194,7 @@ function renderPreferenceControls() {
     sortSelect.addEventListener('change', (e) => {
         userPreferences.sort_order = e.target.value;
         // Optionally apply sort immediately or wait for save
-        // applyPreferences(); // Apply immediately example
+        applyPreferences(); // Apply immediately example
     });
     sortDiv.appendChild(sortSelect);
     form.appendChild(sortDiv);
@@ -216,7 +216,7 @@ function renderPreferenceControls() {
         checkbox.addEventListener('change', (e) => {
             userPreferences.column_visibility[key] = e.target.checked;
              // Optionally apply visibility immediately or wait for save
-             // applyPreferences(); // Apply immediately example
+             applyPreferences(); // Apply immediately example
         });
 
         const label = document.createElement('label');
@@ -289,12 +289,16 @@ async function renderMap(gameName, phase) {
         const response = await fetch(apiUrl);
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({ message: 'Failed to parse error response' }));
-            throw new Error(`HTTP error ${response.status}: ${errorData.message || 'Unknown error'}`);
+            throw new Error(`HTTP error ${response.status}: ${errorData.error || errorData.message || 'Unknown error'}`);
         }
 
-        const mapData = await response.json();
+        const mapData = await response.json(); // Expecting the combined data object
 
-        if (mapData.success && mapData.svgContent) {
+        if (mapData.success === false) { // Check for explicit failure from backend
+             throw new Error(mapData.error || mapData.message || "Failed to load map data.");
+        }
+
+        if (mapData.svgContent) {
             // Inject base SVG
             mapContainer.innerHTML = mapData.svgContent;
             const svgElement = mapContainer.querySelector('svg');
@@ -304,7 +308,6 @@ async function renderMap(gameName, phase) {
             }
 
             // Ensure SVG has a known size or viewBox for coordinate mapping
-            // If viewBox is present, use it. Otherwise, might need width/height.
             const viewBox = svgElement.viewBox.baseVal;
             const svgWidth = viewBox ? viewBox.width : svgElement.width.baseVal.value;
             const svgHeight = viewBox ? viewBox.height : svgElement.height.baseVal.value;
@@ -317,11 +320,17 @@ async function renderMap(gameName, phase) {
             const powerColors = {
                 AUS: '#ffcc00', GER: '#4d4d4d', ENG: '#add8e6', FRA: '#0000ff',
                 ITA: '#008000', RUS: '#800080', TUR: '#ff4500',
+                // Add Machiavelli colors if needed
+                FLORENCE: '#ffb6c1', // Light Pink
+                MILAN: '#a0522d',    // Sienna
+                NAPLES: '#ffff00',   // Yellow
+                PAPACY: '#ffffff',   // White (with border)
+                VENICE: '#00ced1',   // Dark Turquoise
                 DEFAULT: '#cccccc' // For neutral SCs
             };
             const unitStyles = {
-                AMY: { shape: 'rect', width: 10, height: 10, text: 'A' },
-                FLT: { shape: 'polygon', points: '0,-6 6,6 -6,6', text: 'F' } // Triangle for fleet
+                A: { shape: 'rect', width: 10, height: 10, text: 'A' }, // Army
+                F: { shape: 'polygon', points: '0,-6 6,6 -6,6', text: 'F' } // Fleet
             };
             const scRadius = 8;
             const unitFontSize = 10;
@@ -340,10 +349,23 @@ async function renderMap(gameName, phase) {
                  const scGroup = createSvgElement('g', { id: 'sc-layer' });
                  svgElement.appendChild(scGroup);
 
-                mapData.supplyCenters.forEach(sc => {
-                    const province = mapData.provinces[sc.province];
+                // SC data is now an object { Power: count } - need to link back to province data
+                // We need a list of which provinces *are* supply centers from the map info
+                // Let's assume mapData.provinces[abbr].isSupplyCenter = true if it is one
+
+                Object.entries(mapData.provinces).forEach(([abbr, province]) => {
+                    // Check if this province is a supply center (needs info from map file)
+                    // For now, let's assume we can check based on presence of scX/scY
                     if (province && province.scX !== undefined && province.scY !== undefined) {
-                        const color = powerColors[sc.owner] || powerColors.DEFAULT;
+                        // Find the owner from the phase data
+                        let owner = 'Neutral';
+                        for (const power in mapData.supplyCenters) {
+                            // This logic is flawed - supplyCenters is {power: count}, not {province: owner}
+                            // We need the HISTORY parser to give us SC ownership per province for the phase
+                            // TODO: Fix HISTORY parser to return SC ownership by province: { provinceAbbr: ownerPower }
+                        }
+                        // TEMPORARY: Just draw all potential SCs as neutral until history parser is fixed
+                        const color = powerColors.DEFAULT;
                         const circle = createSvgElement('circle', {
                             cx: province.scX,
                             cy: province.scY,
@@ -351,14 +373,11 @@ async function renderMap(gameName, phase) {
                             fill: color,
                             stroke: '#333',
                             'stroke-width': 1,
-                            'data-province': sc.province,
-                            'data-owner': sc.owner || 'Neutral'
+                            'data-province': abbr,
+                            'data-owner': owner
                         });
-                        // Basic tooltip
-                        circle.innerHTML = `<title>SC: ${province.name} (${sc.owner || 'Neutral'})</title>`;
+                        circle.innerHTML = `<title>SC: ${province.name} (${owner})</title>`;
                         scGroup.appendChild(circle);
-                    } else {
-                         console.warn(`SC coordinates not found for province: ${sc.province}`);
                     }
                 });
             }
@@ -369,10 +388,11 @@ async function renderMap(gameName, phase) {
                  svgElement.appendChild(unitGroup);
 
                  mapData.units.forEach(unit => {
-                     const province = mapData.provinces[unit.province];
+                     const province = mapData.provinces[unit.location]; // Unit location is the key
                      if (province && province.unitX !== undefined && province.unitY !== undefined) {
-                         const color = powerColors[unit.power] || powerColors.DEFAULT;
-                         const style = unitStyles[unit.type] || unitStyles.AMY; // Default to Army style if type unknown
+                         const powerKey = unit.power.toUpperCase(); // Normalize power name for color lookup
+                         const color = powerColors[powerKey] || powerColors.DEFAULT;
+                         const style = unitStyles[unit.type] || unitStyles.A; // Default to Army style if type unknown
 
                          let unitElement;
                          if (style.shape === 'rect') {
@@ -407,13 +427,13 @@ async function renderMap(gameName, phase) {
 
                          unitElement.setAttribute('data-unit-type', unit.type);
                          unitElement.setAttribute('data-unit-power', unit.power);
-                         unitElement.setAttribute('data-unit-province', unit.province);
+                         unitElement.setAttribute('data-unit-province', unit.location);
                          // Basic tooltip
-                         unitElement.innerHTML = `<title>Unit: ${unit.power} ${unit.type} ${unit.province}</title>`;
+                         unitElement.innerHTML = `<title>Unit: ${unit.power} ${unit.type} ${unit.location}</title>`;
                          unitGroup.appendChild(unitElement);
 
                      } else {
-                          console.warn(`Unit coordinates not found for province: ${unit.province}`);
+                          console.warn(`Unit coordinates not found for province: ${unit.location}`);
                      }
                  });
              }
@@ -423,7 +443,7 @@ async function renderMap(gameName, phase) {
                  const labelGroup = createSvgElement('g', { id: 'label-layer', 'pointer-events': 'none' }); // Disable pointer events for labels
                  svgElement.appendChild(labelGroup);
                  Object.values(mapData.provinces).forEach(province => {
-                     // Use unit coordinates as a fallback if label coords aren't specific
+                     // Use label coordinates if available, else unit coords
                      const x = province.labelX !== undefined ? province.labelX : province.unitX;
                      const y = province.labelY !== undefined ? province.labelY : province.unitY;
                      if (x !== undefined && y !== undefined && province.abbr) { // Only render if coords and abbr exist
@@ -442,10 +462,8 @@ async function renderMap(gameName, phase) {
              }
 
 
-        } else if (mapData.success && !mapData.svgContent) {
+        } else { // No SVG content received
             mapContainer.innerHTML = '<p class="text-gray-500 italic p-4">Map SVG not available for this variant.</p>';
-        } else {
-             throw new Error(mapData.message || "Failed to load map data.");
         }
 
     } catch (error) {
@@ -472,7 +490,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const refreshStateButton = document.getElementById('refresh-game-state');
     const clearCredentialsButton = document.getElementById('clear-credentials');
     const userEmailIndicator = document.getElementById('user-email-indicator');
- 
+
     // --- Filter Elements ---
     const filterStatusSelect = document.getElementById('filter-status');
     const filterVariantInput = document.getElementById('filter-variant');
@@ -480,14 +498,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const filterPhaseInput = document.getElementById('filter-phase');
     const applyFiltersBtn = document.getElementById('apply-filters-btn');
     const clearFiltersBtn = document.getElementById('clear-filters-btn'); // Added
- 
+
     // --- Bookmark Elements ---
     const savedSearchSelect = document.getElementById('saved-search-select');
     const applyBookmarkBtn = document.getElementById('apply-bookmark-btn');
     const deleteBookmarkBtn = document.getElementById('delete-bookmark-btn');
     const newBookmarkNameInput = document.getElementById('new-bookmark-name');
     const saveBookmarkBtn = document.getElementById('save-bookmark-btn');
- 
+
     let currentGameData = null; // Store the detailed state of the selected game
     // let allGamesList = []; // Moved to window scope for preferences access
     let currentUserEmail = userEmailIndicator ? userEmailIndicator.dataset.email : null; // Store user email
@@ -507,12 +525,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Fetch all games using the new function (initially with no filters)
         fetchAndPopulateGames();
- 
+
         // Fetch bookmarks if logged in
         if (window.currentUserEmail) {
             fetchAndPopulateBookmarks();
         }
- 
+
         // Add event listeners for filters and bookmarks
         if (applyFiltersBtn) {
             applyFiltersBtn.addEventListener('click', () => {
@@ -532,13 +550,25 @@ document.addEventListener('DOMContentLoaded', () => {
         if (deleteBookmarkBtn) {
             deleteBookmarkBtn.addEventListener('click', deleteBookmark);
         }
- 
+
 
         // Fetch and render the game status chart
         fetchAndRenderGameStatusChart();
 
+        // Initial map render if a game is pre-selected
+        const initialGame = getCookie('targetGame');
+        if (initialGame) {
+            // Fetch state to get phase info if needed
+            const state = await fetch(`/api/game/${initialGame}`).then(res => res.ok ? res.json() : null);
+            if (state && state.success) {
+                 renderMap(initialGame, state.gameState.currentPhase);
+            } else {
+                 renderMap(initialGame); // Render latest if state fetch fails
+            }
+        }
+
     }
- 
+
     // --- New Function: Fetch Games with Filters ---
     function fetchAndPopulateGames(filterParams = {}) {
         console.log("Fetching games with filters:", filterParams);
@@ -550,21 +580,21 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         const queryString = queryParams.toString();
         const fetchUrl = `/api/games${queryString ? '?' + queryString : ''}`;
- 
+
         // Show loading state? (Optional)
         if (gameSelector) gameSelector.innerHTML = '<option value="">Loading games...</option>';
- 
+
         fetch(fetchUrl)
             .then(response => response.json())
             .then(data => {
                 if (data.success && data.games) {
                     window.allGamesList = data.games; // Store globally
                     applyPreferences(); // This will call populateGameSelector which uses window.allGamesList
- 
+
                     // Re-select initial/cookie game if it exists in the filtered list
                     const initialGame = getCookie('targetGame');
                     const gameExistsInList = window.allGamesList.some(g => g.name === initialGame);
- 
+
                     if (initialGame && gameSelector && gameExistsInList) {
                         gameSelector.value = initialGame;
                         targetGameInput.value = initialGame;
@@ -603,7 +633,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (gameSelector) gameSelector.innerHTML = '<option value="">Error loading games</option>';
             });
     }
- 
+
     // --- Helper: Get Current Filter Values ---
     function getCurrentFilterValues() {
         const filters = {};
@@ -613,7 +643,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (filterPhaseInput && filterPhaseInput.value.trim()) filters.phase = filterPhaseInput.value.trim();
         return filters;
     }
- 
+
     // --- Helper: Clear Filters ---
     function clearFiltersAndRefetch() {
         if (filterStatusSelect) filterStatusSelect.value = '';
@@ -623,18 +653,18 @@ document.addEventListener('DOMContentLoaded', () => {
         currentFilters = {}; // Reset stored filters
         fetchAndPopulateGames(); // Fetch all games
     }
- 
+
     // --- Bookmark Functions ---
     async function fetchAndPopulateBookmarks() { // Make async
         if (!savedSearchSelect || !window.currentUserEmail) return; // Need select & user
         console.log("Fetching bookmarks...");
         savedSearchSelect.innerHTML = '<option value="">Loading...</option>'; // Loading indicator
- 
+
         try {
             const response = await fetch('/api/user/search-bookmarks');
             if (!response.ok) {
-                 if (response.status === 404) { // No bookmarks saved yet is okay
-                     console.log("No saved bookmarks found.");
+                 if (response.status === 404 || response.status === 401) { // No bookmarks saved yet or not logged in
+                     console.log("No saved bookmarks found or user not authenticated.");
                      savedBookmarks = [];
                  } else {
                      throw new Error(`HTTP error! status: ${response.status}`);
@@ -658,7 +688,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         populateBookmarkSelect(); // Call this after fetch completes (success or error with empty list)
     }
- 
+
     function populateBookmarkSelect() {
         if (!savedSearchSelect) return;
         savedSearchSelect.innerHTML = '<option value="">-- Select Bookmark --</option>';
@@ -673,7 +703,7 @@ document.addEventListener('DOMContentLoaded', () => {
             savedSearchSelect.appendChild(option);
         });
     }
- 
+
     function applyBookmark() {
         if (!savedSearchSelect || !savedSearchSelect.value) return;
         const selectedName = savedSearchSelect.value;
@@ -684,18 +714,18 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         console.log("Applying bookmark:", bookmark.name, bookmark.params);
- 
+
         // Update filter UI elements
         if (filterStatusSelect) filterStatusSelect.value = bookmark.params.status || '';
         if (filterVariantInput) filterVariantInput.value = bookmark.params.variant || '';
         if (filterPlayerEmailInput) filterPlayerEmailInput.value = bookmark.params.player || '';
         if (filterPhaseInput) filterPhaseInput.value = bookmark.params.phase || '';
- 
+
         // Apply the filters by fetching games
         currentFilters = bookmark.params; // Store applied filters
         fetchAndPopulateGames(currentFilters);
     }
- 
+
     async function saveBookmark() { // Make async
         if (!newBookmarkNameInput || !newBookmarkNameInput.value.trim()) {
             alert("Please enter a name for the bookmark.");
@@ -703,12 +733,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         const name = newBookmarkNameInput.value.trim();
         const params = getCurrentFilterValues();
- 
+
         if (Object.keys(params).length === 0) {
             alert("Cannot save a bookmark with no filters set.");
             return;
         }
- 
+
         // Check if name already exists
         if (savedBookmarks.some(bm => bm.name.toLowerCase() === name.toLowerCase())) {
             if (!confirm(`A bookmark named "${name}" already exists. Overwrite it?`)) {
@@ -720,10 +750,10 @@ document.addEventListener('DOMContentLoaded', () => {
             // backend handle potential conflicts (or we could delete first).
             // Let's assume the backend handles it or returns a useful error.
         }
- 
+
         console.log("Saving bookmark:", name, params);
         const bookmarkData = { name, params };
- 
+
         try {
             const response = await fetch('/api/user/search-bookmarks', {
                 method: 'POST',
@@ -745,7 +775,7 @@ document.addEventListener('DOMContentLoaded', () => {
             alert(`Network error saving bookmark: ${error.message}`);
         }
     }
- 
+
     async function deleteBookmark() { // Make async
         if (!savedSearchSelect || !savedSearchSelect.value) {
             alert("Please select a bookmark to delete.");
@@ -755,11 +785,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!confirm(`Are you sure you want to delete the bookmark "${name}"?`)) {
             return;
         }
- 
+
         console.log("Deleting bookmark:", name);
         // URL encode the name in case it contains special characters
         const encodedName = encodeURIComponent(name);
- 
+
         try {
             const response = await fetch(`/api/user/search-bookmarks/${encodedName}`, {
                 method: 'DELETE'
@@ -874,7 +904,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
 
- 
+
     // --- Game Selection Change Handler ---
     if (gameSelector) {
         gameSelector.addEventListener('change', (e) => {
@@ -882,7 +912,7 @@ document.addEventListener('DOMContentLoaded', () => {
             fetchAndDisplayGameState(selectedGame);
         });
     }
- 
+
     // --- Command Type Change Handler ---
     if (commandTypeSelect) {
         commandTypeSelect.addEventListener('change', (e) => {
@@ -891,12 +921,12 @@ document.addEventListener('DOMContentLoaded', () => {
             updateGeneratedCommandText(); // Update text area immediately if possible
         });
     }
- 
+
     // --- Send Command Button Handler ---
     if (sendButton) {
         sendButton.addEventListener('click', () => sendCommand());
     }
- 
+
     // --- Textarea Enter Key Handler ---
     if (generatedCommandTextarea) {
         generatedCommandTextarea.addEventListener('keypress', (e) => {
@@ -908,7 +938,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Update command text on any input change in the textarea itself
         generatedCommandTextarea.addEventListener('input', updateGeneratedCommandText);
     }
- 
+
     // --- Refresh State Button ---
     if (refreshStateButton) {
         refreshStateButton.addEventListener('click', () => {
@@ -923,7 +953,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
- 
+
     // --- Clear Credentials Button ---
     if (clearCredentialsButton) {
         clearCredentialsButton.addEventListener('click', () => {
@@ -939,7 +969,7 @@ document.addEventListener('DOMContentLoaded', () => {
              }
         });
     }
- 
+
     // --- Password/Variant Input Handling ---
     if (targetPasswordInput) {
         targetPasswordInput.addEventListener('input', saveCredentialsForGame); // Save on input
@@ -947,7 +977,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (targetVariantInput) {
         targetVariantInput.addEventListener('input', saveCredentialsForGame); // Save on input
     }
- 
+
     // --- Initial Load ---
     initializeDashboard(); // Fetch initial data (games, state, prefs, bookmarks)
 
@@ -969,7 +999,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     compareA = b.status || 'Unknown'; compareB = a.status || 'Unknown'; break;
                 case 'name_asc': // Default
                 default:
-                    compareA = a.name; compareB = a.name; break;
+                    compareA = a.name; compareB = b.name; break;
             }
             return compareA.localeCompare(compareB);
         });
@@ -993,6 +1023,7 @@ document.addEventListener('DOMContentLoaded', () => {
             updateCommandGenerator(null); // Update recommendations for "no game" context
             targetGameInput.value = '';
             loadCredentialsForGame(null); // Clear credentials fields
+            renderMap(null); // Clear map
             return;
         }
 
@@ -1018,6 +1049,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     window.currentGameData = null; // Store globally
                     updateCommandGenerator(null); // Reset recommendations
                     loadCredentialsForGame(gameName); // Still try to load credentials
+                    renderMap(null); // Clear map on error
                 }
             })
             .catch(error => {
@@ -1026,6 +1058,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 window.currentGameData = null; // Store globally
                 updateCommandGenerator(null);
                 loadCredentialsForGame(gameName);
+                renderMap(null); // Clear map on error
             });
     }
 
