@@ -1557,7 +1557,7 @@ app.set("layout extractScripts", true);
 app.set("layout extractStyles", true);
 
 app.use(cookieParser()); // Added cookie parser
-app.use(express.static(path.join(__dirname, 'public')));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -2524,6 +2524,7 @@ app.get('/api/game/:gameName/history', requireEmail, async (req, res) => {
 
 // --- Start Server ---
 // ... (Keep server start and graceful shutdown as is) ...
+app.use(express.static(path.join(__dirname, 'public'))); // Roo: Moved static middleware here
 app.listen(port, () => {
     console.log(`Dip Web App listening at http://localhost:${port}`);
     console.log(`Using dip binary: ${dipBinaryPath}`);
