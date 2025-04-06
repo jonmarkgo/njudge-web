@@ -1369,11 +1369,11 @@ const executeDipCommand = (email, command, targetGame = null, targetPassword = n
                         console.warn(`[Execute Prep] Game ${targetGame} not in DB. Assuming join/observe sign-on ('?') for command ${commandVerb}.`);
                         signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword}`;
                     } else {
-                        const userIsMaster = gameState.masters ? .includes(email);
-                        const myPlayerInfo = gameState.players ? .find(p => p.email === email);
+                        const userIsMaster = gameState.masters && gameState.masters.includes(email);
+                        const myPlayerInfo = gameState.players && gameState.players.find(p => p.email === email);
                         const userIsPlayer = !!myPlayerInfo;
-                        const userPowerInitial = userIsPlayer ? myPlayerInfo.power ? .charAt(0).toUpperCase() : null;
-                        const userIsObserver = gameState.observers ? .includes(email) && !userIsPlayer && !userIsMaster;
+                        const userPowerInitial = userIsPlayer && myPlayerInfo.power ? myPlayerInfo.power.charAt(0).toUpperCase() : null;
+                        const userIsObserver = gameState.observers && gameState.observers.includes(email) && !userIsPlayer && !userIsMaster;
 
                         if (userIsPlayer && userPowerInitial) {
                             signOnPrefix = `SIGN ON ${userPowerInitial}${targetGame} ${targetPassword}`;
@@ -2381,7 +2381,7 @@ app.post('/execute-dip', requireEmail, async(req, res) => {
 
     } catch (error) {
         console.error(`[Execute Error] Command "${commandVerb}" for ${email} failed:`, error);
-        res.status(error.output ? .includes('Spawn failed') ? 503 : 500).json({
+        res.status(error.output && error.output.includes('Spawn failed') ? 503 : 500).json({
             success: false,
             output: error.output || 'Unknown execution error',
             isSignOnOrObserveSuccess: false
@@ -2418,8 +2418,8 @@ app.post('/execute-dip', requireEmail, async(req, res) => {
             } catch (error) {
                 console.error(`[API /api/games POST] Error executing ADDGAME command for ${gameName}:`, error);
                 // Try to provide more specific status codes based on common errors
-                const statusCode = error.output ? .includes('Spawn failed') ? 503 :
-                    error.stderr ? .includes('already exists') ? 409 : // Conflict
+                const statusCode = error.output && error.output.includes('Spawn failed') ? 503 :
+                    error.stderr && error.stderr.includes('already exists') ? 409 : // Conflict
                     500; // Default internal server error
                 res.status(statusCode).json({
                     error: `Failed to add game '${gameName}'.`,
@@ -2455,9 +2455,9 @@ app.post('/execute-dip', requireEmail, async(req, res) => {
             } catch (error) {
                 console.error(`[API /api/games DELETE] Error executing REMOVEGAME command for ${gameName}:`, error);
                 // Try to provide more specific status codes
-                const statusCode = error.output ? .includes('Spawn failed') ? 503 :
-                    error.stderr ? .includes('No such game') ? 404 : // Not Found
-                    error.stderr ? .includes('incorrect password') ? 401 : // Unauthorized (or 403 Forbidden)
+                const statusCode = error.output && error.output.includes('Spawn failed') ? 503 :
+                    error.stderr && error.stderr.includes('No such game') ? 404 : // Not Found
+                    error.stderr && error.stderr.includes('incorrect password') ? 401 : // Unauthorized (or 403 Forbidden)
                     500; // Default internal server error
                 res.status(statusCode).json({
                     error: `Failed to remove game '${gameName}'.`,
@@ -2630,7 +2630,7 @@ app.post('/execute-dip', requireEmail, async(req, res) => {
         } catch (error) {
             console.error(`[API HISTORY Error] Failed to get or parse history for game ${gameName}:`, error);
             // Handle potential errors from executeDipCommand (e.g., spawn issues)
-            const statusCode = error.output ? .includes('Spawn failed') ? 503 : (error.message ? .includes('No such game') ? 404 : 500);
+            const statusCode = error.output && error.output.includes('Spawn failed') ? 503 : (error.message && error.message.includes('No such game') ? 404 : 500);
             const errorMessage = error.message || 'Failed to retrieve game history.';
             res.status(statusCode).json({ error: errorMessage, details: error.output || null });
         }
