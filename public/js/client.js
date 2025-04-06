@@ -226,7 +226,6 @@ document.addEventListener('DOMContentLoaded', () => {
                  ` : ''}
             </div>
             <p class="text-xs text-gray-500 mt-4">(State last updated: ${lastUpdatedStr})</p>
-            <a href="${observerLink}" target="_blank" rel="noopener noreferrer" class="text-sm text-primary hover:text-primary/80 mt-4 inline-block underline">View on Floc.net Observer</a>
         `;
     }
 

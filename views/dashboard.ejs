@@ -180,8 +180,6 @@
                          <% } %>
                     </div>
                      <p class="text-xs text-gray-500 mt-4">(State last updated: <%= gameState.lastUpdated ? new Date(gameState.lastUpdated * 1000).toLocaleString() : 'N/A' %>)</p>
-                     <%# Add Floc.net link %>
-                     <a href="https://www.floc.net/observer.py?partie=<%= gameState.name %>" target="_blank" rel="noopener noreferrer" class="text-sm text-primary hover:text-primary/80 mt-4 inline-block underline">View on Floc.net Observer</a>
                  <% } else { %>
                      <p class="text-gray-600 italic">Select a target game to view its state.</p>
                  <% } %>
