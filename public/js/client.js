@@ -32,6 +32,238 @@ function eraseCookie(name) {
     console.log(`Cookie erased: ${name}`);
 }
 
+
+// --- User Preferences ---
+const defaultPreferences = {
+    sort_order: 'name_asc', // e.g., 'name_asc', 'name_desc', 'status_asc', 'status_desc'
+    column_visibility: { // For game state sidebar elements
+        status: true,
+        phase: true,
+        deadline: true,
+        variant: true,
+        masters: true,
+        observers: true,
+        players: true,
+        settings: true,
+        lastUpdated: true
+    }
+};
+let userPreferences = JSON.parse(JSON.stringify(defaultPreferences)); // Deep copy defaults initially
+
+async function fetchUserPreferences() {
+    console.log("Fetching user preferences...");
+    try {
+        const response = await fetch('/api/user/preferences');
+        if (!response.ok) {
+            if (response.status === 404) { // No preferences saved yet is okay
+                console.log("No existing user preferences found, using defaults.");
+                userPreferences = JSON.parse(JSON.stringify(defaultPreferences));
+            } else {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+        } else {
+            const prefs = await response.json();
+            if (prefs.success && prefs.preferences) {
+                console.log("Fetched preferences:", prefs.preferences);
+                // Merge fetched prefs with defaults to ensure all keys exist
+                userPreferences = {
+                    ...JSON.parse(JSON.stringify(defaultPreferences)), // Start with defaults
+                    ...prefs.preferences, // Override with fetched values
+                    column_visibility: { // Deep merge column visibility
+                        ...defaultPreferences.column_visibility,
+                        ...(prefs.preferences.column_visibility || {})
+                    }
+                };
+            } else {
+                 console.warn("Failed to parse preferences from response or success=false:", prefs);
+                 userPreferences = JSON.parse(JSON.stringify(defaultPreferences));
+            }
+        }
+    } catch (error) {
+        console.error('Error fetching user preferences:', error);
+        userPreferences = JSON.parse(JSON.stringify(defaultPreferences)); // Fallback to defaults on error
+    }
+    // Apply preferences after fetching (or falling back to defaults)
+    applyPreferences();
+    // Render controls after preferences are loaded
+    renderPreferenceControls();
+}
+
+async function saveUserPreferences() {
+    console.log("Saving user preferences:", userPreferences);
+    try {
+        const response = await fetch('/api/user/preferences', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(userPreferences)
+        });
+        const result = await response.json();
+        if (result.success) {
+            console.log("Preferences saved successfully.");
+            alert("Preferences saved!");
+            applyPreferences(); // Re-apply in case logic depends on it elsewhere
+        } else {
+            console.error("Failed to save preferences:", result.message);
+            alert(`Error saving preferences: ${result.message}`);
+        }
+    } catch (error) {
+        console.error('Error saving user preferences:', error);
+        alert(`Network error saving preferences: ${error.message}`);
+    }
+}
+
+async function resetUserPreferences() {
+    if (!confirm("Are you sure you want to reset your preferences to the defaults?")) {
+        return;
+    }
+    console.log("Resetting user preferences...");
+    try {
+        const response = await fetch('/api/user/preferences/reset', { method: 'POST' });
+        const result = await response.json();
+        if (result.success) {
+            console.log("Preferences reset successfully.");
+            alert("Preferences reset to default!");
+            userPreferences = JSON.parse(JSON.stringify(defaultPreferences)); // Reset local state
+            applyPreferences(); // Apply defaults
+            renderPreferenceControls(); // Re-render controls with default values
+        } else {
+            console.error("Failed to reset preferences:", result.message);
+            alert(`Error resetting preferences: ${result.message}`);
+        }
+    } catch (error) {
+        console.error('Error resetting user preferences:', error);
+        alert(`Network error resetting preferences: ${error.message}`);
+    }
+}
+
+function applyPreferences() {
+    console.log("Applying preferences:", userPreferences);
+    // 1. Re-populate game selector based on sort order
+    if (window.allGamesList && window.allGamesList.length > 0) { // Ensure game list is available
+         populateGameSelector(window.allGamesList);
+    }
+    // 2. Re-render game state sidebar based on column visibility
+    if (window.currentGameData) { // Ensure current game data is available
+        updateGameStateSidebar(window.currentGameData);
+    } else {
+        // If no game is selected, ensure the sidebar reflects this, potentially clearing old state
+         const gameStateSidebar = document.getElementById('game-state-sidebar');
+         if (gameStateSidebar) {
+             updateGameStateSidebar(null); // Call with null to show default message
+         }
+    }
+    // Add other preference applications here if needed
+}
+
+function renderPreferenceControls() {
+    const controlsContainer = document.getElementById('preference-controls-container'); // Assuming this container exists in dashboard.ejs
+    if (!controlsContainer) {
+        console.warn("Preference controls container not found. Cannot render controls.");
+        return;
+    }
+
+    // Clear previous controls
+    controlsContainer.innerHTML = '';
+
+    const form = document.createElement('form');
+    form.className = 'space-y-4 p-4 border border-gray-200 rounded-md bg-gray-50';
+    form.addEventListener('submit', (e) => e.preventDefault()); // Prevent default form submission
+
+    // --- Sort Order ---
+    const sortDiv = document.createElement('div');
+    sortDiv.innerHTML = `<label for="pref-sort-order" class="block text-sm font-medium text-gray-700 mb-1">Game List Sort Order:</label>`;
+    const sortSelect = document.createElement('select');
+    sortSelect.id = 'pref-sort-order';
+    sortSelect.className = 'input text-sm';
+    const sortOptions = [
+        { value: 'name_asc', text: 'Name (A-Z)' },
+        { value: 'name_desc', text: 'Name (Z-A)' },
+        { value: 'status_asc', text: 'Status (A-Z)' },
+        { value: 'status_desc', text: 'Status (Z-A)' }
+        // Add more sort options if needed (e.g., by deadline)
+    ];
+    sortOptions.forEach(opt => {
+        const option = document.createElement('option');
+        option.value = opt.value;
+        option.textContent = opt.text;
+        if (userPreferences.sort_order === opt.value) {
+            option.selected = true;
+        }
+        sortSelect.appendChild(option);
+    });
+    sortSelect.addEventListener('change', (e) => {
+        userPreferences.sort_order = e.target.value;
+        // Optionally apply sort immediately or wait for save
+        // applyPreferences(); // Apply immediately example
+    });
+    sortDiv.appendChild(sortSelect);
+    form.appendChild(sortDiv);
+
+    // --- Column Visibility ---
+    const visibilityDiv = document.createElement('div');
+    visibilityDiv.innerHTML = `<label class="block text-sm font-medium text-gray-700 mb-2">Game State Visibility:</label>`;
+    const gridDiv = document.createElement('div');
+    gridDiv.className = 'grid grid-cols-2 gap-2'; // Simple grid layout
+
+    Object.keys(defaultPreferences.column_visibility).forEach(key => {
+        const checkboxDiv = document.createElement('div');
+        checkboxDiv.className = 'flex items-center';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.id = `pref-vis-${key}`;
+        checkbox.className = 'rounded border-gray-300 text-primary focus:ring-primary mr-2';
+        checkbox.checked = userPreferences.column_visibility[key];
+        checkbox.addEventListener('change', (e) => {
+            userPreferences.column_visibility[key] = e.target.checked;
+             // Optionally apply visibility immediately or wait for save
+             // applyPreferences(); // Apply immediately example
+        });
+
+        const label = document.createElement('label');
+        label.htmlFor = checkbox.id;
+        label.className = 'text-sm text-gray-700';
+        // Capitalize key for display
+        label.textContent = key.charAt(0).toUpperCase() + key.slice(1).replace(/([A-Z])/g, ' $1'); // Add space before caps
+
+        checkboxDiv.appendChild(checkbox);
+        checkboxDiv.appendChild(label);
+        gridDiv.appendChild(checkboxDiv);
+    });
+    visibilityDiv.appendChild(gridDiv);
+    form.appendChild(visibilityDiv);
+
+    // --- Action Buttons ---
+    const buttonDiv = document.createElement('div');
+    buttonDiv.className = 'flex space-x-2 pt-3 border-t border-gray-200';
+
+    const saveButton = document.createElement('button');
+    saveButton.type = 'button'; // Important: prevent form submission
+    saveButton.id = 'save-preferences-btn';
+    saveButton.textContent = 'Save Preferences';
+    saveButton.className = 'btn btn-primary';
+    saveButton.addEventListener('click', saveUserPreferences);
+
+    const resetButton = document.createElement('button');
+    resetButton.type = 'button'; // Important: prevent form submission
+    resetButton.id = 'reset-preferences-btn';
+    resetButton.textContent = 'Reset to Default';
+    resetButton.className = 'btn btn-secondary';
+    resetButton.addEventListener('click', resetUserPreferences);
+
+    buttonDiv.appendChild(saveButton);
+    buttonDiv.appendChild(resetButton);
+    form.appendChild(buttonDiv);
+
+    controlsContainer.appendChild(form);
+}
+
+// --- Make allGamesList and currentGameData globally accessible (or pass them around) ---
+// This is a simplification; better state management might be needed for larger apps.
+window.allGamesList = [];
+window.currentGameData = null;
+let gameStatusChartInstance = null; // To hold the chart instance
+
+
 // --- DOM Ready ---
 document.addEventListener('DOMContentLoaded', () => {
     // --- Global Elements ---
@@ -48,51 +280,508 @@ document.addEventListener('DOMContentLoaded', () => {
     const refreshStateButton = document.getElementById('refresh-game-state');
     const clearCredentialsButton = document.getElementById('clear-credentials');
     const userEmailIndicator = document.getElementById('user-email-indicator');
-
+ 
+    // --- Filter Elements ---
+    const filterStatusSelect = document.getElementById('filter-status');
+    const filterVariantInput = document.getElementById('filter-variant');
+    const filterPlayerEmailInput = document.getElementById('filter-player-email');
+    const filterPhaseInput = document.getElementById('filter-phase');
+    const applyFiltersBtn = document.getElementById('apply-filters-btn');
+    const clearFiltersBtn = document.getElementById('clear-filters-btn'); // Added
+ 
+    // --- Bookmark Elements ---
+    const savedSearchSelect = document.getElementById('saved-search-select');
+    const applyBookmarkBtn = document.getElementById('apply-bookmark-btn');
+    const deleteBookmarkBtn = document.getElementById('delete-bookmark-btn');
+    const newBookmarkNameInput = document.getElementById('new-bookmark-name');
+    const saveBookmarkBtn = document.getElementById('save-bookmark-btn');
+ 
     let currentGameData = null; // Store the detailed state of the selected game
-    let allGamesList = []; // Store the list of all games for the selector
+    // let allGamesList = []; // Moved to window scope for preferences access
     let currentUserEmail = userEmailIndicator ? userEmailIndicator.dataset.email : null; // Store user email
-
+    window.currentUserEmail = currentUserEmail; // Also store globally for easy check
+    let currentFilters = {}; // Store the currently applied filters
+    let savedBookmarks = []; // Store fetched bookmarks
     // --- Initial Setup ---
-    function initializeDashboard() {
-        // Fetch all games for the selector
-        fetch('/api/games')
+    async function initializeDashboard() { // Make async for await fetchUserPreferences
+        // Fetch preferences first if logged in
+        if (window.currentUserEmail) {
+            await fetchUserPreferences(); // Wait for prefs before fetching games
+        } else {
+            // Not logged in, apply defaults and render controls (which will be empty/disabled)
+            applyPreferences();
+            renderPreferenceControls();
+        }
+
+        // Fetch all games using the new function (initially with no filters)
+        fetchAndPopulateGames();
+ 
+        // Fetch bookmarks if logged in
+        if (window.currentUserEmail) {
+            fetchAndPopulateBookmarks();
+        }
+ 
+        // Add event listeners for filters and bookmarks
+        if (applyFiltersBtn) {
+            applyFiltersBtn.addEventListener('click', () => {
+                currentFilters = getCurrentFilterValues();
+                fetchAndPopulateGames(currentFilters);
+            });
+        }
+        if (clearFiltersBtn) {
+            clearFiltersBtn.addEventListener('click', clearFiltersAndRefetch);
+        }
+        if (applyBookmarkBtn) {
+            applyBookmarkBtn.addEventListener('click', applyBookmark);
+        }
+        if (saveBookmarkBtn) {
+            saveBookmarkBtn.addEventListener('click', saveBookmark);
+        }
+        if (deleteBookmarkBtn) {
+            deleteBookmarkBtn.addEventListener('click', deleteBookmark);
+        }
+ 
+
+        // Fetch and render the game status chart
+        fetchAndRenderGameStatusChart();
+
+    }
+ 
+    // --- New Function: Fetch Games with Filters ---
+    function fetchAndPopulateGames(filterParams = {}) {
+        console.log("Fetching games with filters:", filterParams);
+        const queryParams = new URLSearchParams();
+        Object.entries(filterParams).forEach(([key, value]) => {
+            if (value) { // Only add non-empty filters
+                queryParams.append(key, value);
+            }
+        });
+        const queryString = queryParams.toString();
+        const fetchUrl = `/api/games${queryString ? '?' + queryString : ''}`;
+ 
+        // Show loading state? (Optional)
+        if (gameSelector) gameSelector.innerHTML = '<option value="">Loading games...</option>';
+ 
+        fetch(fetchUrl)
             .then(response => response.json())
             .then(data => {
                 if (data.success && data.games) {
-                    allGamesList = data.games;
-                    populateGameSelector(allGamesList);
-                    // Set initial game from cookie after populating selector
+                    window.allGamesList = data.games; // Store globally
+                    applyPreferences(); // This will call populateGameSelector which uses window.allGamesList
+ 
+                    // Re-select initial/cookie game if it exists in the filtered list
                     const initialGame = getCookie('targetGame');
-                    if (initialGame && gameSelector) {
+                    const gameExistsInList = window.allGamesList.some(g => g.name === initialGame);
+ 
+                    if (initialGame && gameSelector && gameExistsInList) {
                         gameSelector.value = initialGame;
                         targetGameInput.value = initialGame;
-                        console.log("Initial game from cookie:", initialGame);
-                        fetchAndDisplayGameState(initialGame); // Fetch state for the cookie game
+                        console.log("Restored game selection after filter:", initialGame);
+                        // Fetch state only if the game is still selected and visible
+                        if (gameSelector.value === initialGame) {
+                             fetchAndDisplayGameState(initialGame);
+                        } else {
+                             // Game was selected but isn't in the filtered list anymore
+                             fetchAndDisplayGameState(null); // Clear state
+                        }
+                    } else if (window.allGamesList.length > 0) {
+                         // If no specific game selected or cookie game filtered out, but list isn't empty
+                         // Select the first game in the list? Or just clear state? Clear for now.
+                         fetchAndDisplayGameState(null);
+                         console.log("Initial game not found in filtered list or no initial game.");
                     } else {
-                         updateGameStateSidebar(null); // Show empty state
-                         updateCommandGenerator(null); // Show default recommendations
-                         loadCredentialsForGame(null); // Ensure clear if no initial game
-                         console.log("No initial game cookie or no games found.");
+                        // No games found with these filters
+                        updateGameStateSidebar(null); // Show empty state
+                        updateCommandGenerator(null); // Show default recommendations
+                        loadCredentialsForGame(null); // Ensure clear if no initial game
+                        console.log("No games found matching filters.");
+                        if (gameSelector) gameSelector.innerHTML = '<option value="">No games match filters</option>';
                     }
                 } else {
-                    console.error("Failed to fetch game list:", data.message);
-                     updateGameStateSidebar(null); // Show empty state on error
-                     updateCommandGenerator(null);
+                    console.error("Failed to fetch filtered game list:", data.message);
+                    updateGameStateSidebar(null); // Show empty state on error
+                    updateCommandGenerator(null);
+                    if (gameSelector) gameSelector.innerHTML = '<option value="">Error loading games</option>';
                 }
             })
             .catch(error => {
-                console.error('Error fetching game list:', error);
+                console.error('Error fetching filtered game list:', error);
                 updateGameStateSidebar(null);
                 updateCommandGenerator(null);
+                if (gameSelector) gameSelector.innerHTML = '<option value="">Error loading games</option>';
             });
     }
+ 
+    // --- Helper: Get Current Filter Values ---
+    function getCurrentFilterValues() {
+        const filters = {};
+        if (filterStatusSelect && filterStatusSelect.value) filters.status = filterStatusSelect.value;
+        if (filterVariantInput && filterVariantInput.value.trim()) filters.variant = filterVariantInput.value.trim();
+        if (filterPlayerEmailInput && filterPlayerEmailInput.value.trim()) filters.player = filterPlayerEmailInput.value.trim(); // 'player' is the backend param
+        if (filterPhaseInput && filterPhaseInput.value.trim()) filters.phase = filterPhaseInput.value.trim();
+        return filters;
+    }
+ 
+    // --- Helper: Clear Filters ---
+    function clearFiltersAndRefetch() {
+        if (filterStatusSelect) filterStatusSelect.value = '';
+        if (filterVariantInput) filterVariantInput.value = '';
+        if (filterPlayerEmailInput) filterPlayerEmailInput.value = '';
+        if (filterPhaseInput) filterPhaseInput.value = '';
+        currentFilters = {}; // Reset stored filters
+        fetchAndPopulateGames(); // Fetch all games
+    }
+ 
+    // --- Bookmark Functions ---
+    async function fetchAndPopulateBookmarks() { // Make async
+        if (!savedSearchSelect || !window.currentUserEmail) return; // Need select & user
+        console.log("Fetching bookmarks...");
+        savedSearchSelect.innerHTML = '<option value="">Loading...</option>'; // Loading indicator
+ 
+        try {
+            const response = await fetch('/api/user/search-bookmarks');
+            if (!response.ok) {
+                 if (response.status === 404) { // No bookmarks saved yet is okay
+                     console.log("No saved bookmarks found.");
+                     savedBookmarks = [];
+                 } else {
+                     throw new Error(`HTTP error! status: ${response.status}`);
+                 }
+            } else {
+                const result = await response.json();
+                if (result.success && Array.isArray(result.bookmarks)) {
+                    savedBookmarks = result.bookmarks;
+                    console.log("Fetched bookmarks:", savedBookmarks);
+                } else {
+                    console.error("Failed to fetch bookmarks or invalid format:", result);
+                    savedBookmarks = [];
+                    alert("Error loading bookmarks. Check console.");
+                }
+            }
+        } catch (error) {
+            console.error('Error fetching bookmarks:', error);
+            savedBookmarks = [];
+            alert(`Network error loading bookmarks: ${error.message}`);
+            savedSearchSelect.innerHTML = '<option value="">Error loading</option>'; // Error indicator
+        }
+        populateBookmarkSelect(); // Call this after fetch completes (success or error with empty list)
+    }
+ 
+    function populateBookmarkSelect() {
+        if (!savedSearchSelect) return;
+        savedSearchSelect.innerHTML = '<option value="">-- Select Bookmark --</option>';
+        savedBookmarks.forEach(bm => {
+            const option = document.createElement('option');
+            option.value = bm.name;
+            // Display params concisely in the option text (optional)
+            const paramsDesc = Object.entries(bm.params)
+                                   .map(([k, v]) => `${k}:${v}`)
+                                   .join(', ');
+            option.textContent = `${bm.name} (${paramsDesc || 'No filters'})`;
+            savedSearchSelect.appendChild(option);
+        });
+    }
+ 
+    function applyBookmark() {
+        if (!savedSearchSelect || !savedSearchSelect.value) return;
+        const selectedName = savedSearchSelect.value;
+        const bookmark = savedBookmarks.find(bm => bm.name === selectedName);
+        if (!bookmark) {
+            console.error("Selected bookmark not found:", selectedName);
+            alert("Error: Could not find selected bookmark.");
+            return;
+        }
+        console.log("Applying bookmark:", bookmark.name, bookmark.params);
+ 
+        // Update filter UI elements
+        if (filterStatusSelect) filterStatusSelect.value = bookmark.params.status || '';
+        if (filterVariantInput) filterVariantInput.value = bookmark.params.variant || '';
+        if (filterPlayerEmailInput) filterPlayerEmailInput.value = bookmark.params.player || '';
+        if (filterPhaseInput) filterPhaseInput.value = bookmark.params.phase || '';
+ 
+        // Apply the filters by fetching games
+        currentFilters = bookmark.params; // Store applied filters
+        fetchAndPopulateGames(currentFilters);
+    }
+ 
+    async function saveBookmark() { // Make async
+        if (!newBookmarkNameInput || !newBookmarkNameInput.value.trim()) {
+            alert("Please enter a name for the bookmark.");
+            return;
+        }
+        const name = newBookmarkNameInput.value.trim();
+        const params = getCurrentFilterValues();
+ 
+        if (Object.keys(params).length === 0) {
+            alert("Cannot save a bookmark with no filters set.");
+            return;
+        }
+ 
+        // Check if name already exists
+        if (savedBookmarks.some(bm => bm.name.toLowerCase() === name.toLowerCase())) {
+            if (!confirm(`A bookmark named "${name}" already exists. Overwrite it?`)) {
+                return;
+            }
+            // Note: The backend currently doesn't support direct overwrite via POST,
+            // it might return an error. Ideally, the backend would handle upsert
+            // or we'd need a PUT/PATCH endpoint. For now, we proceed and let the
+            // backend handle potential conflicts (or we could delete first).
+            // Let's assume the backend handles it or returns a useful error.
+        }
+ 
+        console.log("Saving bookmark:", name, params);
+        const bookmarkData = { name, params };
+ 
+        try {
+            const response = await fetch('/api/user/search-bookmarks', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(bookmarkData)
+            });
+            const result = await response.json();
+            if (result.success) {
+                console.log("Bookmark saved successfully.");
+                alert(`Bookmark "${name}" saved!`);
+                newBookmarkNameInput.value = ''; // Clear input
+                fetchAndPopulateBookmarks(); // Refresh the list
+            } else {
+                console.error("Failed to save bookmark:", result.message);
+                alert(`Error saving bookmark: ${result.message || 'Unknown error'}`);
+            }
+        } catch (error) {
+            console.error('Error saving bookmark:', error);
+            alert(`Network error saving bookmark: ${error.message}`);
+        }
+    }
+ 
+    async function deleteBookmark() { // Make async
+        if (!savedSearchSelect || !savedSearchSelect.value) {
+            alert("Please select a bookmark to delete.");
+            return;
+        }
+        const name = savedSearchSelect.value;
+        if (!confirm(`Are you sure you want to delete the bookmark "${name}"?`)) {
+            return;
+        }
+ 
+        console.log("Deleting bookmark:", name);
+        // URL encode the name in case it contains special characters
+        const encodedName = encodeURIComponent(name);
+ 
+        try {
+            const response = await fetch(`/api/user/search-bookmarks/${encodedName}`, {
+                method: 'DELETE'
+            });
+            const result = await response.json(); // Even DELETE might return JSON
+            if (result.success) {
+                console.log("Bookmark deleted successfully.");
+                alert(`Bookmark "${name}" deleted.`);
+                fetchAndPopulateBookmarks(); // Refresh the list
+            } else {
+                 // Handle cases where deletion might fail (e.g., not found, permissions)
+                 console.error("Failed to delete bookmark:", result.message);
+                 alert(`Error deleting bookmark: ${result.message || 'Unknown error'}`);
+            }
+        } catch (error) {
+             console.error('Error deleting bookmark:', error);
+             alert(`Network error deleting bookmark: ${error.message}`);
+        }
+    }
+
+    // --- Game Status Chart Functions ---
+    async function fetchAndRenderGameStatusChart() {
+        const canvasElement = document.getElementById('gameStatusChart');
+        const errorElement = document.getElementById('chart-error');
+        if (!canvasElement) {
+            console.warn('Game status chart canvas element not found.');
+            return;
+        }
+        if (errorElement) errorElement.textContent = ''; // Clear previous errors
+
+        try {
+            console.log('Fetching game status stats...');
+            const response = await fetch('/api/stats/game-status');
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const result = await response.json();
+
+            if (result.success && Array.isArray(result.stats)) {
+                console.log('Game status stats received:', result.stats);
+                const labels = result.stats.map(item => item.status);
+                const data = result.stats.map(item => item.count);
+
+                const ctx = canvasElement.getContext('2d');
+
+                // Destroy previous chart instance if it exists
+                if (gameStatusChartInstance) {
+                    console.log('Destroying previous game status chart instance.');
+                    gameStatusChartInstance.destroy();
+                }
+
+                // Define some colors (can be expanded or customized)
+                const backgroundColors = [
+                    'rgba(54, 162, 235, 0.7)', // Blue
+                    'rgba(75, 192, 192, 0.7)', // Green
+                    'rgba(255, 206, 86, 0.7)', // Yellow
+                    'rgba(153, 102, 255, 0.7)', // Purple
+                    'rgba(255, 99, 132, 0.7)',  // Red
+                    'rgba(255, 159, 64, 0.7)',  // Orange
+                    'rgba(201, 203, 207, 0.7)'  // Grey
+                ];
+                const borderColors = backgroundColors.map(color => color.replace('0.7', '1')); // Make borders solid
+
+                console.log('Rendering game status chart...');
+                gameStatusChartInstance = new Chart(ctx, {
+                    type: 'pie', // Or 'bar', 'doughnut'
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Game Count by Status',
+                            data: data,
+                            backgroundColor: backgroundColors.slice(0, data.length), // Use defined colors
+                            borderColor: borderColors.slice(0, data.length),
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            legend: {
+                                position: 'top',
+                            },
+                            title: {
+                                display: true,
+                                text: 'Game Status Distribution'
+                            }
+                        }
+                    }
+                });
+            } else if (result.success && result.stats.length === 0) {
+                 console.log('No game status data to display.');
+                 if (errorElement) errorElement.textContent = 'No game status data available.';
+                 // Optionally destroy old chart if data becomes empty
+                 if (gameStatusChartInstance) {
+                    gameStatusChartInstance.destroy();
+                    gameStatusChartInstance = null;
+                 }
+            } else {
+                throw new Error(result.message || 'Failed to fetch or parse game status stats.');
+            }
+        } catch (error) {
+            console.error('Error fetching or rendering game status chart:', error);
+            if (errorElement) {
+                errorElement.textContent = `Error loading chart: ${error.message}`;
+            }
+             // Optionally destroy old chart on error
+             if (gameStatusChartInstance) {
+                gameStatusChartInstance.destroy();
+                gameStatusChartInstance = null;
+             }
+        }
+    }
+
+
+ 
+    // --- Game Selection Change Handler ---
+    if (gameSelector) {
+        gameSelector.addEventListener('change', (e) => {
+            const selectedGame = e.target.value;
+            fetchAndDisplayGameState(selectedGame);
+        });
+    }
+ 
+    // --- Command Type Change Handler ---
+    if (commandTypeSelect) {
+        commandTypeSelect.addEventListener('change', (e) => {
+            const selectedCommand = e.target.value;
+            generateCommandOptions(selectedCommand); // Generate specific options
+            updateGeneratedCommandText(); // Update text area immediately if possible
+        });
+    }
+ 
+    // --- Send Command Button Handler ---
+    if (sendButton) {
+        sendButton.addEventListener('click', () => sendCommand());
+    }
+ 
+    // --- Textarea Enter Key Handler ---
+    if (generatedCommandTextarea) {
+        generatedCommandTextarea.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) { // Send on Enter, allow newline with Shift+Enter
+                e.preventDefault(); // Prevent default Enter behavior (newline)
+                sendCommand();
+            }
+        });
+        // Update command text on any input change in the textarea itself
+        generatedCommandTextarea.addEventListener('input', updateGeneratedCommandText);
+    }
+ 
+    // --- Refresh State Button ---
+    if (refreshStateButton) {
+        refreshStateButton.addEventListener('click', () => {
+            const selectedGame = targetGameInput.value;
+            if (selectedGame) {
+                fetchAndDisplayGameState(selectedGame);
+                // Optionally show a small visual confirmation
+                 refreshStateButton.textContent = 'Refreshing...';
+                 setTimeout(() => { refreshStateButton.textContent = 'Refresh State'; }, 1500);
+            } else {
+                alert("Please select a game first.");
+            }
+        });
+    }
+ 
+    // --- Clear Credentials Button ---
+    if (clearCredentialsButton) {
+        clearCredentialsButton.addEventListener('click', () => {
+             if (confirm("Are you sure you want to clear the selected target game and its stored password/variant?")) {
+                if (gameSelector) gameSelector.value = ''; // Reset dropdown
+                targetGameInput.value = ''; // Clear hidden input
+                if (targetPasswordInput) targetPasswordInput.value = ''; // Clear password field
+                if (targetVariantInput) targetVariantInput.value = ''; // Clear variant field
+                eraseCookie('targetGame'); // Erase game cookie
+                clearAllCredentials(); // Clear stored credentials from local storage
+                fetchAndDisplayGameState(null); // Clear the game state sidebar and command generator
+                alert("Target game and credentials cleared.");
+             }
+        });
+    }
+ 
+    // --- Password/Variant Input Handling ---
+    if (targetPasswordInput) {
+        targetPasswordInput.addEventListener('input', saveCredentialsForGame); // Save on input
+    }
+    if (targetVariantInput) {
+        targetVariantInput.addEventListener('input', saveCredentialsForGame); // Save on input
+    }
+ 
+    // --- Initial Load ---
+    initializeDashboard(); // Fetch initial data (games, state, prefs, bookmarks)
 
     function populateGameSelector(games) {
         if (!gameSelector) return;
         const currentSelectedGame = gameSelector.value; // Preserve selection if possible
         gameSelector.innerHTML = '<option value="">-- Select Target Game --</option>'; // Default option
-        games.sort((a, b) => a.name.localeCompare(b.name)).forEach(game => {
+
+        // Apply sorting based on user preference
+        const sortOrder = userPreferences.sort_order;
+        games.sort((a, b) => {
+            let compareA, compareB;
+            switch (sortOrder) {
+                case 'name_desc':
+                    compareA = b.name; compareB = a.name; break;
+                case 'status_asc':
+                    compareA = a.status || 'Unknown'; compareB = b.status || 'Unknown'; break;
+                case 'status_desc':
+                    compareA = b.status || 'Unknown'; compareB = a.status || 'Unknown'; break;
+                case 'name_asc': // Default
+                default:
+                    compareA = a.name; compareB = a.name; break;
+            }
+            return compareA.localeCompare(compareB);
+        });
+        games.forEach(game => { // Sorting is done above now
             const option = document.createElement('option');
             option.value = game.name;
             option.textContent = `${game.name} (${game.status || 'Unknown'})`;
@@ -107,7 +796,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Game State Handling ---
     function fetchAndDisplayGameState(gameName) {
         if (!gameName) {
-            currentGameData = null;
+            window.currentGameData = null; // Store globally
             updateGameStateSidebar(null);
             updateCommandGenerator(null); // Update recommendations for "no game" context
             targetGameInput.value = '';
@@ -123,7 +812,7 @@ document.addEventListener('DOMContentLoaded', () => {
             .then(data => {
                 if (data.success) {
                     console.log("[fetchAndDisplayGameState] Received game state and recommendations:", data);
-                    currentGameData = data.gameState; // Store full state
+                    window.currentGameData = data.gameState; // Store globally
                     updateGameStateSidebar(currentGameData);
                     updateCommandGenerator(data.recommendedCommands); // Update commands based on fetched state
                     targetGameInput.value = gameName; // Update hidden input
@@ -132,7 +821,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else {
                     console.error(`Failed to fetch game state for ${gameName}:`, data.message);
                     gameStateSidebar.innerHTML = `<p class="text-red-600">Error loading state for ${gameName}: ${data.message}</p>`;
-                    currentGameData = null;
+                    window.currentGameData = null; // Store globally
                     updateCommandGenerator(null); // Reset recommendations
                     loadCredentialsForGame(gameName); // Still try to load credentials
                 }
@@ -140,13 +829,14 @@ document.addEventListener('DOMContentLoaded', () => {
             .catch(error => {
                 console.error(`Error fetching game state for ${gameName}:`, error);
                 gameStateSidebar.innerHTML = `<p class="text-red-600">Network error loading state for ${gameName}.</p>`;
-                currentGameData = null;
+                window.currentGameData = null; // Store globally
                 updateCommandGenerator(null);
                 loadCredentialsForGame(gameName);
             });
     }
 
     function updateGameStateSidebar(gameState) {
+        const visibility = userPreferences.column_visibility;
         if (!gameStateSidebar) return;
 
         if (!gameState) {
@@ -201,32 +891,47 @@ document.addEventListener('DOMContentLoaded', () => {
         const lastUpdatedStr = gameState.lastUpdated ? new Date(gameState.lastUpdated * 1000).toLocaleString() : 'N/A';
         const observerLink = `https://www.floc.net/observer.py?partie=${gameState.name}`;
 
-        gameStateSidebar.innerHTML = `
-            <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Game State: ${gameState.name}</h2>
-            <div class="space-y-2 text-sm">
-                <div><strong class="text-primary w-24 inline-block">Status:</strong> ${gameState.status || 'Unknown'}</div>
-                <div><strong class="text-primary w-24 inline-block">Phase:</strong> ${gameState.currentPhase || 'Unknown'}</div>
-                <div><strong class="text-primary w-24 inline-block">Deadline:</strong> ${deadlineStr}</div>
-                <div><strong class="text-primary w-24 inline-block">Variant:</strong> ${gameState.variant || 'Standard'} ${gameState.options && gameState.options.length > 0 ? `(${gameState.options.join(', ')})` : ''}</div>
-                <div><strong class="text-primary w-24 inline-block">Masters:</strong> ${gameState.masters && gameState.masters.length > 0 ? gameState.masters.join(', ') : 'N/A'}</div>
-                <div><strong class="text-primary w-24 inline-block">Observers:</strong> ${gameState.observers ? gameState.observers.length : 'N/A'}</div>
+        // Build HTML conditionally based on visibility preferences
+        let sidebarHtml = `<h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Game State: ${gameState.name}</h2><div class="space-y-2 text-sm">`;
 
-                ${gameState.players && gameState.players.length > 0 ? `
+        if (visibility.status) sidebarHtml += `<div><strong class="text-primary w-24 inline-block">Status:</strong> ${gameState.status || 'Unknown'}</div>`;
+        if (visibility.phase) sidebarHtml += `<div><strong class="text-primary w-24 inline-block">Phase:</strong> ${gameState.currentPhase || 'Unknown'}</div>`;
+        if (visibility.deadline) sidebarHtml += `<div><strong class="text-primary w-24 inline-block">Deadline:</strong> ${deadlineStr}</div>`;
+        if (visibility.variant) sidebarHtml += `<div><strong class="text-primary w-24 inline-block">Variant:</strong> ${gameState.variant || 'Standard'} ${gameState.options && gameState.options.length > 0 ? `(${gameState.options.join(', ')})` : ''}</div>`;
+        if (visibility.masters) sidebarHtml += `<div><strong class="text-primary w-24 inline-block">Masters:</strong> ${gameState.masters && gameState.masters.length > 0 ? gameState.masters.join(', ') : 'N/A'}</div>`;
+        if (visibility.observers) sidebarHtml += `<div><strong class="text-primary w-24 inline-block">Observers:</strong> ${gameState.observers ? gameState.observers.length : 'N/A'}</div>`;
+
+        if (visibility.players) {
+            if (gameState.players && gameState.players.length > 0) {
+                sidebarHtml += `
                     <div class="pt-2 mt-2 border-t border-gray-200">
                         <strong class="text-primary block mb-1">Players (${gameState.players.length}):</strong>
                         ${playersHtml}
-                    </div>
-                ` : '<div><strong class="text-primary w-24 inline-block">Players:</strong> N/A</div>'}
+                    </div>`;
+            } else {
+                sidebarHtml += '<div><strong class="text-primary w-24 inline-block">Players:</strong> N/A</div>';
+            }
+        }
 
-                 ${gameState.settings && Object.keys(gameState.settings).length > 0 ? `
+        if (visibility.settings) {
+             if (gameState.settings && Object.keys(gameState.settings).length > 0) {
+                sidebarHtml += `
                     <div class="pt-2 mt-2 border-t border-gray-200">
                         <strong class="text-primary block mb-1">Settings:</strong>
                         ${settingsHtml}
-                    </div>
-                 ` : ''}
-            </div>
-            <p class="text-xs text-gray-500 mt-4">(State last updated: ${lastUpdatedStr})</p>
-        `;
+                    </div>`;
+             } else if (gameState.settings) { // Show N/A only if settings object exists but is empty
+                 sidebarHtml += '<div><strong class="text-primary w-24 inline-block">Settings:</strong> N/A</div>';
+             }
+        }
+
+        sidebarHtml += `</div>`; // Close space-y-2 div
+
+        if (visibility.lastUpdated) {
+            sidebarHtml += `<p class="text-xs text-gray-500 mt-4">(State last updated: ${lastUpdatedStr})</p>`;
+        }
+
+        gameStateSidebar.innerHTML = sidebarHtml;
     }
 
     // --- Credential Handling (Password + Variant) ---
@@ -1116,6 +1821,159 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
 
+    // --- Game Management Elements ---
+    const addGameForm = document.getElementById('add-game-form');
+    const addGameNameInput = document.getElementById('add-game-name');
+    const addGameVariantInput = document.getElementById('add-game-variant');
+    const addGamePasswordInput = document.getElementById('add-game-password');
+    // const addGameBtn = document.getElementById('add-game-btn'); // Not needed directly, using form submit
+    const removeGameBtn = document.getElementById('remove-game-btn');
+    const removeGamePasswordInput = document.getElementById('remove-game-password');
+    const gameManagementFeedbackDiv = document.getElementById('game-management-feedback');
+    // gameSelector is already defined earlier
+
+    // --- Helper Function for Game Management Feedback ---
+    function displayGameManagementFeedback(message, isError = false) {
+        if (!gameManagementFeedbackDiv) return;
+        // Clear previous feedback first
+        gameManagementFeedbackDiv.innerHTML = '';
+
+        const p = document.createElement('p');
+        p.textContent = message;
+        p.className = ` ${isError ? 'text-red-600 font-semibold' : 'text-green-600 font-semibold'}`;
+        gameManagementFeedbackDiv.appendChild(p);
+
+        // Optional: Clear feedback after a few seconds?
+        // setTimeout(() => {
+        //     if (gameManagementFeedbackDiv.contains(p)) {
+        //         gameManagementFeedbackDiv.removeChild(p);
+        //     }
+        // }, 5000); // Clear after 5 seconds
+    }
+
+    // --- Add Game Logic ---
+    if (addGameForm) {
+        addGameForm.addEventListener('submit', async (event) => {
+            event.preventDefault(); // Prevent standard form submission
+            displayGameManagementFeedback('Adding game...', false);
+
+            const gameName = addGameNameInput.value.trim();
+            const variant = addGameVariantInput.value.trim();
+            const password = addGamePasswordInput.value.trim(); // Optional
+
+            if (!gameName || !variant) {
+                displayGameManagementFeedback('Game Name and Variant are required.', true);
+                return;
+            }
+
+            const body = { gameName, variant };
+            if (password) {
+                body.password = password;
+            }
+
+            try {
+                const response = await fetch('/api/games', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const result = await response.json();
+
+                if (response.ok && result.success) {
+                    displayGameManagementFeedback(`Game '${gameName}' added successfully. Refreshing list...`, false);
+                    addGameForm.reset(); // Clear the form fields
+                    await fetchAndPopulateGames(); // Refresh the game list
+                    // Attempt to select the newly added game in the dropdown
+                    if(gameSelector) {
+                        // Need a slight delay for the list to potentially repopulate? Or trust fetchAndPopulateGames handles it.
+                        setTimeout(() => {
+                             if (Array.from(gameSelector.options).some(opt => opt.value === gameName)) {
+                                gameSelector.value = gameName;
+                                // Trigger change event to load state etc.
+                                gameSelector.dispatchEvent(new Event('change'));
+                                console.log(`Selected newly added game: ${gameName}`);
+                             } else {
+                                console.log(`Newly added game ${gameName} not found in selector after refresh.`);
+                             }
+                        }, 100); // Small delay
+                    }
+                } else {
+                    // Use the error message from the backend if available
+                    throw new Error(result.message || `Failed to add game (Status: ${response.status})`);
+                }
+            } catch (error) {
+                console.error('Error adding game:', error);
+                displayGameManagementFeedback(`Error adding game: ${error.message}`, true);
+            }
+        });
+    }
+
+    // --- Remove Game Logic ---
+    if (removeGameBtn && gameSelector) { // Ensure both button and selector exist
+        removeGameBtn.addEventListener('click', async () => {
+            const gameName = gameSelector.value;
+            const password = removeGamePasswordInput.value.trim(); // Optional
+
+            if (!gameName) {
+                displayGameManagementFeedback('Please select a game to remove from the "Target Game" dropdown.', true);
+                return;
+            }
+
+            // Confirmation dialog
+            if (!confirm(`Are you sure you want to permanently REMOVE the game "${gameName}"?\n\nThis action cannot be undone.`)) {
+                displayGameManagementFeedback('Remove operation cancelled.', false);
+                return;
+            }
+
+            displayGameManagementFeedback(`Removing game '${gameName}'...`, false);
+
+            const body = {};
+            if (password) {
+                body.password = password;
+            }
+
+            try {
+                const fetchOptions = {
+                    method: 'DELETE',
+                    headers: {}, // Initialize headers
+                };
+                // Only add Content-Type and body if password is provided
+                if (password) {
+                    fetchOptions.headers['Content-Type'] = 'application/json';
+                    fetchOptions.body = JSON.stringify(body);
+                }
+
+                const response = await fetch(`/api/games/${encodeURIComponent(gameName)}`, fetchOptions);
+                const result = await response.json(); // Assume backend sends JSON
+
+                if (response.ok && result.success) {
+                    displayGameManagementFeedback(`Game '${gameName}' removed successfully. Refreshing list...`, false);
+                    removeGamePasswordInput.value = ''; // Clear password field
+                    const previouslySelectedGame = window.currentGameData ? window.currentGameData.name : null;
+
+                    await fetchAndPopulateGames(); // Refresh list (removes game from dropdown)
+
+                    // If the removed game was the one currently displayed, clear the sidebar/commands
+                    if (previouslySelectedGame === gameName) {
+                         console.log(`Clearing state as removed game (${gameName}) was selected.`);
+                         updateGameStateSidebar(null); // Clear sidebar
+                         updateCommandGenerator(null); // Clear command generator recommendations
+                         targetGameInput.value = ''; // Clear hidden input
+                         // Optionally clear password/variant fields too? Handled by clear credentials button usually.
+                    }
+                } else {
+                     // Use the error message from the backend if available
+                    throw new Error(result.message || `Failed to remove game (Status: ${response.status})`);
+                }
+            } catch (error) {
+                console.error('Error removing game:', error);
+                displayGameManagementFeedback(`Error removing game: ${error.message}`, true);
+            }
+        });
+    }
+
+
+
     // --- Text Area Enter Key Listener ---
     if (generatedCommandTextarea) {
         generatedCommandTextarea.addEventListener('keydown', (event) => {
@@ -1128,5 +1986,169 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Initial Load ---
     initializeDashboard();
+
+
+
+    // --- News System --- 
+    const newsSection = document.getElementById('news-section');
+    const addNewsForm = document.getElementById('add-news-form');
+    const newsContentInput = document.getElementById('news-content');
+    const addNewsFeedback = document.getElementById('add-news-feedback');
+    const newsErrorDiv = document.getElementById('news-error');
+    const newsSectionContainer = document.getElementById('news-section-container'); // Get the container
+
+    // --- Hypothetical Admin Check --- 
+    // Replace this with actual logic based on user roles/permissions from the server
+    // For now, let's assume admin if the user email is 'admin@example.com' or if no email is present (guest?)
+    const isAdmin = !window.currentUserEmail || window.currentUserEmail === 'admin@example.com'; 
+    console.log("Is Admin (for news):", isAdmin);
+
+    // --- Function to Fetch and Display News --- 
+    async function fetchAndDisplayNews() {
+        if (!newsSection || !newsErrorDiv) return; // Elements not found
+        newsSection.innerHTML = '<p class="text-gray-500 italic">Loading news...</p>'; // Show loading state
+        newsErrorDiv.textContent = ''; // Clear previous errors
+
+        try {
+            const response = await fetch('/api/news');
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const result = await response.json();
+
+            if (result.success && Array.isArray(result.news)) {
+                newsSection.innerHTML = ''; // Clear loading/previous content
+                if (result.news.length === 0) {
+                    newsSection.innerHTML = '<p class="text-gray-500 italic">No news items yet.</p>';
+                } else {
+                    result.news.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)); // Sort newest first
+                    result.news.forEach(item => {
+                        const newsItemDiv = document.createElement('div');
+                        newsItemDiv.className = 'p-3 border border-gray-200 rounded-md bg-white shadow-sm';
+                        
+                        const timestamp = new Date(item.timestamp);
+                        const formattedTime = !isNaN(timestamp) ? timestamp.toLocaleString() : 'Invalid Date';
+
+                        let contentHTML = `
+                            <p class="text-gray-800 mb-1">${item.content}</p>
+                            <p class="text-xs text-gray-500">Posted: ${formattedTime}</p>
+                        `;
+
+                        if (isAdmin) {
+                            contentHTML += `
+                                <button 
+                                    class="delete-news-btn btn btn-danger btn-sm mt-2" 
+                                    data-id="${item._id}"
+                                    title="Delete this news item"
+                                >
+                                    Delete
+                                </button>
+                            `;
+                        }
+                        
+                        newsItemDiv.innerHTML = contentHTML;
+                        newsSection.appendChild(newsItemDiv);
+                    });
+                }
+            } else {
+                throw new Error(result.message || 'Failed to fetch news or invalid format.');
+            }
+        } catch (error) {
+            console.error('Error fetching news:', error);
+            newsSection.innerHTML = '<p class="text-red-600 italic">Could not load news.</p>'; // Clear loading, show error in main section
+            newsErrorDiv.textContent = `Error loading news: ${error.message}`; // Show specific error below
+        }
+    }
+
+    // --- Event Listener for Adding News --- 
+    if (addNewsForm && newsContentInput && addNewsFeedback) {
+        if (isAdmin) {
+            addNewsForm.classList.remove('hidden'); // Show form for admins
+        }
+
+        addNewsForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            addNewsFeedback.textContent = ''; // Clear previous feedback
+            const content = newsContentInput.value.trim();
+
+            if (!content) {
+                addNewsFeedback.textContent = 'News content cannot be empty.';
+                addNewsFeedback.className = 'text-sm mt-2 text-red-600';
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/news', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content })
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    newsContentInput.value = ''; // Clear textarea
+                    addNewsFeedback.textContent = 'News added successfully!';
+                    addNewsFeedback.className = 'text-sm mt-2 text-green-600';
+                    fetchAndDisplayNews(); // Refresh the news list
+                } else {
+                    throw new Error(result.message || 'Failed to add news.');
+                }
+            } catch (error) {
+                console.error('Error adding news:', error);
+                addNewsFeedback.textContent = `Error: ${error.message}`;
+                addNewsFeedback.className = 'text-sm mt-2 text-red-600';
+            }
+        });
+    }
+
+    // --- Event Listener for Deleting News (Event Delegation) --- 
+    if (newsSection) {
+        newsSection.addEventListener('click', async (e) => {
+            if (e.target.classList.contains('delete-news-btn')) {
+                const button = e.target;
+                const newsId = button.dataset.id;
+                
+                if (!newsId) {
+                    console.error('Delete button clicked but no ID found.');
+                    newsErrorDiv.textContent = 'Error: Could not identify news item to delete.';
+                    return;
+                }
+
+                if (!confirm('Are you sure you want to delete this news item?')) {
+                    return;
+                }
+
+                newsErrorDiv.textContent = ''; // Clear previous errors
+                button.disabled = true; // Prevent double clicks
+                button.textContent = 'Deleting...';
+
+                try {
+                    const response = await fetch(`/api/news/${newsId}`, {
+                        method: 'DELETE'
+                    });
+                    const result = await response.json();
+
+                    if (result.success) {
+                        console.log('News item deleted successfully:', newsId);
+                        fetchAndDisplayNews(); // Refresh the list
+                    } else {
+                        throw new Error(result.message || 'Failed to delete news item.');
+                    }
+                } catch (error) {
+                    console.error('Error deleting news:', error);
+                    newsErrorDiv.textContent = `Error deleting news: ${error.message}`;
+                     // Re-enable button on error if needed, or let refresh handle it
+                    // button.disabled = false;
+                    // button.textContent = 'Delete'; 
+                }
+            }
+        });
+    }
+
+    // --- Initial Load --- 
+    if (newsSectionContainer) { // Only fetch if the container exists on the page
+        fetchAndDisplayNews();
+    }
+
 
 }); // End DOMContentLoaded

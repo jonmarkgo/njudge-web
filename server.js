@@ -62,7 +62,41 @@ db.serialize(() => {
              });
         }
     });
+
+    // Create user_preferences table
+    db.run(`CREATE TABLE IF NOT EXISTS user_preferences (
+        user_id TEXT NOT NULL,      -- User's email address
+        preference_key TEXT NOT NULL, -- e.g., 'column_visibility', 'sort_order'
+        preference_value TEXT,      -- JSON string or simple value
+        PRIMARY KEY (user_id, preference_key)
+    )`, (err) => {
+        if (err) console.error("Error creating user_preferences table:", err);
+        else console.log("User preferences table ensured.");
+    });
 });
+
+    // Create saved_searches table
+    db.run(`CREATE TABLE IF NOT EXISTS saved_searches (
+        user_id TEXT NOT NULL,      -- User's email address
+        bookmark_name TEXT NOT NULL, -- User-defined name for the search
+        search_params TEXT,         -- JSON string containing filter criteria
+        PRIMARY KEY (user_id, bookmark_name)
+    )`, (err) => {
+        if (err) console.error("Error creating saved_searches table:", err);
+        else console.log("Saved searches table ensured.");
+    });
+
+
+    // Create news_items table
+    db.run(`CREATE TABLE IF NOT EXISTS news_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        content TEXT NOT NULL
+    )`, (err) => {
+        if (err) console.error("Error creating news_items table:", err);
+        else console.log("News items table ensured.");
+    });
+
 
 // Initialize User Tracking DB
 userDb.serialize(() => {
@@ -205,6 +239,273 @@ const getAllGameStates = () => {
                         states[row.name] = row;
                     }
                 }); resolve(states);
+            }
+        });
+    });
+};
+
+
+// Get filtered game states based on criteria
+const getFilteredGameStates = (filters = {}) => {
+    return new Promise((resolve, reject) => {
+        let query = "SELECT * FROM game_states";
+        const whereClauses = [];
+        const params = [];
+
+        if (filters.status) {
+            whereClauses.push("status = ?");
+            params.push(filters.status);
+        }
+        if (filters.variant) {
+            whereClauses.push("variant = ?");
+            params.push(filters.variant);
+        }
+        if (filters.phase) {
+            whereClauses.push("currentPhase = ?");
+            params.push(filters.phase);
+        }
+        if (filters.player) {
+            // Check if the player's email exists within the 'players' JSON array
+            // Requires SQLite 3.9.0+ for JSON functions
+            whereClauses.push("EXISTS (SELECT 1 FROM json_each(players) WHERE json_extract(value, '$.email') = ?)");
+            params.push(filters.player);
+        }
+        // Add more filters here if needed (e.g., master, observer)
+
+        if (whereClauses.length > 0) {
+            query += " WHERE " + whereClauses.join(" AND ");
+        }
+
+        query += " ORDER BY name ASC";
+
+        db.all(query, params, (err, rows) => {
+            if (err) {
+                console.error("[DB Error] Failed to read filtered game states:", err, "Query:", query, "Params:", params);
+                reject(err);
+            } else {
+                const states = {};
+                rows.forEach(row => {
+                    try {
+                        // Safely parse JSON fields
+                        row.masters = JSON.parse(row.masters || '[]');
+                        row.players = JSON.parse(row.players || '[]');
+                        row.observers = JSON.parse(row.observers || '[]');
+                        row.options = JSON.parse(row.options || '[]');
+                        row.settings = JSON.parse(row.settings || '{}');
+                        states[row.name] = row;
+                    } catch (parseError) {
+                        console.error(`[DB Error] Failed to parse JSON state for game ${row.name} in getFilteredGameStates:`, parseError);
+                        // Assign defaults on parse error
+                        row.masters = []; row.players = []; row.observers = []; row.options = []; row.settings = {};
+                        states[row.name] = row;
+                    }
+                });
+                resolve(states);
+            }
+        });
+    });
+};
+
+
+// Get game counts grouped by status
+const getGameCountsByStatus = () => {
+    return new Promise((resolve, reject) => {
+        db.all("SELECT status, COUNT(*) as count FROM game_states GROUP BY status ORDER BY status", [], (err, rows) => {
+            if (err) {
+                console.error("[DB Error] Failed to get game counts by status:", err);
+                reject(err);
+            } else {
+                // Ensure 'count' is a number
+                const results = rows.map(row => ({ status: row.status, count: Number(row.count) }));
+                resolve(results);
+            }
+        });
+    });
+};
+
+
+// --- User Preference DB Helpers ---
+
+// Get all preferences for a user
+const getUserPreferences = (userId) => {
+    return new Promise((resolve, reject) => {
+        db.all("SELECT preference_key, preference_value FROM user_preferences WHERE user_id = ?", [userId], (err, rows) => {
+            if (err) {
+                console.error(`[DB Error] Failed to get preferences for user ${userId}:`, err);
+                reject(err);
+            } else {
+                const preferences = {};
+                rows.forEach(row => {
+                    try {
+                        // Attempt to parse if it looks like JSON, otherwise return as string
+                        if ((row.preference_value?.startsWith('{') && row.preference_value?.endsWith('}')) || (row.preference_value?.startsWith('[') && row.preference_value?.endsWith(']'))) {
+                            preferences[row.preference_key] = JSON.parse(row.preference_value);
+                        } else {
+                            preferences[row.preference_key] = row.preference_value;
+                        }
+                    } catch (parseError) {
+                        console.warn(`[DB Warn] Failed to parse preference '${row.preference_key}' for user ${userId}. Returning raw value. Error:`, parseError);
+                        preferences[row.preference_key] = row.preference_value; // Return raw value on parse error
+                    }
+                });
+                resolve(preferences);
+            }
+        });
+    });
+};
+
+// Set or update a specific preference for a user
+const setUserPreference = (userId, key, value) => {
+    return new Promise((resolve, reject) => {
+        // Convert non-string values (like objects/arrays) to JSON strings for storage
+        const valueToStore = (typeof value === 'string' || value === null || value === undefined) ? value : JSON.stringify(value);
+        db.run("INSERT OR REPLACE INTO user_preferences (user_id, preference_key, preference_value) VALUES (?, ?, ?)",
+            [userId, key, valueToStore],
+            (err) => {
+                if (err) {
+                    console.error(`[DB Error] Failed to set preference '${key}' for user ${userId}:`, err);
+                    reject(err);
+                } else {
+                    resolve();
+                }
+            }
+        );
+    });
+};
+
+// Delete a specific preference for a user
+const deleteUserPreference = (userId, key) => {
+    return new Promise((resolve, reject) => {
+        db.run("DELETE FROM user_preferences WHERE user_id = ? AND preference_key = ?", [userId, key], function(err) {
+            if (err) {
+                console.error(`[DB Error] Failed to delete preference '${key}' for user ${userId}:`, err);
+                reject(err);
+            } else {
+                resolve(this.changes > 0); // Returns true if a row was deleted
+            }
+        });
+    });
+};
+
+// Delete all preferences for a user
+const deleteAllUserPreferences = (userId) => {
+    return new Promise((resolve, reject) => {
+        db.run("DELETE FROM user_preferences WHERE user_id = ?", [userId], function(err) {
+            if (err) {
+                console.error(`[DB Error] Failed to delete all preferences for user ${userId}:`, err);
+                reject(err);
+            } else {
+                resolve(this.changes); // Returns the number of rows deleted
+            }
+        });
+    });
+};
+
+
+// --- Saved Search Bookmark DB Helpers ---
+
+// Get all saved searches for a user
+const getSavedSearches = (userId) => {
+    return new Promise((resolve, reject) => {
+        db.all("SELECT bookmark_name, search_params FROM saved_searches WHERE user_id = ? ORDER BY bookmark_name ASC", [userId], (err, rows) => {
+            if (err) {
+                console.error(`[DB Error] Failed to get saved searches for user ${userId}:`, err);
+                reject(err);
+            } else {
+                const bookmarks = rows.map(row => ({
+                    name: row.bookmark_name,
+                    params: JSON.parse(row.search_params || '{}') // Parse JSON params
+                }));
+                resolve(bookmarks);
+            }
+        });
+    });
+};
+
+// Save or update a specific saved search for a user
+const saveSavedSearch = (userId, bookmarkName, searchParams) => {
+    return new Promise((resolve, reject) => {
+        const paramsString = JSON.stringify(searchParams || {});
+        db.run("INSERT OR REPLACE INTO saved_searches (user_id, bookmark_name, search_params) VALUES (?, ?, ?)",
+            [userId, bookmarkName, paramsString],
+            (err) => {
+                if (err) {
+                    console.error(`[DB Error] Failed to save search bookmark '${bookmarkName}' for user ${userId}:`, err);
+                    reject(err);
+                } else {
+                    console.log(`[DB Success] Saved search bookmark '${bookmarkName}' for user ${userId}`);
+                    resolve();
+                }
+            }
+        );
+    });
+};
+
+// Delete a specific saved search for a user
+const deleteSavedSearch = (userId, bookmarkName) => {
+    return new Promise((resolve, reject) => {
+        db.run("DELETE FROM saved_searches WHERE user_id = ? AND bookmark_name = ?", [userId, bookmarkName], function(err) {
+            if (err) {
+                console.error(`[DB Error] Failed to delete search bookmark '${bookmarkName}' for user ${userId}:`, err);
+                reject(err);
+            } else {
+                console.log(`[DB Success] Deleted search bookmark '${bookmarkName}' for user ${userId} (if existed)`);
+                resolve(this.changes > 0); // Returns true if a row was deleted
+            }
+        });
+    });
+};
+
+
+// --- News DB Helpers ---
+
+// Get all news items, ordered by timestamp descending
+const getAllNewsItems = () => {
+    return new Promise((resolve, reject) => {
+        db.all("SELECT id, timestamp, content FROM news_items ORDER BY timestamp DESC", [], (err, rows) => {
+            if (err) {
+                console.error("[DB Error] Failed to get news items:", err);
+                reject(err);
+            } else {
+                resolve(rows);
+            }
+        });
+    });
+};
+
+// Add a new news item
+const addNewsItem = (content) => {
+    return new Promise((resolve, reject) => {
+        if (!content || typeof content !== 'string' || content.trim().length === 0) {
+            return reject(new Error('News content cannot be empty.'));
+        }
+        db.run("INSERT INTO news_items (content) VALUES (?)", [content.trim()], function(err) {
+            if (err) {
+                console.error("[DB Error] Failed to add news item:", err);
+                reject(err);
+            } else {
+                console.log(`[DB Success] Added news item with ID: ${this.lastID}`);
+                resolve(this.lastID); // Return the ID of the newly inserted item
+            }
+        });
+    });
+};
+
+// Delete a news item by ID
+const deleteNewsItem = (id) => {
+    return new Promise((resolve, reject) => {
+        db.run("DELETE FROM news_items WHERE id = ?", [id], function(err) {
+            if (err) {
+                console.error(`[DB Error] Failed to delete news item with ID ${id}:`, err);
+                reject(err);
+            } else {
+                if (this.changes > 0) {
+                    console.log(`[DB Success] Deleted news item with ID: ${id}`);
+                    resolve(true); // Indicate success
+                } else {
+                    console.log(`[DB Info] No news item found with ID: ${id} to delete.`);
+                    resolve(false); // Indicate item not found
+                }
             }
         });
     });
@@ -1077,6 +1378,17 @@ function requireEmail(req, res, next) {
     next();
 }
 
+// Middleware to require authentication for API routes
+function requireAuth(req, res, next) {
+    if (req.session && req.session.email) {
+        // Attach userId (email) to the request object for convenience in route handlers
+        req.userId = req.session.email;
+        next(); // User is authenticated, proceed
+    } else {
+        res.status(401).json({ success: false, message: 'Authentication required.' });
+    }
+}
+
 // --- Routes ---
 
 app.get('/', (req, res) => {
@@ -1266,17 +1578,38 @@ async function syncDipMaster() {
     return { gamesFromMaster, syncError };
 }
 
-// API endpoint to get all game names and basic status
+// API endpoint to get game list, optionally filtered
 app.get('/api/games', requireEmail, async (req, res) => {
     try {
-        // Sync before getting list to ensure it's up-to-date
-        await syncDipMaster();
-        const gameStates = await getAllGameStates();
-        // Return only essential info for the dropdown
+        // Extract filter parameters from query string
+        const filters = {
+            status: req.query.status,
+            variant: req.query.variant,
+            phase: req.query.phase,
+            player: req.query.player // e.g., ?player=user@example.com
+            // Add other potential filters here
+        };
+
+        // Remove undefined filters
+        Object.keys(filters).forEach(key => filters[key] === undefined && delete filters[key]);
+
+        // Sync before getting list (optional, depending on desired freshness vs performance)
+        // Consider if sync is needed every time for filtered lists
+        // await syncDipMaster();
+
+        // Fetch games using the filter function
+        const gameStates = await getFilteredGameStates(filters);
+
+        // Return essential info (or full state if needed by frontend)
         const gameList = Object.values(gameStates).map(g => ({
             name: g.name,
             status: g.status,
-            phase: g.currentPhase
+            variant: g.variant,
+            phase: g.currentPhase,
+            players: g.players.map(p => p.email), // Example: return player emails
+            masters: g.masters,
+            nextDeadline: g.nextDeadline
+            // Add other fields as needed by the frontend display
         }));
         res.json({ success: true, games: gameList });
     } catch (err) {
@@ -1310,12 +1643,189 @@ app.get('/api/game/:gameName', requireEmail, async (req, res) => {
         res.json({ success: true, gameState, recommendedCommands });
     } catch (err) {
         console.error(`[API Error] /api/game/${gameName}:`, err);
+
+
+// --- Saved Search Bookmark API Endpoints ---
+
+// GET all saved search bookmarks for the logged-in user
+app.get('/api/user/search-bookmarks', requireAuth, async (req, res) => {
+    const userId = req.session.email;
+    try {
+        const bookmarks = await getSavedSearches(userId);
+        res.json({ success: true, bookmarks });
+    } catch (err) {
+        console.error(`[API Error] /api/user/search-bookmarks GET for ${userId}:`, err);
+        res.status(500).json({ success: false, message: "Failed to retrieve saved searches." });
+    }
+});
+
+// POST to save/update a search bookmark for the logged-in user
+app.post('/api/user/search-bookmarks', requireAuth, async (req, res) => {
+    const userId = req.session.email;
+    const { name, params } = req.body;
+
+    if (!name || typeof name !== 'string' || name.trim().length === 0) {
+        return res.status(400).json({ success: false, message: "Bookmark name is required." });
+    }
+    if (!params || typeof params !== 'object') {
+        return res.status(400).json({ success: false, message: "Search parameters (params) object is required." });
+    }
+
+    try {
+        await saveSavedSearch(userId, name.trim(), params);
+        res.json({ success: true, message: `Bookmark '${name.trim()}' saved successfully.` });
+    } catch (err) {
+        console.error(`[API Error] /api/user/search-bookmarks POST for ${userId}:`, err);
+        res.status(500).json({ success: false, message: "Failed to save bookmark." });
+    }
+});
+
+// DELETE a specific search bookmark for the logged-in user
+app.delete('/api/user/search-bookmarks/:name', requireAuth, async (req, res) => {
+    const userId = req.session.email;
+    // Decode the name from the URL parameter
+    const bookmarkName = decodeURIComponent(req.params.name);
+
+    if (!bookmarkName) {
+         return res.status(400).json({ success: false, message: "Bookmark name parameter is required." });
+    }
+
+    try {
+        const deleted = await deleteSavedSearch(userId, bookmarkName);
+        if (deleted) {
+            res.json({ success: true, message: `Bookmark '${bookmarkName}' deleted successfully.` });
+        } else {
+            res.status(404).json({ success: false, message: `Bookmark '${bookmarkName}' not found.` });
+        }
+    } catch (err) {
+        console.error(`[API Error] /api/user/search-bookmarks DELETE for ${userId}:`, err);
+        res.status(500).json({ success: false, message: "Failed to delete bookmark." });
+    }
+});
+
         res.status(500).json({ success: false, message: `Failed to retrieve game state for ${gameName}.` });
     }
 });
 
 
+// --- Saved Search Bookmark API Endpoints ---
+
+// GET all saved search bookmarks for the logged-in user
+app.get('/api/user/search-bookmarks', requireAuth, async (req, res) => {
+    const userId = req.session.email;
+    try {
+        const bookmarks = await getSavedSearches(userId);
+        res.json({ success: true, bookmarks });
+    } catch (err) {
+        console.error(`[API Error] /api/user/search-bookmarks GET for ${userId}:`, err);
+        res.status(500).json({ success: false, message: "Failed to retrieve saved searches." });
+    }
+});
+
+// POST to save/update a search bookmark for the logged-in user
+app.post('/api/user/search-bookmarks', requireAuth, async (req, res) => {
+    const userId = req.session.email;
+    const { name, params } = req.body;
+
+    if (!name || typeof name !== 'string' || name.trim().length === 0) {
+        return res.status(400).json({ success: false, message: "Bookmark name is required." });
+    }
+    if (!params || typeof params !== 'object') {
+        return res.status(400).json({ success: false, message: "Search parameters (params) object is required." });
+    }
+
+    try {
+        await saveSavedSearch(userId, name.trim(), params);
+        res.json({ success: true, message: `Bookmark '${name.trim()}' saved successfully.` });
+    } catch (err) {
+        console.error(`[API Error] /api/user/search-bookmarks POST for ${userId}:`, err);
+        res.status(500).json({ success: false, message: "Failed to save bookmark." });
+    }
+});
+
+// DELETE a specific search bookmark for the logged-in user
+app.delete('/api/user/search-bookmarks/:name', requireAuth, async (req, res) => {
+    const userId = req.session.email;
+    // Decode the name from the URL parameter
+    const bookmarkName = decodeURIComponent(req.params.name);
+
+    if (!bookmarkName) {
+         return res.status(400).json({ success: false, message: "Bookmark name parameter is required." });
+    }
+
+    try {
+        const deleted = await deleteSavedSearch(userId, bookmarkName);
+        if (deleted) {
+            res.json({ success: true, message: `Bookmark '${bookmarkName}' deleted successfully.` });
+        } else {
+            res.status(404).json({ success: false, message: `Bookmark '${bookmarkName}' not found.` });
+        }
+    } catch (err) {
+        console.error(`[API Error] /api/user/search-bookmarks DELETE for ${userId}:`, err);
+        res.status(500).json({ success: false, message: "Failed to delete bookmark." });
+    }
+});
+
+
 // Main dashboard route
+
+// --- News API Endpoints ---
+
+// GET all news items (public)
+app.get('/api/news', async (req, res) => {
+    try {
+        const newsItems = await getAllNewsItems();
+        res.json({ success: true, news: newsItems });
+    } catch (err) {
+        console.error("[API Error] /api/news GET:", err);
+        res.status(500).json({ success: false, message: "Failed to retrieve news items." });
+    }
+});
+
+// POST a new news item (protected)
+// Make sure express.json() middleware is used globally or add it here if needed
+app.post('/api/news', requireAuth, express.json(), async (req, res) => {
+    const { content } = req.body;
+    const userId = req.session.email; // Identify who is posting
+
+    if (!content) {
+        return res.status(400).json({ success: false, message: "Missing 'content' in request body." });
+    }
+
+    try {
+        const newNewsId = await addNewsItem(content);
+        console.log(`[API Success] User ${userId} added news item ID: ${newNewsId}`);
+        res.status(201).json({ success: true, message: "News item added successfully.", newsId: newNewsId });
+    } catch (err) {
+        console.error(`[API Error] /api/news POST by ${userId}:`, err);
+        res.status(500).json({ success: false, message: err.message || "Failed to add news item." });
+    }
+});
+
+// DELETE a news item by ID (protected)
+app.delete('/api/news/:id', requireAuth, async (req, res) => {
+    const newsId = parseInt(req.params.id, 10); // Ensure ID is an integer
+    const userId = req.session.email; // Identify who is deleting
+
+    if (isNaN(newsId)) {
+        return res.status(400).json({ success: false, message: "Invalid news item ID." });
+    }
+
+    try {
+        const deleted = await deleteNewsItem(newsId);
+        if (deleted) {
+            console.log(`[API Success] User ${userId} deleted news item ID: ${newsId}`);
+            res.json({ success: true, message: `News item ${newsId} deleted successfully.` });
+        } else {
+            res.status(404).json({ success: false, message: `News item ${newsId} not found.` });
+        }
+    } catch (err) {
+        console.error(`[API Error] /api/news DELETE by ${userId} for ID ${newsId}:`, err);
+        res.status(500).json({ success: false, message: "Failed to delete news item." });
+    }
+});
+
+
 app.get('/dashboard', requireEmail, async (req, res) => {
     const email = req.session.email;
     let errorMessage = req.session.errorMessage || null;
@@ -1559,6 +2069,169 @@ app.post('/execute-dip', requireEmail, async (req, res) => {
              output: error.output || 'Unknown execution error',
              isSignOnOrObserveSuccess: false
         });
+
+// Endpoint to add a new game
+app.post('/api/games', requireAuth, async (req, res) => {
+    // Basic implementation: requires gameName and variant in the body.
+    // TODO: Extend to handle more complex ADDGAME parameters (press, deadlines, players etc.)
+    const { gameName, variant, ...otherOptions } = req.body;
+    const userEmail = req.session.email;
+
+    if (!gameName || !variant) {
+        return res.status(400).json({ error: 'Missing required parameters: gameName, variant' });
+    }
+
+    // Construct the ADDGAME command string - basic version
+    // This might need refinement based on the exact njudge dip CLI syntax for options
+    let commandParts = ['ADDGAME', gameName, variant];
+    // Example: Add other options if they exist (needs specific CLI format knowledge)
+    // Object.entries(otherOptions).forEach(([key, value]) => {
+    //     commandParts.push(`${key.toUpperCase()}=${value}`); // Placeholder format
+    // });
+    const command = commandParts.join(' ');
+
+    console.log(`[API /api/games POST] User ${userEmail} attempting command: ${command}`);
+
+    try {
+        // Using executeDipCommand to run the ADDGAME command
+        const result = await executeDipCommand(userEmail, command, gameName, null, variant);
+        console.log(`[API /api/games POST] Command successful for ${gameName}. Output:\n${result.stdout}`);
+        // Optionally trigger a game list refresh here
+        res.status(201).json({ message: `Game '${gameName}' creation initiated.`, output: result.stdout });
+    } catch (error) {
+        console.error(`[API /api/games POST] Error executing ADDGAME command for ${gameName}:`, error);
+        // Try to provide more specific status codes based on common errors
+        const statusCode = error.output?.includes('Spawn failed') ? 503 :
+                           error.stderr?.includes('already exists') ? 409 : // Conflict
+                           500; // Default internal server error
+        res.status(statusCode).json({
+            error: `Failed to add game '${gameName}'.`,
+            details: error.stderr || error.message || 'Unknown error',
+            stdout: error.stdout // Include stdout as it might contain partial info
+        });
+    }
+});
+
+// Endpoint to remove a game
+app.delete('/api/games/:gameName', requireAuth, async (req, res) => {
+    const { gameName } = req.params;
+    // Password might be needed for REMOVEGAME, potentially passed in body
+    const { password } = req.body;
+    const userEmail = req.session.email;
+
+    if (!gameName) {
+        // Should not happen with route definition, but good practice
+        return res.status(400).json({ error: 'Missing gameName in path parameter.' });
+    }
+
+    // Construct the REMOVEGAME command string
+    const command = `REMOVEGAME ${gameName}`;
+
+    console.log(`[API /api/games DELETE] User ${userEmail} attempting command: ${command} for game ${gameName}`);
+
+    try {
+        // Pass password to executeDipCommand if provided
+        const result = await executeDipCommand(userEmail, command, gameName, password);
+        console.log(`[API /api/games DELETE] Command successful for ${gameName}. Output:\n${result.stdout}`);
+        // Optionally trigger game list refresh or remove from DB here
+        res.status(200).json({ message: `Game '${gameName}' removal initiated.`, output: result.stdout });
+    } catch (error) {
+        console.error(`[API /api/games DELETE] Error executing REMOVEGAME command for ${gameName}:`, error);
+         // Try to provide more specific status codes
+        const statusCode = error.output?.includes('Spawn failed') ? 503 :
+                           error.stderr?.includes('No such game') ? 404 : // Not Found
+                           error.stderr?.includes('incorrect password') ? 401 : // Unauthorized (or 403 Forbidden)
+                           500; // Default internal server error
+        res.status(statusCode).json({
+            error: `Failed to remove game '${gameName}'.`,
+            details: error.stderr || error.message || 'Unknown error',
+            stdout: error.stdout
+        });
+    }
+});
+
+
+
+// --- User Preference API Endpoints ---
+
+// GET all preferences for the logged-in user
+app.get('/api/user/preferences', requireAuth, async (req, res) => {
+    try {
+        const preferences = await getUserPreferences(req.userId);
+        res.json({ success: true, preferences });
+    } catch (error) {
+        console.error(`[API Error] GET /api/user/preferences failed for user ${req.userId}:`, error);
+        res.status(500).json({ success: false, message: 'Failed to retrieve preferences.' });
+    }
+});
+
+// POST (set/update) multiple preferences for the logged-in user
+app.post('/api/user/preferences', requireAuth, express.json(), async (req, res) => {
+    const preferencesToSet = req.body; // Expects an object like { key1: value1, key2: value2 }
+    if (typeof preferencesToSet !== 'object' || preferencesToSet === null) {
+        return res.status(400).json({ success: false, message: 'Invalid request body. Expected a JSON object of preferences.' });
+    }
+
+    const promises = [];
+    for (const key in preferencesToSet) {
+        if (Object.hasOwnProperty.call(preferencesToSet, key)) {
+            promises.push(setUserPreference(req.userId, key, preferencesToSet[key]));
+        }
+    }
+
+    try {
+        await Promise.all(promises);
+        res.json({ success: true, message: 'Preferences updated successfully.' });
+    } catch (error) {
+        console.error(`[API Error] POST /api/user/preferences failed for user ${req.userId}:`, error);
+        res.status(500).json({ success: false, message: 'Failed to update preferences.' });
+
+// --- Public Stats API Endpoints ---
+
+// GET /api/stats/game-status - Get game counts by status
+app.get('/api/stats/game-status', async (req, res) => {
+    try {
+        const gameCounts = await getGameCountsByStatus();
+        res.json(gameCounts);
+    } catch (error) {
+        console.error("Error fetching game status stats:", error);
+        res.status(500).json({ message: "Failed to retrieve game status statistics." });
+    }
+});
+
+    }
+});
+
+// DELETE a specific preference key for the logged-in user
+app.delete('/api/user/preferences/:key', requireAuth, async (req, res) => {
+    const keyToDelete = req.params.key;
+    if (!keyToDelete) {
+        return res.status(400).json({ success: false, message: 'Preference key parameter is required.' });
+    }
+
+    try {
+        const deleted = await deleteUserPreference(req.userId, keyToDelete);
+        if (deleted) {
+            res.json({ success: true, message: `Preference '${keyToDelete}' deleted.` });
+        } else {
+            res.status(404).json({ success: false, message: `Preference '${keyToDelete}' not found.` });
+        }
+    } catch (error) {
+        console.error(`[API Error] DELETE /api/user/preferences/${keyToDelete} failed for user ${req.userId}:`, error);
+        res.status(500).json({ success: false, message: 'Failed to delete preference.' });
+    }
+});
+
+// POST reset all preferences for the logged-in user
+app.post('/api/user/preferences/reset', requireAuth, async (req, res) => {
+    try {
+        const count = await deleteAllUserPreferences(req.userId);
+        res.json({ success: true, message: `Reset ${count} preferences.` });
+    } catch (error) {
+        console.error(`[API Error] POST /api/user/preferences/reset failed for user ${req.userId}:`, error);
+        res.status(500).json({ success: false, message: 'Failed to reset preferences.' });
+    }
+});
     }
 
 // NEW ENDPOINT START

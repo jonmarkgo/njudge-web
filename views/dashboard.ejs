@@ -10,6 +10,88 @@
     </div>
 <% } %>
 
+
+<!-- News System -->
+<div id="news-section-container" class="card mb-6">
+    <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">System News</h2>
+
+    <!-- Add News Form (Initially hidden, shown for admins) -->
+    <form id="add-news-form" class="mb-4 hidden">
+        <label for="news-content" class="block text-sm font-medium text-gray-700 mb-1">Add New Announcement:</label>
+        <textarea id="news-content" name="content" rows="3" required class="input text-sm w-full mb-2" placeholder="Enter news content here..."></textarea>
+        <button type="submit" class="btn btn-primary text-sm">Add News</button>
+        <div id="add-news-feedback" class="text-sm mt-2"></div> <!-- Feedback area -->
+    </form>
+
+    <!-- News Display Area -->
+    <div id="news-section" class="space-y-3">
+        <p class="text-gray-500 italic">Loading news...</p> <%# Placeholder while loading %>
+    </div>
+    <div id="news-error" class="text-red-600 text-sm mt-2"></div> <!-- Error display area -->
+</div>
+
+<!-- Filter and Bookmarks Bar -->
+<div class="card mb-6">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <!-- Filters -->
+        <div>
+            <h3 class="text-lg font-semibold text-gray-800 mb-3 border-b pb-2">Filter Games</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                    <label for="filter-status" class="block text-sm font-medium text-gray-700 mb-1">Status:</label>
+                    <select id="filter-status" class="input text-sm">
+                        <option value="">All</option>
+                        <option value="active">Active</option>
+                        <option value="finished">Finished</option>
+                        <%# Add other relevant statuses if needed %>
+                    </select>
+                </div>
+                <div>
+                    <label for="filter-variant" class="block text-sm font-medium text-gray-700 mb-1">Variant:</label>
+                    <input type="text" id="filter-variant" placeholder="e.g., standard, chaos" class="input text-sm">
+                </div>
+                <div>
+                    <label for="filter-player-email" class="block text-sm font-medium text-gray-700 mb-1">Player Email:</label>
+                    <input type="text" id="filter-player-email" placeholder="player@example.com" class="input text-sm">
+                </div>
+                <div>
+                    <label for="filter-phase" class="block text-sm font-medium text-gray-700 mb-1">Phase:</label>
+                    <input type="text" id="filter-phase" placeholder="e.g., S1901M, F1901M" class="input text-sm">
+                </div>
+            </div>
+            <div class="mt-4">
+                <button id="apply-filters-btn" class="btn btn-primary text-sm">Apply Filters</button>
+                 <button id="clear-filters-btn" class="btn btn-secondary text-sm ml-2">Clear Filters</button> <%# Added Clear Button %>
+            </div>
+        </div>
+
+        <!-- Saved Searches (Bookmarks) -->
+        <div>
+            <h3 class="text-lg font-semibold text-gray-800 mb-3 border-b pb-2">Saved Searches</h3>
+            <div class="space-y-3">
+                <div>
+                    <label for="saved-search-select" class="block text-sm font-medium text-gray-700 mb-1">Load Saved Search:</label>
+                    <div class="flex gap-2">
+                        <select id="saved-search-select" class="input text-sm flex-grow">
+                            <option value="">-- Select Bookmark --</option>
+                            <%# Options populated by JS %>
+                        </select>
+                        <button id="apply-bookmark-btn" class="btn btn-secondary text-sm flex-shrink-0">Apply</button>
+                        <button id="delete-bookmark-btn" class="btn btn-danger text-sm flex-shrink-0" title="Delete Selected Bookmark">Delete</button>
+                    </div>
+                </div>
+                <div>
+                    <label for="new-bookmark-name" class="block text-sm font-medium text-gray-700 mb-1">Save Current Filters As:</label>
+                     <div class="flex gap-2">
+                        <input type="text" id="new-bookmark-name" placeholder="Enter bookmark name" class="input text-sm flex-grow">
+                        <button id="save-bookmark-btn" class="btn btn-secondary text-sm flex-shrink-0">Save</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Top Control Bar: Game Selection, Password, Variant -->
 <div class="card mb-6">
     <div class="flex flex-wrap items-center gap-4">
@@ -46,6 +128,61 @@
     </div>
      <p class="text-xs text-orange-600 mt-2">Warning: Game password and variant stored in browser cookies for convenience. Clear target/sign out to remove.</p>
 </div>
+
+
+<!-- Game Management -->
+<div class="card mb-6">
+    <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Game Management</h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <!-- Add Game Form -->
+        <div>
+            <h3 class="text-lg font-semibold text-gray-800 mb-3">Add New Game</h3>
+            <form id="add-game-form" class="space-y-3">
+                <div>
+                    <label for="add-game-name" class="block text-sm font-medium text-gray-700 mb-1">Game Name:</label>
+                    <input type="text" id="add-game-name" name="gameName" required class="input text-sm" placeholder="e.g., my_new_game">
+                </div>
+                <div>
+                    <label for="add-game-variant" class="block text-sm font-medium text-gray-700 mb-1">Variant:</label>
+                    <input type="text" id="add-game-variant" name="variant" required class="input text-sm" placeholder="e.g., standard">
+                    <p class="text-xs text-gray-500 mt-1">Specify the game variant (e.g., standard, chaos).</p>
+                </div>
+                 <div>
+                    <label for="add-game-password" class="block text-sm font-medium text-gray-700 mb-1">Master Password (Optional):</label>
+                    <input type="password" id="add-game-password" name="password" class="input text-sm" placeholder="If required by variant/settings">
+                     <p class="text-xs text-gray-500 mt-1">Only needed if the game requires a master password on creation.</p>
+                </div>
+                <button type="submit" id="add-game-btn" class="btn btn-primary text-sm">Create Game</button>
+            </form>
+        </div>
+
+        <!-- Remove Game Section -->
+        <div>
+            <h3 class="text-lg font-semibold text-gray-800 mb-3">Remove Game</h3>
+            <p class="text-sm text-gray-600 mb-3">Select a game from the "Target Game" dropdown above, then click remove.</p>
+            <div>
+                 <label for="remove-game-password" class="block text-sm font-medium text-gray-700 mb-1">Master Password (if required):</label>
+                 <input type="password" id="remove-game-password" class="input text-sm mb-3" placeholder="Enter master password if needed">
+            </div>
+            <button id="remove-game-btn" class="btn btn-danger text-sm">Remove Selected Game</button>
+            <p class="text-xs text-orange-600 mt-2">Warning: This action is irreversible.</p>
+        </div>
+    </div>
+    <!-- Area for displaying add/remove feedback -->
+    <div id="game-management-feedback" class="mt-4 text-sm"></div>
+</div>
+
+
+<!-- Statistics Section -->
+<div class="card mb-6">
+    <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Game Statistics</h2>
+    <div class="max-w-md mx-auto">
+        <canvas id="gameStatusChart"></canvas>
+    </div>
+    <div id="chart-error" class="text-red-600 text-sm mt-2 text-center"></div> <!-- Error display area for chart -->
+</div>
+
+
 
 
 <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -190,4 +327,5 @@
 
 <%# Client-side script specific to this page is now handled globally in client.js %>
 <%- contentFor('scripts') %>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <%# No dashboard-specific scripts needed here anymore %>
