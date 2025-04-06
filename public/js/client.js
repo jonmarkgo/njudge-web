@@ -1,4 +1,3 @@
-
 // --- Cookie Helper Functions ---
 function setCookie(name, value, days) {
     let expires = "";
@@ -9,7 +8,7 @@ function setCookie(name, value, days) {
     }
     // Add SameSite=Lax for better security, adjust path if needed
     document.cookie = name + "=" + (value || "") + expires + "; path=/; SameSite=Lax";
-    console.log(`Cookie set: ${name}=${value}`);
+    // console.log(`Cookie set: ${name}=${value}`); // Reduce console noise
 }
 
 function getCookie(name) {
@@ -20,11 +19,11 @@ function getCookie(name) {
         while (c.charAt(0) == ' ') c = c.substring(1, c.length);
         if (c.indexOf(nameEQ) == 0) {
             const value = c.substring(nameEQ.length, c.length);
-            console.log(`Cookie get: ${name}=${value}`);
+            // console.log(`Cookie get: ${name}=${value}`); // Reduce console noise
             return value;
         }
     }
-    console.log(`Cookie get: ${name}=null`);
+    // console.log(`Cookie get: ${name}=null`); // Reduce console noise
     return null;
 }
 
@@ -48,9 +47,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const gameStateSidebar = document.getElementById('game-state-sidebar'); // The div containing game state
     const refreshStateButton = document.getElementById('refresh-game-state');
     const clearCredentialsButton = document.getElementById('clear-credentials');
+    const userEmailIndicator = document.getElementById('user-email-indicator');
 
     let currentGameData = null; // Store the detailed state of the selected game
     let allGamesList = []; // Store the list of all games for the selector
+    let currentUserEmail = userEmailIndicator ? userEmailIndicator.dataset.email : null; // Store user email
 
     // --- Initial Setup ---
     function initializeDashboard() {
@@ -68,19 +69,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         targetGameInput.value = initialGame;
                         console.log("Initial game from cookie:", initialGame);
                         fetchAndDisplayGameState(initialGame); // Fetch state for the cookie game
-                    } else if (gameSelector && gameSelector.options.length > 1) {
-                         // If no cookie, but games exist, select the first one? Or leave blank?
-                         // Let's leave it blank initially. User selects.
+                    } else {
                          updateGameStateSidebar(null); // Show empty state
                          updateCommandGenerator(null); // Show default recommendations
+                         loadCredentialsForGame(null); // Ensure clear if no initial game
                          console.log("No initial game cookie or no games found.");
-                    } else {
-                         updateGameStateSidebar(null);
-                         updateCommandGenerator(null);
-                         console.log("No games available.");
                     }
-                    // Load credentials for the initial game
-                    loadCredentialsForGame(initialGame);
                 } else {
                     console.error("Failed to fetch game list:", data.message);
                      updateGameStateSidebar(null); // Show empty state on error
@@ -96,6 +90,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function populateGameSelector(games) {
         if (!gameSelector) return;
+        const currentSelectedGame = gameSelector.value; // Preserve selection if possible
         gameSelector.innerHTML = '<option value="">-- Select Target Game --</option>'; // Default option
         games.sort((a, b) => a.name.localeCompare(b.name)).forEach(game => {
             const option = document.createElement('option');
@@ -103,11 +98,16 @@ document.addEventListener('DOMContentLoaded', () => {
             option.textContent = `${game.name} (${game.status || 'Unknown'})`;
             gameSelector.appendChild(option);
         });
+        // Restore selection if it still exists
+        if (currentSelectedGame && gameSelector.querySelector(`option[value="${currentSelectedGame}"]`)) {
+            gameSelector.value = currentSelectedGame;
+        }
     }
 
     // --- Game State Handling ---
     function fetchAndDisplayGameState(gameName) {
         if (!gameName) {
+            currentGameData = null;
             updateGameStateSidebar(null);
             updateCommandGenerator(null); // Update recommendations for "no game" context
             targetGameInput.value = '';
@@ -122,6 +122,7 @@ document.addEventListener('DOMContentLoaded', () => {
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
+                    console.log("[fetchAndDisplayGameState] Received game state and recommendations:", data);
                     currentGameData = data.gameState; // Store full state
                     updateGameStateSidebar(currentGameData);
                     updateCommandGenerator(data.recommendedCommands); // Update commands based on fetched state
@@ -159,7 +160,6 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 // Attempt to parse common judge formats (e.g., Mon Nov 17 2003 23:31:03 -0600)
                 const date = new Date(gameState.nextDeadline);
-                 // Check if it's a valid date object *and* not the epoch date (which Date() returns for invalid strings)
                 if (!isNaN(date) && date.getTime() !== 0) {
                     deadlineStr = date.toLocaleString();
                 } else {
@@ -173,7 +173,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const playersHtml = (gameState.players && gameState.players.length > 0)
             ? `<ul class="space-y-1 pl-2">
                 ${gameState.players.sort((a, b) => (a.power || '').localeCompare(b.power || '')).map(p => `
-                    <li class="${p.email === document.body.dataset.userEmail ? 'font-semibold text-blue-700' : ''}">
+                    <li class="${p.email === currentUserEmail ? 'font-semibold text-blue-700' : ''}">
                         ${p.power || '???'}:
                         ${p.status && p.status !== 'Playing' && p.status !== 'Waiting'
                             ? `<span class="${['CD', 'Resigned', 'Abandoned', 'Eliminated'].includes(p.status) ? 'text-red-600' : 'text-gray-600'}">(${p.status})</span>`
@@ -187,11 +187,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const settingsHtml = (gameState.settings && Object.keys(gameState.settings).length > 0)
             ? `<ul class="space-y-1 pl-2 text-xs">
-                ${Object.entries(gameState.settings).map(([key, value]) => `<li>${key.charAt(0).toUpperCase() + key.slice(1)}: ${typeof value === 'boolean' ? (value ? 'Yes' : 'No') : value}</li>`).join('')}
+                ${Object.entries(gameState.settings).sort(([keyA], [keyB]) => keyA.localeCompare(keyB)).map(([key, value]) => {
+                    // Simple formatting for boolean/string/number
+                    let displayValue = value;
+                    if (typeof value === 'boolean') displayValue = value ? 'Yes' : 'No';
+                    // Capitalize key
+                    const displayKey = key.charAt(0).toUpperCase() + key.slice(1);
+                    return `<li>${displayKey}: ${displayValue}</li>`;
+                }).join('')}
             </ul>`
             : 'N/A';
 
         const lastUpdatedStr = gameState.lastUpdated ? new Date(gameState.lastUpdated * 1000).toLocaleString() : 'N/A';
+        const observerLink = `https://www.floc.net/observer.py?partie=${gameState.name}`;
 
         gameStateSidebar.innerHTML = `
             <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Game State: ${gameState.name}</h2>
@@ -218,7 +226,7 @@ document.addEventListener('DOMContentLoaded', () => {
                  ` : ''}
             </div>
             <p class="text-xs text-gray-500 mt-4">(State last updated: ${lastUpdatedStr})</p>
-            <a href="https://www.floc.net/observer.py?partie=${gameState.name}" target="_blank" rel="noopener noreferrer" class="text-sm text-primary hover:text-primary/80 mt-4 inline-block underline">View on Floc.net Observer</a>
+            <a href="${observerLink}" target="_blank" rel="noopener noreferrer" class="text-sm text-primary hover:text-primary/80 mt-4 inline-block underline">View on Floc.net Observer</a>
         `;
     }
 
@@ -246,10 +254,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function loadCredentialsForGame(gameName) {
         if (gameName) {
-            const savedPassword = getCookie(`targetPassword_${gameName}`);
-            targetPasswordInput.value = savedPassword || '';
-            const savedVariant = getCookie(`targetVariant_${gameName}`); // Load variant
-            targetVariantInput.value = savedVariant || ''; // Set variant input
+            targetPasswordInput.value = getCookie(`targetPassword_${gameName}`) || '';
+            targetVariantInput.value = getCookie(`targetVariant_${gameName}`) || ''; // Set variant input
         } else {
             targetPasswordInput.value = ''; // Clear if no game selected
             targetVariantInput.value = ''; // Clear variant input too
@@ -276,20 +282,15 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Command Generator Logic ---
     function updateCommandGenerator(recommendedCommands) {
         if (!commandTypeSelect) return;
+        console.log('[updateCommandGenerator] Updating dropdown with recommendations:', recommendedCommands); // Add logging
 
         const currentSelection = commandTypeSelect.value; // Preserve selection if possible
         commandTypeSelect.innerHTML = '<option value="">-- Select Action --</option>'; // Clear existing options
 
-        // Default structure if no recommendations fetched
-        const defaultCommands = {
-             recommended: ['SIGN ON ?', 'SIGN ON ?game', 'SIGN ON power', 'OBSERVE', 'LIST'],
-             gameInfo: ['WHOGAME', 'HISTORY', 'SUMMARY', 'CREATE ?'],
-             playerActions: ['SET PASSWORD', 'SET ADDRESS'],
-             settings: [],
-             master: [],
-             general: ['GET', 'WHOIS', 'HELP', 'VERSION', 'MANUAL']
+        // Use fetched recommendations or a very basic default
+        const commands = recommendedCommands || {
+             recommended: [], gameInfo: ['LIST'], playerActions: [], settings: [], general: ['HELP', 'VERSION', 'MANUAL'], master: []
         };
-        const commands = recommendedCommands || defaultCommands;
 
         const addOptGroup = (label, commandList) => {
             if (commandList && commandList.length > 0) {
@@ -297,18 +298,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 optgroup.label = label;
                 optgroup.className = 'font-semibold bg-gray-100'; // Style optgroup
                 commandList.forEach(cmd => {
-                    // Exclude REGISTER from selector as it has its own page
-                    if (cmd !== 'REGISTER') {
+                    // Exclude REGISTER/SIGN OFF from selector
+                    if (cmd !== 'REGISTER' && cmd !== 'SIGN OFF') {
                         const option = document.createElement('option');
                         option.value = cmd;
                         option.textContent = cmd;
                         optgroup.appendChild(option);
                     }
                 });
-                commandTypeSelect.appendChild(optgroup);
+                if (optgroup.childElementCount > 0) { // Only add if it has options
+                    commandTypeSelect.appendChild(optgroup);
+                }
             }
         };
 
+        // Add groups in a logical order
         addOptGroup('Recommended', commands.recommended);
         addOptGroup('Player Actions', commands.playerActions);
         addOptGroup('Settings & Future Orders', commands.settings);
@@ -334,117 +338,174 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // --- generateCommandOptions: Expanded significantly ---
     function generateCommandOptions(selectedCommand) {
         optionsArea.innerHTML = ''; // Clear previous options
         generatedCommandTextarea.value = ''; // Clear textarea
         generatedCommandTextarea.placeholder = "Configure options above or type command here directly. Do NOT include SIGN OFF."; // Reset placeholder
 
         const targetGame = targetGameInput.value || '<game>'; // Use selected game or placeholder
+        const inputClass = 'input text-sm'; // Consistent input styling
+        const labelClass = 'block text-sm font-medium text-gray-700 mb-1';
+        const helpTextClass = 'text-xs text-gray-500 mt-1';
+        const checkboxClass = 'rounded border-gray-300 text-primary focus:ring-primary mr-2';
 
-        // Add cases based on commands available in njudgedocs.txt
+        // Helper to create form elements
+        const createInput = (id, type, label, placeholder = '', required = false, value = '', help = '', otherAttrs = {}) => {
+            let attrsString = '';
+            for (const [key, val] of Object.entries(otherAttrs)) {
+                attrsString += ` ${key}="${val}"`;
+            }
+            return `
+                <div>
+                    <label for="${id}" class="${labelClass}">${label}${required ? '<span class="text-red-500">*</span>' : ''}:</label>
+                    <input type="${type}" id="${id}" name="${id}" class="${inputClass}" placeholder="${placeholder}" ${required ? 'required' : ''} value="${value}" ${attrsString}>
+                    ${help ? `<p class="${helpTextClass}">${help}</p>` : ''}
+                </div>`;
+        };
+        const createTextarea = (id, label, placeholder = '', required = false, rows = 3, help = '') => {
+             return `
+                <div>
+                    <label for="${id}" class="${labelClass}">${label}${required ? '<span class="text-red-500">*</span>' : ''}:</label>
+                    <textarea id="${id}" name="${id}" class="${inputClass} font-mono min-h-[${rows * 1.5}rem] resize-y" placeholder="${placeholder}" ${required ? 'required' : ''} rows="${rows}"></textarea>
+                    ${help ? `<p class="${helpTextClass}">${help}</p>` : ''}
+                </div>`;
+        };
+        const createSelect = (id, label, options, required = false, help = '') => {
+            const optionsHtml = options.map(opt => `<option value="${opt.value}" ${opt.selected ? 'selected' : ''}>${opt.text}</option>`).join('');
+            return `
+                <div>
+                    <label for="${id}" class="${labelClass}">${label}${required ? '<span class="text-red-500">*</span>' : ''}:</label>
+                    <select id="${id}" name="${id}" class="${inputClass}" ${required ? 'required' : ''}>${optionsHtml}</select>
+                    ${help ? `<p class="${helpTextClass}">${help}</p>` : ''}
+                </div>`;
+        };
+         const createCheckbox = (id, label, checked = false, help = '') => {
+             return `
+                <div class="flex items-center">
+                    <input type="checkbox" id="${id}" name="${id}" class="${checkboxClass}" ${checked ? 'checked' : ''}>
+                    <label for="${id}" class="text-sm font-medium text-gray-700">${label}</label>
+                    ${help ? `<p class="${helpTextClass} ml-1">${help}</p>` : ''}
+                </div>`;
+         };
+         const createSeparator = () => '<hr class="my-3 border-gray-200">';
+         const createInfo = (text) => `<p class="text-sm text-gray-600">${text}</p>`;
+         const createWarning = (text) => `<p class="text-sm text-orange-600">${text}</p>`;
+         const createError = (text) => `<p class="text-sm text-red-600">${text}</p>`;
+
+        let content = '<div class="space-y-3">'; // Use consistent spacing
+
+        // --- Add cases based on commands available in njudgedocs.txt ---
         switch (selectedCommand) {
-            // --- Game Joining/Creation ---
+            // --- General / Info ---
+            case 'GET':
+                content += createInput('get-filename', 'text', 'Filename', 'e.g., info, rules, map, guide, form, flist', true, '', 'See GET flist for available files.');
+                break;
+            case 'HELP':
+            case 'VERSION':
+                content += createInfo(`No parameters needed for ${selectedCommand}.`);
+                break;
+            case 'WHOIS':
+                content += createInput('whois-email', 'text', 'Email Address (or start of)', 'e.g., user@ or user@domain.com', true);
+                break;
+            case 'LIST':
+                content += createInput('list-game-name', 'text', 'Game Name (optional)', targetGame !== '<game>' ? targetGame : '', false, '', 'Leave blank for global list.');
+                content += createCheckbox('list-full', 'Full List (if no game name)?', false, 'Shows player details for all games.');
+                break;
+            case 'HISTORY':
+                content += createInput('hist-game-name', 'text', 'Game Name', targetGame !== '<game>' ? targetGame : '', true);
+                content += createSeparator();
+                content += createInput('hist-from', 'text', 'From Date (optional)', 'e.g., Jan 1 2023 or S1901M', false, '', 'Defaults to 1 week ago.');
+                content += createInput('hist-to', 'text', 'To Date (optional)', 'e.g., Dec 31 2023 or F1905B', false, '', 'Defaults to now.');
+                content += createInput('hist-lines', 'number', 'Max Lines (optional)', 'e.g., 5000', false, '', 'Defaults to 1000.');
+                content += createSeparator();
+                content += createInfo('OR Exclude Range:');
+                content += createInput('hist-exclstart', 'text', 'EXCLSTART turnId', 'e.g., S1903M', false, '', 'Start of range to exclude.');
+                content += createInput('hist-exclend', 'text', 'EXCLEND turnId', 'e.g., F1905B', false, '', 'End of range to exclude (optional).');
+                content += createCheckbox('hist-broad', 'Include Broadcasts (with EXCL)?', false);
+                break;
+            case 'SUMMARY':
+                content += createInput('summary-game-name', 'text', 'Game Name', targetGame !== '<game>' ? targetGame : '', true);
+                break;
+            case 'WHOGAME':
+                content += createInput('whogame-game-name', 'text', 'Game Name', targetGame !== '<game>' ? targetGame : '', true);
+                content += createCheckbox('whogame-full', 'Include Observers (FULL)?', false);
+                break;
+            case 'MAP': // Deprecated but included
+                content += createWarning('MAP command is deprecated. Use Floc.net link in sidebar.');
+                content += createInput('map-game-name', 'text', 'Game Name or *', targetGame !== '<game>' ? targetGame : '', true);
+                content += createCheckbox('map-n', 'Plain Postscript (N)?', false);
+                break;
+
+            // --- Registration / User Account ---
+            case 'REGISTER': // Should not be selectable, handled by separate page
+                 content += createError('Registration is handled via the /register page, not this command generator.');
+                 break;
+            case 'I AM ALSO':
+                 content += createInput('iamalso-old-email', 'email', 'Old Email Address', 'registered@example.com', true, '', 'The email address previously registered with this judge.');
+                 content += createInfo('Send this command from your NEW email address.');
+                 break;
+            case 'SET PASSWORD':
+                 content += createInput('setpass-new-password', 'password', 'New Password', '', true, '', 'Changes password for ALL games on this judge.');
+                 break;
+            case 'SET ADDRESS':
+                 content += createInput('setaddr-new-email', 'email', 'New Reply-To Email (optional)', 'new@example.com', false, '', 'Leave blank to use sending address. Affects ALL games.');
+                 break;
+            case 'GET DEDICATION':
+            case 'INFO PLAYER':
+                 content += createInput('infoplayer-email', 'email', 'Email Address', currentUserEmail || '', true, '', `Defaults to your email (${currentUserEmail}).`);
+                 break;
+
+            // --- Joining / Creating / Observing ---
             case 'CREATE ?':
-                 optionsArea.innerHTML = `
-                    <div class="space-y-4">
-                        <div> <label for="create-game-name" class="block text-sm font-medium text-gray-700 mb-1">New Game Name (max 8 chars):</label> <input type="text" id="create-game-name" required maxlength="8" placeholder="e.g., newgame" class="input"> </div>
-                        <div> <label for="create-password" class="block text-sm font-medium text-gray-700 mb-1">Password:</label> <input type="password" id="create-password" required class="input"> </div>
-                        <div> <label for="create-variant" class="block text-sm font-medium text-gray-700 mb-1">Variant/Options (optional):</label> <input type="text" id="create-variant" placeholder="e.g., Chaos Gunboat" class="input"> </div>
-                        <div class="flex items-center space-x-2"> <input type="checkbox" id="create-become-master" class="rounded border-gray-300 text-primary focus:ring-primary"> <label for="create-become-master" class="text-sm font-medium text-gray-700">Become Master?</label> </div>
-                    </div>`;
+                 content += createInput('create-game-name', 'text', 'New Game Name', 'e.g., newgame', true, '', 'Max 8 alphanumeric chars.', {maxlength: 8});
+                 content += createInput('create-password', 'password', 'Password', '', true);
+                 content += createInput('create-variant', 'text', 'Variant/Options (optional)', 'e.g., Chaos Gunboat', false, '', 'Separate multiple options with spaces.');
+                 content += createCheckbox('create-become-master', 'Become Master?', false, 'Adds BECOME MASTER command.');
+                 break;
+            case 'SIGN ON ?':
+                 content += createInput('signon-next-password', 'password', 'Password', '', true, '', 'Password for the next available forming game.');
+                 break;
+            case 'SIGN ON ?game':
+                 content += createInput('signon-q-game', 'text', 'Game Name', targetGame !== '<game>' ? targetGame : '', true, '', 'Name of the specific forming game.');
+                 content += createInput('signon-q-password', 'password', 'Password', '', true);
+                 content += createInput('signon-q-variant', 'text', 'Variant/Options (if required)', 'e.g., Chaos Gunboat', false, '', 'Must match game settings if specified.');
+                 break;
+            case 'SIGN ON power':
+                 content += createInput('signon-power', 'text', 'Power Initial', 'e.g., F', true, '', 'Single letter (A, E, F, G, I, R, T for standard).', {size: 1, maxlength: 1});
+                 content += createInput('signon-game', 'text', 'Game Name', targetGame !== '<game>' ? targetGame : '', true);
+                 content += createInput('signon-password', 'password', 'Password', '', true);
                  break;
             case 'OBSERVE': case 'WATCH':
-                 optionsArea.innerHTML = `
-                    <div class="space-y-4">
-                        <div> <label for="observe-game" class="block text-sm font-medium text-gray-700 mb-1">Game Name:</label> <input type="text" id="observe-game" required value="${targetGame !== '<game>' ? targetGame : ''}" placeholder="e.g., watchgame" class="input"> </div>
-                        <div> <label for="observe-password" class="block text-sm font-medium text-gray-700 mb-1">Password:</label> <input type="password" id="observe-password" required class="input"> </div>
-                    </div>`;
+                 content += createInput('observe-game', 'text', 'Game Name', targetGame !== '<game>' ? targetGame : '', true);
+                 content += createInput('observe-password', 'password', 'Password', '', true);
                  break;
-             case 'SIGN ON ?': // Sign on to next available
-                 optionsArea.innerHTML = `
-                    <div class="space-y-4">
-                        <div> <label for="signon-next-password" class="block text-sm font-medium text-gray-700 mb-1">Password:</label> <input type="password" id="signon-next-password" required class="input"> </div>
-                    </div>`;
-                break;
-             case 'SIGN ON ?game': // Sign on to specific forming game
-                optionsArea.innerHTML = `
-                    <div class="space-y-4">
-                        <div> <label for="signon-q-game" class="block text-sm font-medium text-gray-700 mb-1">Game Name:</label> <input type="text" id="signon-q-game" required value="${targetGame !== '<game>' ? targetGame : ''}" placeholder="e.g., forminggame" class="input"> </div>
-                        <div> <label for="signon-q-password" class="block text-sm font-medium text-gray-700 mb-1">Password:</label> <input type="password" id="signon-q-password" required class="input"> </div>
-                        <div> <label for="signon-q-variant" class="block text-sm font-medium text-gray-700 mb-1">Variant/Options (if required):</label> <input type="text" id="signon-q-variant" placeholder="e.g., Chaos Gunboat" class="input"> </div>
-                    </div>`;
-                break;
-            case 'SIGN ON power': // Sign on to specific power in existing game
-                optionsArea.innerHTML = `
-                    <div class="space-y-4">
-                        <div>
-                            <label for="signon-power" class="block text-sm font-medium text-gray-700 mb-1">Power Initial:</label>
-                            <input type="text" id="signon-power" size="1" maxlength="1" required placeholder="e.g., F" class="input w-10 inline-block mr-2">
-                            <label for="signon-game" class="inline-block text-sm font-medium text-gray-700 mb-1">Game Name:</label>
-                            <input type="text" id="signon-game" required value="${targetGame !== '<game>' ? targetGame : ''}" placeholder="e.g., mygame" class="input inline-block w-auto flex-grow">
-                        </div>
-                        <div> <label for="signon-password" class="block text-sm font-medium text-gray-700 mb-1">Password:</label> <input type="password" id="signon-password" required class="input"> </div>
-                    </div>`;
-                break;
 
-            // --- Game Info ---
-            case 'LIST': case 'HISTORY': case 'SUMMARY': case 'WHOGAME':
-                 const cmdLowerList = selectedCommand.toLowerCase();
-                 optionsArea.innerHTML = `
-                    <div class="space-y-4">
-                        <div>
-                            <label for="${cmdLowerList}-game-name" class="block text-sm font-medium text-gray-700 mb-1">Game Name (${selectedCommand === 'LIST' ? 'optional' : 'required'}, defaults to target):</label>
-                            <input type="text" id="${cmdLowerList}-game-name" ${selectedCommand !== 'LIST' ? 'required' : ''} value="${targetGame !== '<game>' ? targetGame : ''}" placeholder="e.g., mygame" class="input">
-                        </div>
-                        ${selectedCommand === 'LIST' ? `
-                            <div class="flex items-center space-x-2"> <input type="checkbox" id="list-full" class="rounded border-gray-300 text-primary focus:ring-primary"> <label for="list-full" class="text-sm font-medium text-gray-700">Full List (if no game name)?</label> </div>
-                            <p class="text-sm text-gray-500">(Note: LIST without game name shows all games on server)</p>
-                        ` : ''}
-                        ${selectedCommand === 'HISTORY' ? `
-                            <div> <label for="hist-from" class="block text-sm font-medium text-gray-700 mb-1">From Date (optional):</label> <input type="text" id="hist-from" placeholder="e.g., Jan 1 2023 or S1901M" class="input"> </div>
-                            <div> <label for="hist-to" class="block text-sm font-medium text-gray-700 mb-1">To Date (optional):</label> <input type="text" id="hist-to" placeholder="e.g., Dec 31 2023 or F1905B" class="input"> </div>
-                            <div> <label for="hist-lines" class="block text-sm font-medium text-gray-700 mb-1">Max Lines (optional):</label> <input type="number" id="hist-lines" placeholder="e.g., 5000" class="input"> </div>
-                            <hr class="my-2"> <p class="text-sm text-gray-500">OR Exclude Range:</p>
-                            <div> <label for="hist-exclstart" class="block text-sm font-medium text-gray-700 mb-1">EXCLSTART turnId:</label> <input type="text" id="hist-exclstart" placeholder="e.g., S1903M" class="input"> </div>
-                            <div> <label for="hist-exclend" class="block text-sm font-medium text-gray-700 mb-1">EXCLEND turnId:</label> <input type="text" id="hist-exclend" placeholder="e.g., F1905B" class="input"> </div>
-                            <div class="flex items-center space-x-2"> <input type="checkbox" id="hist-broad" class="rounded border-gray-300 text-primary focus:ring-primary"> <label for="hist-broad" class="text-sm font-medium text-gray-700">Include Broadcasts (with EXCL)?</label> </div>
-                        ` : ''}
-                         ${selectedCommand === 'WHOGAME' ? `
-                            <div class="flex items-center space-x-2"> <input type="checkbox" id="whogame-full" class="rounded border-gray-300 text-primary focus:ring-primary"> <label for="whogame-full" class="text-sm font-medium text-gray-700">Include Observers (FULL)?</label> </div>
-                         ` : ''}
-                    </div>`;
-                break;
-
-            // --- In-Game Actions ---
+            // --- In-Game Player Actions ---
             case 'ORDERS':
-                 optionsArea.innerHTML = `
-                    <div class="space-y-2">
-                        <p class="text-gray-600">Enter orders directly into the text area below.</p>
-                        <p class="text-sm text-gray-500">Example: <code class="bg-gray-100 px-1 py-0.5 rounded">A Par H</code>, <code class="bg-gray-100 px-1 py-0.5 rounded">F Lon - Nth</code>, <code class="bg-gray-100 px-1 py-0.5 rounded">A Mun S A Ber - Sil</code></p>
-                        <p class="text-sm text-gray-500">Separate multiple orders with newlines or commas.</p>
-                        <p class="text-sm text-gray-500">Use specific syntax for Retreats/Builds/Removes if in that phase.</p>
-                        <p class="text-sm text-red-600 font-medium">Remember to specify convoy routes: <code class="bg-gray-100 px-1 py-0.5 rounded">A Lon-Nth-Nwy</code> NOT <code class="bg-gray-100 px-1 py-0.5 rounded">A Lon-Nwy</code>.</p>
-                    </div>`;
+                 content += createInfo('Enter orders directly into the text area below.');
+                 content += createInfo('Example: <code class="bg-gray-100 px-1 py-0.5 rounded">A Par H</code>, <code class="bg-gray-100 px-1 py-0.5 rounded">F Lon - Nth</code>');
+                 content += createInfo('Separate multiple orders with newlines or commas.');
+                 content += createWarning('Specify full convoy routes: <code class="bg-gray-100 px-1 py-0.5 rounded">A Lon-Nth-Nwy</code>');
                  generatedCommandTextarea.placeholder = "Enter orders here...\ne.g., A PAR H\nF BRE - MAO";
                  break;
-            case 'PRESS': case 'BROADCAST': case 'POSTAL PRESS': // Added POSTAL PRESS
-                 optionsArea.innerHTML = `
-                    <div class="space-y-4">
-                        <div> <label for="press-options" class="block text-sm font-medium text-gray-700 mb-1">Press Options (e.g., TO FRG, GREY, FAKE TO A):</label> <input type="text" id="press-options" placeholder="e.g., TO AET, GREY TO R" class="input"> </div>
-                        <div> <label for="press-body" class="block text-sm font-medium text-gray-700 mb-1">Press Message Body:</label> <textarea id="press-body" rows="4" required class="input font-mono text-sm"></textarea> </div>
-                        <p class="text-sm text-gray-500">Command will be: ${selectedCommand} [options]\\n[body]\\nENDPRESS</p>
-                        ${selectedCommand === 'POSTAL PRESS' ? '<p class="text-sm text-orange-600">Note: Postal Press is broadcast-only and delivered after the turn processes.</p>' : ''}
-                    </div>`;
+            case 'PRESS': case 'BROADCAST': case 'POSTAL PRESS':
+                 content += createInput('press-options', 'text', 'Press Options', 'e.g., TO FRG, GREY, FAKE TO A', false, '', 'See docs for TO, GREY, FAKE, etc.');
+                 content += createTextarea('press-body', 'Press Message Body', '', true, 4);
+                 content += createInfo(`Command will be: ${selectedCommand} [options]\\n[body]\\nENDPRESS`);
+                 if (selectedCommand === 'POSTAL PRESS') content += createWarning('Postal Press is broadcast-only and delivered after the turn processes.');
                  generatedCommandTextarea.placeholder = "Enter message body here...";
                  break;
             case 'DIARY':
-                 optionsArea.innerHTML = `
-                    <div class="space-y-4">
-                        <div> <label for="diary-action" class="block text-sm font-medium text-gray-700 mb-1">Action:</label> <select id="diary-action" class="input"> <option value="RECORD" selected>RECORD Entry</option> <option value="LIST">LIST Entries</option> <option value="READ">READ Entry</option> <option value="DELETE">DELETE Entry</option> </select> </div>
-                        <div id="diary-entry-num-div" class="hidden"> <label for="diary-entry-num" class="block text-sm font-medium text-gray-700 mb-1">Entry Number (for READ/DELETE):</label> <input type="number" id="diary-entry-num" class="input"> </div>
-                        <div id="diary-body-div"> <label for="diary-body" class="block text-sm font-medium text-gray-700 mb-1">Diary Entry Body (for RECORD):</label> <textarea id="diary-body" rows="5" class="input font-mono text-sm"></textarea> </div>
-                        <p class="text-sm text-gray-500">For RECORD, the command will be: DIARY RECORD\\n[body]\\nENDPRESS</p>
-                    </div>`;
+                 content += createSelect('diary-action', 'Action', [
+                     {value: 'RECORD', text: 'RECORD Entry', selected: true},
+                     {value: 'LIST', text: 'LIST Entries'},
+                     {value: 'READ', text: 'READ Entry'},
+                     {value: 'DELETE', text: 'DELETE Entry'}
+                 ], true);
+                 content += `<div id="diary-entry-num-div" class="hidden">${createInput('diary-entry-num', 'number', 'Entry Number (for READ/DELETE)', '', false)}</div>`;
+                 content += `<div id="diary-body-div">${createTextarea('diary-body', 'Diary Entry Body (for RECORD)', '', false, 5)}</div>`;
+                 content += createInfo('For RECORD, the command will be: DIARY RECORD\\n[body]\\nENDPRESS');
                  // Need timeout to ensure elements exist before attaching listener
                  setTimeout(() => {
                      const actionSelect = document.getElementById('diary-action');
@@ -455,6 +516,8 @@ document.addEventListener('DOMContentLoaded', () => {
                          const action = actionSelect.value;
                          numDiv.classList.toggle('hidden', action !== 'READ' && action !== 'DELETE');
                          bodyDiv.classList.toggle('hidden', action !== 'RECORD');
+                         qs('#diary-entry-num').required = (action === 'READ' || action === 'DELETE');
+                         qs('#diary-body').required = (action === 'RECORD');
                          updateGeneratedCommandText(); // Update command text when visibility changes
                      };
                      actionSelect.addEventListener('change', updateDiaryFields);
@@ -462,143 +525,181 @@ document.addEventListener('DOMContentLoaded', () => {
                  }, 0);
                  generatedCommandTextarea.placeholder = "Enter diary entry body here for RECORD...";
                  break;
+            case 'RESIGN': case 'WITHDRAW':
+                 content += createInfo(`No parameters needed for ${selectedCommand}.`);
+                 content += createWarning('This must be the last command in the message.');
+                 break;
 
-            // --- Settings & Future Orders ---
-             case 'SET WAIT': case 'SET NOWAIT': case 'SET NOABSENCE': case 'SET NODRAW': case 'SET NOCONCEDE': case 'CLEAR': case 'RESIGN': case 'WITHDRAW':
-                 optionsArea.innerHTML = `<div class="space-y-4"><p class="text-gray-600">No parameters needed for ${selectedCommand}.</p></div>`; break;
-             case 'SET ABSENCE':
-                 optionsArea.innerHTML = `
-                     <div class="space-y-4">
-                         <div> <label for="absence-start" class="block text-sm font-medium text-gray-700 mb-1">Start Date:</label> <input type="text" id="absence-start" required placeholder="e.g., Jan 1 2024 or Mon" class="input"> </div>
-                         <div> <label for="absence-end" class="block text-sm font-medium text-gray-700 mb-1">End Date (optional, defaults to 24h):</label> <input type="text" id="absence-end" placeholder="e.g., Jan 15 2024 or Fri" class="input"> </div>
-                     </div>`; break;
+            // --- In-Game Player Settings / Future Orders ---
+             case 'SET WAIT': case 'SET NOWAIT': case 'SET NOABSENCE': case 'SET NODRAW': case 'SET NOCONCEDE': case 'CLEAR':
+                 content += createInfo(`No parameters needed for ${selectedCommand}.`);
+                 break;
+             case 'SET ABSENCE': case 'SET HOLIDAY': case 'SET VACATION': // Synonyms
+                 content += createInput('absence-start', 'text', 'Start Date', 'e.g., Jan 1 2024 or Mon', true);
+                 content += createInput('absence-end', 'text', 'End Date (optional)', 'e.g., Jan 15 2024 or Fri', false, '', 'Defaults to 24h after start.');
+                 content += createInfo('Affects future deadlines, not the current one.');
+                 break;
              case 'SET DRAW':
-                 optionsArea.innerHTML = `
-                     <div class="space-y-4">
-                         <div> <label for="draw-powers" class="block text-sm font-medium text-gray-700 mb-1">Powers to include (optional, for NoDIAS games):</label> <input type="text" id="draw-powers" placeholder="e.g., AEFG (leave blank for DIAS)" class="input"> </div>
-                     </div>`; break;
+                 content += createInput('draw-powers', 'text', 'Powers to include (optional)', 'e.g., AEFG (NoDIAS only)', false, '', 'Leave blank for DIAS or to include self only in NoDIAS.');
+                 break;
              case 'SET CONCEDE':
-                 optionsArea.innerHTML = `
-                     <div class="space-y-4">
-                         <div> <label for="concede-power" class="block text-sm font-medium text-gray-700 mb-1">Power Initial to Concede To:</label> <input type="text" id="concede-power" size="1" maxlength="1" required placeholder="e.g., F" class="input w-10"> </div>
-                     </div>`; break;
-             case 'SET PASSWORD': // User account setting
-                 optionsArea.innerHTML = `
-                     <div class="space-y-4">
-                         <div> <label for="new-password" class="block text-sm font-medium text-gray-700 mb-1">New Password:</label> <input type="password" id="new-password" required class="input"> </div>
-                         <p class="text-sm text-orange-600">Note: This changes your password for ALL games on this judge.</p>
-                     </div>`; break;
-             case 'SET ADDRESS': // User account setting
-                 optionsArea.innerHTML = `
-                     <div class="space-y-4">
-                         <div> <label for="new-address" class="block text-sm font-medium text-gray-700 mb-1">New Email Address (optional, uses sending address if blank):</label> <input type="email" id="new-address" placeholder="new@example.com" class="input"> </div>
-                         <p class="text-sm text-gray-500">Leave blank to use the address you logged in with.</p>
-                         <p class="text-sm text-orange-600">Note: This changes your reply-to address for ALL games on this judge.</p>
-                     </div>`; break;
-             case 'SET PREFERENCE': // Forming game action
-                 optionsArea.innerHTML = `
-                     <div class="space-y-4">
-                         <div> <label for="preference-list" class="block text-sm font-medium text-gray-700 mb-1">Preference List:</label> <input type="text" id="preference-list" required placeholder="e.g., E[FGR][TAI] or *" class="input"> </div>
-                         <p class="text-sm text-gray-500">Only effective in forming games before powers are assigned.</p>
-                     </div>`; break;
+                 content += createInput('concede-power', 'text', 'Power Initial to Concede To', 'e.g., F', true, '', '', {size: 1, maxlength: 1});
+                 break;
+             case 'SET PREFERENCE':
+                 content += createInput('preference-list', 'text', 'Preference List', 'e.g., E[FGR][TAI] or *', true, '', 'Only effective in forming games.');
+                 break;
              case 'PHASE':
-                 optionsArea.innerHTML = `
-                     <div class="space-y-4">
-                         <div> <label for="phase-season" class="block text-sm font-medium text-gray-700 mb-1">Season:</label> <select id="phase-season" required class="input"> <option value="Spring">Spring</option> <option value="Summer">Summer (Variant)</option> <option value="Fall">Fall</option> <option value="Winter">Winter</option> </select> </div>
-                         <div> <label for="phase-year" class="block text-sm font-medium text-gray-700 mb-1">Year:</label> <input type="number" id="phase-year" required placeholder="e.g., 1905" class="input"> </div>
-                         <div> <label for="phase-type" class="block text-sm font-medium text-gray-700 mb-1">Phase Type:</label> <select id="phase-type" required class="input"> <option value="Movement">Movement</option> <option value="Retreat">Retreat</option> <option value="Adjustment">Adjustment/Build</option> </select> </div>
-                         <p class="text-sm text-gray-500">Enter orders for this future phase below the generated command.</p>
-                     </div>`;
-                 generatedCommandTextarea.placeholder = "Enter future orders here after PHASE command..."; break;
+                 content += createSelect('phase-season', 'Season', [
+                     {value: 'Spring', text: 'Spring'}, {value: 'Summer', text: 'Summer (Variant)'},
+                     {value: 'Fall', text: 'Fall'}, {value: 'Winter', text: 'Winter'}
+                 ], true);
+                 content += createInput('phase-year', 'number', 'Year', 'e.g., 1905', true);
+                 content += createSelect('phase-type', 'Phase Type', [
+                     {value: 'Movement', text: 'Movement'}, {value: 'Retreat', text: 'Retreat'},
+                     {value: 'Adjustment', text: 'Adjustment/Build'}
+                 ], true);
+                 content += createInfo('Enter orders for this future phase below the generated command.');
+                 generatedCommandTextarea.placeholder = "Enter future orders here after PHASE command...";
+                 break;
              case 'IF':
-                 optionsArea.innerHTML = `
-                     <div class="space-y-4">
-                         <div> <label for="if-condition" class="block text-sm font-medium text-gray-700 mb-1">Condition:</label> <input type="text" id="if-condition" required placeholder="e.g., NOT French Army Ruhr AND (Russian Prussia OR Russian Silesia)" class="input"> </div>
-                         <p class="text-sm text-gray-500">Enter orders for the IF block below the generated command, optionally followed by ELSE/ENDIF.</p>
-                     </div>`;
-                 generatedCommandTextarea.placeholder = "IF condition\n  Order1\nELSE\n  Order2\nENDIF"; break;
-
-            // --- General / Info ---
-             case 'GET':
-                 optionsArea.innerHTML = `
-                    <div class="space-y-4">
-                        <div> <label for="get-filename" class="block text-sm font-medium text-gray-700 mb-1">Filename:</label> <input type="text" id="get-filename" required placeholder="e.g., info, rules, map, guide, form, flist" class="input"> </div>
-                    </div>`;
+                 content += createTextarea('if-condition', 'Condition', 'e.g., NOT French Army Ruhr AND (Russian Prussia OR Russian Silesia)', true, 2);
+                 content += createInfo('Enter orders for the IF block below, optionally followed by ELSE/ENDIF.');
+                 generatedCommandTextarea.placeholder = "IF condition\n  Order1\nELSE\n  Order2\nENDIF";
                  break;
-             case 'WHOIS':
-                 optionsArea.innerHTML = `
-                    <div class="space-y-4">
-                        <div> <label for="whois-email" class="block text-sm font-medium text-gray-700 mb-1">Email Address (or start of):</label> <input type="text" id="whois-email" required placeholder="e.g., user@ or user@domain.com" class="input"> </div>
-                    </div>`;
-                 break;
-             case 'HELP': case 'VERSION':
-                  optionsArea.innerHTML = `<div class="space-y-4"><p class="text-gray-600">No parameters needed for ${selectedCommand}.</p></div>`; break;
 
-            // --- Master Only ---
-             case 'SET': // Generic SET for master - Use with caution!
-                 optionsArea.innerHTML = `
-                     <div class="space-y-4">
-                         <p class="text-sm text-red-600">Warning: Master Only. Use specific SET commands if available.</p>
-                         <div> <label for="set-option" class="block text-sm font-medium text-gray-700 mb-1">Option to Set:</label> <input type="text" id="set-option" required placeholder="e.g., DEADLINE, VARIANT, NMR, PRESS" class="input"> </div>
-                         <div> <label for="set-value" class="block text-sm font-medium text-gray-700 mb-1">Value:</label> <input type="text" id="set-value" required placeholder="e.g., Mon Jan 1 2024 23:00, Standard Gunboat, ON, GREY" class="input"> </div>
-                     </div>`;
+            // --- Master Commands ---
+             case 'BECOME MASTER':
+                 content += createWarning('Master Only (usually used with CREATE).');
+                 content += createInfo('Makes the game moderated and assigns you as Master.');
+                 break;
+             case 'SET MODERATE': case 'SET UNMODERATE':
+                 content += createWarning('Master Only.');
+                 content += createInfo(`Changes game moderation status (${selectedCommand.substring(4)}).`);
+                 break;
+             case 'BECOME':
+                 content += createWarning('Master Only.');
+                 content += createInput('become-power', 'text', 'Power Initial or Name', 'e.g., F or France', true);
+                 content += createInfo('Enter commands to be executed as this power below.');
+                 generatedCommandTextarea.placeholder = "Enter commands to run as the specified power...";
+                 break;
+             case 'EJECT':
+                 content += createWarning('Master Only.');
+                 content += createInput('eject-target', 'text', 'Power Initial or Observer Email', 'e.g., F or observer@example.com', true);
+                 break;
+             case 'FORCE BEGIN':
+                 content += createWarning('Master Only.');
+                 content += createInfo('Forces a forming game to start, filling empty slots with abandoned dummies.');
+                 break;
+             case 'PAUSE': case 'RESUME': case 'TERMINATE':
+                 content += createWarning('Master Only.');
+                 content += createInfo(`No parameters needed for ${selectedCommand}.`);
+                 break;
+             case 'PREDICT':
+                 content += createWarning('Master Only.');
+                 content += createInfo('Sends prediction of current turn based on submitted orders to Master.');
+                 break;
+             case 'PROMOTE':
+                 content += createWarning('Master Only.');
+                 content += createInput('promote-observer', 'email', 'Observer Email to Promote', 'observer@example.com', true);
                  break;
              case 'PROCESS':
-                 optionsArea.innerHTML = `
-                     <div class="space-y-4">
-                         <p class="text-sm text-red-600">Warning: Master Only. Processes current turn immediately.</p>
-                         <div> <label for="process-phase" class="block text-sm font-medium text-gray-700 mb-1">Phase to Process (optional but recommended):</label> <input type="text" id="process-phase" placeholder="e.g., F1905R or Fall 1905 Retreat" class="input"> </div>
-                     </div>`; break;
+                 content += createWarning('Master Only.');
+                 content += createInput('process-phase', 'text', 'Phase to Process (optional)', 'e.g., F1905R or Fall 1905 Retreat', false, '', 'Recommended to prevent accidental processing.');
+                 break;
              case 'ROLLBACK':
-                 optionsArea.innerHTML = `
-                     <div class="space-y-4">
-                         <p class="text-sm text-red-600">Warning: Master Only. Reverts game state.</p>
-                         <div> <label for="rollback-turn" class="block text-sm font-medium text-gray-700 mb-1">Turn Number (optional, defaults to last turn):</label> <input type="number" id="rollback-turn" placeholder="e.g., 001" class="input"> </div>
-                     </div>`; break;
-             case 'EJECT':
-                 optionsArea.innerHTML = `
-                     <div class="space-y-4">
-                         <p class="text-sm text-red-600">Warning: Master Only. Removes player/observer.</p>
-                         <div> <label for="eject-target" class="block text-sm font-medium text-gray-700 mb-1">Power Initial or Observer Email:</label> <input type="text" id="eject-target" required placeholder="e.g., F or observer@example.com" class="input"> </div>
-                     </div>`; break;
-             case 'BECOME':
-                 optionsArea.innerHTML = `
-                     <div class="space-y-4">
-                         <p class="text-sm text-red-600">Warning: Master Only. Executes commands as another power.</p>
-                         <div> <label for="become-power" class="block text-sm font-medium text-gray-700 mb-1">Power Initial or Name:</label> <input type="text" id="become-power" required placeholder="e.g., F or France" class="input"> </div>
-                         <p class="text-sm text-gray-500">Enter commands to be executed as this power below the generated command.</p>
-                     </div>`;
-                 generatedCommandTextarea.placeholder = "Enter commands to run as the specified power..."; break;
-             case 'PAUSE': case 'RESUME': case 'TERMINATE': case 'FORCE BEGIN': case 'UNSTART': case 'PROMOTE': // Added PROMOTE
-                  const masterOnlyText = ['PAUSE', 'RESUME', 'TERMINATE', 'FORCE BEGIN', 'UNSTART', 'PROMOTE'].includes(selectedCommand);
-                  optionsArea.innerHTML = `<div class="space-y-4"> ${masterOnlyText ? '<p class="text-sm text-red-600">Warning: Master Only command.</p>' : ''} <p class="text-gray-600">Check docs for parameters for ${selectedCommand}. Enter below if needed.</p> </div>`;
-                  if (selectedCommand === 'PROMOTE') {
-                       optionsArea.innerHTML += `<div> <label for="promote-observer" class="block text-sm font-medium text-gray-700 mb-1">Observer Email to Promote:</label> <input type="email" id="promote-observer" required placeholder="observer@example.com" class="input"> </div>`;
-                  }
+                 content += createWarning('Master Only.');
+                 content += createInput('rollback-turn', 'number', 'Turn Number (optional)', 'e.g., 001', false, '', 'Defaults to last turn. Use 001 to rollback to start.');
+                 break;
+             case 'UNSTART':
+                 content += createWarning('Master Only.');
+                 content += createInfo('Returns game to pre-start state. Only works if no turns processed.');
+                 break;
+
+            // --- Master Settings ---
+             case 'SET': // Generic SET
+                 content += createWarning('Master Only. Use specific SET commands if available.');
+                 content += createInput('set-option', 'text', 'Option to Set', 'e.g., DEADLINE, VARIANT, NMR, PRESS', true);
+                 content += createInput('set-value', 'text', 'Value', 'e.g., Mon Jan 1 2024 23:00, Standard Gunboat, ON, GREY', true);
+                 break;
+             // Add specific SET commands here if desired, or rely on generic SET / MANUAL
+             case 'SET DEADLINE': case 'SET GRACE': case 'SET START':
+                 content += createWarning('Master Only.');
+                 content += createInput(`set-${selectedCommand.toLowerCase()}-date`, 'text', 'Date/Time', 'e.g., Mon Jan 1 23:00 or +24h', true);
+                 break;
+             case 'SET COMMENT':
+                 content += createWarning('Master Only.');
+                 content += createInput('set-comment-text', 'text', 'Comment Text', '', true, '', 'Short comment for brief LIST output.');
+                 break;
+             case 'SET COMMENT BEGIN':
+                  content += createWarning('Master Only.');
+                  content += createTextarea('set-comment-begin-text', 'Comment Text', '', true, 4, 'Long comment for full LIST output. Ends with SIGN OFF.');
                   break;
-             // Add specific Master SET commands here if desired (e.g., SET DEADLINE, SET VARIANT)
-             // ...
+             // Example: SET NMR / SET NO NMR
+             case 'SET NMR': case 'SET NO NMR': case 'SET CD': case 'SET NO CD': // CD is synonym for NMR
+                 content += createWarning('Master Only.');
+                 content += createInfo(`Sets NMR (No Move Retreat) status to ${selectedCommand.startsWith('SET NO') ? 'OFF' : 'ON'}.`);
+                 break;
+             // Example: SET VARIANT
+             case 'SET VARIANT':
+                 content += createWarning('Master Only (before game start).');
+                 content += createInput('set-variant-name', 'text', 'Variant/Option Name', 'e.g., Chaos or Gunboat', true);
+                 break;
+             case 'SET NOT VARIANT':
+                  content += createWarning('Master Only (before game start).');
+                  content += createInput('set-not-variant-name', 'text', 'Option Name to Remove', 'e.g., Gunboat', true);
+                  break;
+             // Add other SET commands based on docs...
+             case 'SET ALL PRESS': case 'SET NORMAL PRESS': case 'SET QUIET': case 'SET NO QUIET':
+             case 'SET WATCH ALL PRESS': case 'SET NO WATCH ALL PRESS': case 'SET ACCESS':
+             case 'SET ALLOW PLAYER': case 'SET DENY PLAYER': case 'SET LEVEL': case 'SET DEDICATION':
+             case 'SET ONTIMERAT': case 'SET RESRAT': case 'SET APPROVAL': case 'SET APPROVE': case 'SET NOT APPROVE':
+             case 'SET BLANK PRESS': case 'SET BROADCAST': case 'SET NORMAL BROADCAST': case 'SET NO FAKE':
+             case 'SET GREY': case 'SET NO WHITE': case 'SET GREY/WHITE': case 'SET LATE PRESS':
+             case 'SET MINOR PRESS': case 'SET MUST ORDER': case 'SET NO PRESS': case 'SET NONE':
+             case 'SET OBSERVER': case 'SET PARTIAL': case 'SET PARTIAL FAKES BROADCAST': case 'SET PARTIAL MAY':
+             case 'SET POSTAL PRESS': case 'SET WHITE': case 'SET WHITE/GREY': case 'SET MAX ABSENCE':
+             case 'SET LATE COUNT': case 'SET STRICT GRACE': case 'SET STRICT WAIT': case 'SET MOVE':
+             case 'SET RETREAT': case 'SET ADJUST': case 'SET CONCESSIONS': case 'SET DIAS': case 'SET LIST':
+             case 'SET PUBLIC': case 'SET PRIVATE': case 'SET AUTO PROCESS': case 'SET MANUAL PROCESS':
+             case 'SET AUTO START': case 'SET MANUAL START': case 'SET RATED': case 'SET UNRATED':
+             case 'SET ANY CENTER': case 'SET ANY DISBAND': case 'SET ATTACK TRANSFORM': case 'SET AUTO DISBAND':
+             case 'SET BCENTERS': case 'SET BLANK BOARD': case 'SET EMPTY BOARD': case 'SET CENTERS':
+             case 'SET COASTAL CONVOYS': case 'SET DISBAND': case 'SET DUALITY': case 'SET GATEWAYS':
+             case 'SET HOME CENTER': case 'SET HONG KONG': case 'SET NORMAL DISBAND': case 'SET ONE CENTER':
+             case 'SET PLAYERS': case 'SET PORTAGE': case 'SET POWERS': case 'SET PROXY': case 'SET RAILWAYS':
+             case 'SET REVEAL': case 'SET SECRET': case 'SET SHOW': case 'SET SUMMER': case 'SET TOUCH PRESS':
+             case 'SET TRANSFORM': case 'SET TRAFO': case 'SET ADJACENT': case 'SET ADJACENCY':
+             case 'SET ASSASSINS': case 'SET ASSASSINATION': case 'SET BANK': case 'SET BANKERS': case 'SET LOANS':
+             case 'SET DICE': case 'SET FAMINE': case 'SET FORT': case 'SET FORTRESS': case 'SET GARRISON':
+             case 'SET MACH2': case 'SET MONEY': case 'SET PLAGUE': case 'SET SPECIAL': case 'SET STORM':
+                  // Generic handler for simple SET commands
+                  content += createWarning('Master Only.');
+                  content += createInfo(`Applies setting: ${selectedCommand}. Check docs for specific value requirements if any.`);
+                  content += createInfo(`Enter value directly in text area if needed (e.g., SET LEVEL EXPERT).`);
+                  generatedCommandTextarea.value = selectedCommand + ' '; // Start with command
+                  break;
+
 
             // --- Manual / Default ---
              case 'MANUAL':
-                 optionsArea.innerHTML = `
-                    <div class="space-y-4">
-                        <p class="text-gray-600">Enter the full command manually in the text area below. Do NOT include SIGN OFF.</p>
-                        <p class="text-sm text-gray-500">The server will prepend SIGN ON automatically if needed for the target game.</p>
-                    </div>`;
+                 content += createInfo('Enter the full command manually in the text area below. Do NOT include SIGN OFF.');
+                 content += createInfo('The server will prepend SIGN ON automatically if needed for the target game.');
                  generatedCommandTextarea.placeholder = "Type full command here (e.g., WHOIS someone@example.com)";
                  break;
             default:
-                optionsArea.innerHTML = `<div class="space-y-4"><p class="text-gray-600">Parameters for <strong>${selectedCommand}</strong> (if any) should be entered directly in the text area below.</p> Check HELP ${selectedCommand} if unsure.</div>`;
+                content += createInfo(`Parameters for <strong>${selectedCommand}</strong> (if any) should be entered directly in the text area below.`);
+                content += createInfo(`Check <code class="bg-gray-100 px-1 py-0.5 rounded">HELP ${selectedCommand}</code> if unsure.`);
                 generatedCommandTextarea.value = selectedCommand + ' '; // Start with the command verb
                 break;
         }
+        content += '</div>'; // Close space-y-3
+        optionsArea.innerHTML = content;
 
         // Attach listeners to new inputs/selects/textareas AFTER they are in the DOM
         setTimeout(() => {
             optionsArea.querySelectorAll('input, select, textarea').forEach(el => {
                 // Use 'input' for text fields, 'change' for select/checkbox
-                const eventType = (el.tagName === 'SELECT' || el.type === 'checkbox') ? 'change' : 'input';
+                const eventType = (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'radio') ? 'change' : 'input';
                 el.removeEventListener(eventType, updateGeneratedCommandText); // Remove old listener if any
                 el.addEventListener(eventType, updateGeneratedCommandText);
             });
@@ -606,6 +707,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 0); // Timeout ensures DOM update is processed
     }
 
+    // Helper function to query selector safely within optionsArea
+    const qs = (selector) => optionsArea.querySelector(selector);
+
+    // --- updateGeneratedCommandText: Updated for multi-line and complex commands ---
     function updateGeneratedCommandText() {
         if (!commandTypeSelect || !generatedCommandTextarea) return;
 
@@ -616,94 +721,112 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        let commandString = selectedCommand;
+        let commandString = '';
         let commandBody = '';
-        // Commands where the text area IS the body or follows the generated line
-        const commandsWithBodyInput = ['ORDERS', 'MANUAL', 'PRESS', 'BROADCAST', 'POSTAL PRESS', 'DIARY', 'PHASE', 'IF', 'BECOME', 'CREATE ?'];
-        const currentText = generatedCommandTextarea.value;
-        const lines = currentText.split('\n');
+        const currentText = generatedCommandTextarea.value; // Preserve user input if possible
 
-        // Preserve existing body if command type matches and body exists
+        // Build the command string based on options
+        commandString = buildCommandStringFromOptions(selectedCommand);
+
+        // Handle commands where the textarea is primarily for the body
+        const commandsWithBodyInput = ['ORDERS', 'PRESS', 'BROADCAST', 'POSTAL PRESS', 'DIARY', 'PHASE', 'IF', 'BECOME', 'SET COMMENT BEGIN'];
         if (commandsWithBodyInput.includes(selectedCommand)) {
-             if (selectedCommand === 'ORDERS' || selectedCommand === 'MANUAL') {
-                 // For these, the *entire* textarea is the command
-                 commandString = currentText;
-                 commandBody = ''; // No separate body needed
-             } else if (lines.length > 0 && lines[0].trim().startsWith(selectedCommand)) {
-                 // If the first line starts with the command, assume subsequent lines are body
-                 commandBody = lines.slice(1).join('\n');
-                 commandString = lines[0]; // Keep the generated first line
-                 // Special handling for multi-line commands like PRESS/DIARY/etc.
-                 if (['PRESS', 'BROADCAST', 'POSTAL PRESS', 'DIARY'].includes(selectedCommand)) {
-                      // Reconstruct the command string based on options, keep the body
-                      commandString = buildCommandStringFromOptions(selectedCommand); // Get the first line
-                      // Find ENDPRESS/ENDBROADCAST and take text before it
-                      const endPressIndex = lines.findIndex(line => line.trim() === 'ENDPRESS' || line.trim() === 'ENDBROADCAST');
-                      if (endPressIndex > 0) { // Make sure ENDPRESS is not the first line
-                           commandBody = lines.slice(1, endPressIndex).join('\n');
-                      } else if (lines.length > 1) {
-                           // If no ENDPRESS, assume all lines after first are body (user might add ENDPRESS manually)
-                           commandBody = lines.slice(1).join('\n');
-                      } else {
-                           commandBody = ''; // No body yet
-                      }
+            // Try to preserve existing body if user was editing it
+            const lines = currentText.split('\n');
+            let potentialBodyStartLine = 0;
+
+            // Find where the generated command string ends
+            const generatedLines = commandString.split('\n');
+            potentialBodyStartLine = generatedLines.length;
+
+            // Special case: If commandString is empty (ORDERS, MANUAL), body is everything
+            if (!commandString) {
+                 potentialBodyStartLine = 0;
+            }
+
+            // Check if the current text seems to contain the generated command prefix
+            let prefixMatches = true;
+            if (potentialBodyStartLine > 0) {
+                for(let i = 0; i < potentialBodyStartLine; i++) {
+                    // Allow for potential whitespace differences when comparing prefix
+                    if (i >= lines.length || lines[i].trim() !== generatedLines[i].trim()) {
+                        prefixMatches = false;
+                        break;
+                    }
+                }
+            } else {
+                 prefixMatches = false; // No prefix generated, assume body is new or full content
+            }
+
+
+            if (prefixMatches && lines.length >= potentialBodyStartLine) { // Use >= to handle case where body is empty
+                 // Assume lines after the generated command are the user's body input
+                 commandBody = lines.slice(potentialBodyStartLine).join('\n');
+            } else if (selectedCommand === 'ORDERS' || selectedCommand === 'MANUAL') {
+                 // For these, the entire textarea is the command/body
+                 commandBody = currentText;
+                 commandString = ''; // No prefix
+            } else {
+                 // Generate default/placeholder body if needed
+                 if (['PRESS', 'BROADCAST', 'POSTAL PRESS'].includes(selectedCommand)) {
+                     commandBody = qs('#press-body')?.value || ''; // Get value from textarea if exists
+                     if (!commandBody && currentText.includes('ENDPRESS')) commandBody = ''; // Keep empty if user cleared it
+                     else if (!commandBody) commandBody = '<message body>'; // Placeholder
+                     commandBody += '\nENDPRESS';
+                 } else if (selectedCommand === 'DIARY' && qs('#diary-action')?.value === 'RECORD') {
+                     commandBody = qs('#diary-body')?.value || '';
+                     if (!commandBody && currentText.includes('ENDPRESS')) commandBody = '';
+                     else if (!commandBody) commandBody = '<diary entry>';
+                     commandBody += '\nENDPRESS';
                  } else if (['PHASE', 'IF', 'BECOME'].includes(selectedCommand)) {
-                      commandString = buildCommandStringFromOptions(selectedCommand);
-                      commandBody = lines.slice(1).join('\n');
-                 } else if (selectedCommand === 'CREATE ?') {
-                      commandString = buildCommandStringFromOptions(selectedCommand);
-                      commandBody = lines.slice(1).join('\n'); // Preserve BECOME MASTER etc.
+                     commandBody = '<orders/commands>'; // Placeholder
+                 } else if (selectedCommand === 'SET COMMENT BEGIN') {
+                     commandBody = qs('#set-comment-begin-text')?.value || '<long comment text>';
                  }
-             } else {
-                  // Command selected, but text area doesn't start with it - generate fresh
-                  commandString = buildCommandStringFromOptions(selectedCommand);
-                  commandBody = ''; // Reset body
-                  if (['PRESS', 'BROADCAST', 'POSTAL PRESS', 'DIARY'].includes(selectedCommand)) {
-                       commandBody = '<message body>\nENDPRESS'; // Default body placeholder
-                  } else if (['PHASE', 'IF', 'BECOME'].includes(selectedCommand)) {
-                       commandBody = '...'; // Placeholder for orders
-                  } else if (selectedCommand === 'ORDERS') {
-                       commandString = ''; // Start empty for orders
-                       commandBody = '';
-                  } else if (selectedCommand === 'MANUAL') {
-                       commandString = ''; // Start empty for manual
-                       commandBody = '';
-                  }
-             }
-        } else {
-            // Command does not have a body input area, generate fresh
-            commandString = buildCommandStringFromOptions(selectedCommand);
-            commandBody = '';
+                 // If prefix didn't match, reset body unless it's ORDERS/MANUAL
+                 if (!prefixMatches && selectedCommand !== 'ORDERS' && selectedCommand !== 'MANUAL') {
+                      // Use generated placeholder body
+                 } else if (!prefixMatches && (selectedCommand === 'ORDERS' || selectedCommand === 'MANUAL')) {
+                      commandBody = currentText; // Keep user's text
+                 }
+            }
         }
 
-
+        // Construct final output
         let finalOutput = commandString;
-        // Append body only if it exists and the command expects it
-        if (commandBody && commandsWithBodyInput.includes(selectedCommand) && selectedCommand !== 'ORDERS' && selectedCommand !== 'MANUAL') {
-             // Ensure newline separation if commandString isn't empty
-            if (commandString.length > 0 && !commandString.endsWith('\n')) {
+        if (commandBody && commandsWithBodyInput.includes(selectedCommand)) {
+            if (finalOutput.length > 0 && !finalOutput.endsWith('\n')) {
                 finalOutput += '\n';
             }
             finalOutput += commandBody;
-        } else if (commandBody && (selectedCommand === 'ORDERS' || selectedCommand === 'MANUAL')) {
-             // For ORDERS/MANUAL, the body *is* the command string
-             finalOutput = commandBody;
+        } else if (!commandString && (selectedCommand === 'ORDERS' || selectedCommand === 'MANUAL')) {
+             finalOutput = commandBody; // Body is the whole command
         }
-
 
         // Only update if the generated text is different from current text,
         // to avoid cursor jumping during manual edits in body section.
         if (generatedCommandTextarea.value !== finalOutput) {
-             // Store cursor position
              const cursorPos = generatedCommandTextarea.selectionStart;
+             const oldLength = generatedCommandTextarea.value.length;
              generatedCommandTextarea.value = finalOutput;
-             // Restore cursor position if it was within the old text length
-             if (cursorPos <= currentText.length) {
-                  try { // Adding try-catch for safety
+             // Try to restore cursor position intelligently
+             try {
+                 // If cursor was at the end, keep it at the end
+                 if (cursorPos === oldLength) {
+                     generatedCommandTextarea.setSelectionRange(finalOutput.length, finalOutput.length);
+                 }
+                 // If cursor was within the text, try to keep it there
+                 else if (cursorPos <= finalOutput.length) {
                      generatedCommandTextarea.setSelectionRange(cursorPos, cursorPos);
-                  } catch (e) {
-                     console.warn("Could not restore cursor position:", e);
-                  }
+                 }
+                 // Otherwise, default to end
+                 else {
+                      generatedCommandTextarea.setSelectionRange(finalOutput.length, finalOutput.length);
+                 }
+             } catch (e) {
+                 console.warn("Could not restore cursor position:", e);
+                 // Fallback: place cursor at the end
+                 generatedCommandTextarea.setSelectionRange(finalOutput.length, finalOutput.length);
              }
         }
     }
@@ -711,97 +834,139 @@ document.addEventListener('DOMContentLoaded', () => {
     // Helper to build the command string from options (first line usually)
     function buildCommandStringFromOptions(selectedCommand) {
         let commandString = selectedCommand;
-        const qs = (selector) => optionsArea.querySelector(selector);
-        const val = (selector) => qs(selector)?.value.trim() || '';
+        // Use safe query selector helper 'qs' defined above
+        const val = (selector, defaultValue = '') => qs(selector)?.value.trim() || defaultValue;
         const checked = (selector) => qs(selector)?.checked || false;
-        const rawVal = (selector) => qs(selector)?.value || ''; // Don't trim passwords
+        const rawVal = (selector, defaultValue = '') => qs(selector)?.value || defaultValue; // Don't trim passwords
 
         switch (selectedCommand) {
-            case 'CREATE ?':
-                 const createGame = val('#create-game-name'); const createPass = rawVal('#create-password'); const createVariant = val('#create-variant');
-                 commandString = `CREATE ?${createGame || '<name>'} ${createPass || '<password>'}`; if (createVariant) commandString += ` ${createVariant}`;
-                 // BECOME MASTER handled in body
-                 break;
-            case 'OBSERVE': case 'WATCH': const observeGame = val('#observe-game'); const observePass = rawVal('#observe-password'); commandString = `${selectedCommand} ${observeGame || '<game>'} ${observePass || '<password>'}`; break;
-            case 'SIGN ON ?': const nextPass = rawVal('#signon-next-password'); commandString = `SIGN ON ? ${nextPass || '<password>'}`; break;
-            case 'SIGN ON ?game': const gameQ = val('#signon-q-game'); const passQ = rawVal('#signon-q-password'); const variantQ = val('#signon-q-variant'); commandString = `SIGN ON ?${gameQ || '<game>'} ${passQ || '<password>'}`; if (variantQ) commandString += ` ${variantQ}`; break;
-            case 'SIGN ON power': const power = val('#signon-power').toUpperCase(); const gameP = val('#signon-game'); const passP = rawVal('#signon-password'); commandString = `SIGN ON ${power || '<P>'}${gameP || '<game>'} ${passP || '<password>'}`; break;
-            case 'LIST': const gameNameList = val('#list-game-name'); const fullList = checked('#list-full'); commandString = 'LIST'; if (gameNameList) { commandString += ` ${gameNameList}`; } else if (fullList) { commandString += ' FULL'; } break;
-            case 'HISTORY': case 'SUMMARY': case 'WHOGAME': const cmdLower = selectedCommand.toLowerCase(); const gameNameHist = val(`#${cmdLower}-game-name`); if (gameNameHist) { commandString = `${selectedCommand} ${gameNameHist}`; if (selectedCommand === 'HISTORY') { const fromDate = val('#hist-from'); const toDate = val('#hist-to'); const lines = val('#hist-lines'); const exclStart = val('#hist-exclstart'); const exclEnd = val('#hist-exclend'); const broad = checked('#hist-broad'); if (exclStart) { commandString += ` EXCLSTART ${exclStart}`; if (exclEnd) commandString += ` EXCLEND ${exclEnd}`; if (broad) commandString += ` BROAD`; } else { if (fromDate) commandString += ` FROM ${fromDate}`; if (toDate) commandString += ` TO ${toDate}`; if (lines) commandString += ` LINES ${lines}`; } } else if (selectedCommand === 'WHOGAME') { if (checked('#whogame-full')) commandString += ' FULL'; } } else if (selectedCommand !== 'LIST') { commandString = `${selectedCommand} <game_name_required>`; } else { commandString = 'LIST'; } break;
+            // --- General / Info ---
+            case 'GET': commandString = `GET ${val('#get-filename', '<filename>')}`; break;
+            case 'WHOIS': commandString = `WHOIS ${val('#whois-email', '<email_or_prefix>')}`; break;
+            case 'LIST': const gameNameList = val('#list-game-name'); commandString = 'LIST'; if (gameNameList) { commandString += ` ${gameNameList}`; } else if (checked('#list-full')) { commandString += ' FULL'; } break;
+            case 'HISTORY': const gameNameHist = val('#hist-game-name', '<game>'); commandString = `HISTORY ${gameNameHist}`; const exclStart = val('#hist-exclstart'); if (exclStart) { commandString += ` EXCLSTART ${exclStart}`; const exclEnd = val('#hist-exclend'); if (exclEnd) commandString += ` EXCLEND ${exclEnd}`; if (checked('#hist-broad')) commandString += ` BROAD`; } else { const fromDate = val('#hist-from'); const toDate = val('#hist-to'); const lines = val('#hist-lines'); if (fromDate) commandString += ` FROM ${fromDate}`; if (toDate) commandString += ` TO ${toDate}`; if (lines) commandString += ` LINES ${lines}`; } break;
+            case 'SUMMARY': commandString = `SUMMARY ${val('#summary-game-name', '<game>')}`; break;
+            case 'WHOGAME': const gameNameWho = val('#whogame-game-name', '<game>'); commandString = `WHOGAME ${gameNameWho}`; if (checked('#whogame-full')) commandString += ' FULL'; break;
+            case 'MAP': commandString = `MAP ${val('#map-game-name', '<game_or_*>')}`; if (checked('#map-n')) commandString += ' N'; break;
+
+            // --- Registration / User Account ---
+            case 'I AM ALSO': commandString = `I AM ALSO ${val('#iamalso-old-email', '<old_email>')}`; break;
+            case 'SET PASSWORD': commandString = `SET PASSWORD ${rawVal('#setpass-new-password', '<new_password>')}`; break;
+            case 'SET ADDRESS': const newAddr = val('#setaddr-new-email'); commandString = `SET ADDRESS`; if (newAddr) commandString += ` ${newAddr}`; break;
+            case 'GET DEDICATION': case 'INFO PLAYER': commandString = `${selectedCommand} ${val('#infoplayer-email', currentUserEmail || '<email>')}`; break;
+
+            // --- Joining / Creating / Observing ---
+            case 'CREATE ?': const createGame = val('#create-game-name', '<name>'); const createPass = rawVal('#create-password', '<password>'); const createVariant = val('#create-variant'); commandString = `CREATE ?${createGame} ${createPass}`; if (createVariant) commandString += ` ${createVariant}`; if (checked('#create-become-master')) commandString += '\nBECOME MASTER'; break;
+            case 'SIGN ON ?': commandString = `SIGN ON ? ${rawVal('#signon-next-password', '<password>')}`; break;
+            case 'SIGN ON ?game': const gameQ = val('#signon-q-game', '<game>'); const passQ = rawVal('#signon-q-password', '<password>'); const variantQ = val('#signon-q-variant'); commandString = `SIGN ON ?${gameQ} ${passQ}`; if (variantQ) commandString += ` ${variantQ}`; break;
+            case 'SIGN ON power': const power = val('#signon-power', '<P>').toUpperCase(); const gameP = val('#signon-game', '<game>'); const passP = rawVal('#signon-password', '<password>'); commandString = `SIGN ON ${power}${gameP} ${passP}`; break;
+            case 'OBSERVE': case 'WATCH': commandString = `${selectedCommand} ${val('#observe-game', '<game>')} ${rawVal('#observe-password', '<password>')}`; break;
+
+            // --- In-Game Player Actions ---
+            case 'ORDERS': commandString = ''; break; // Body is handled separately
             case 'PRESS': case 'BROADCAST': case 'POSTAL PRESS': const pressOpts = val('#press-options'); commandString = selectedCommand; if (pressOpts) commandString += ` ${pressOpts}`; break; // Body handled separately
-            case 'DIARY': const diaryAction = val('#diary-action'); commandString = `DIARY ${diaryAction}`; if (diaryAction === 'READ' || diaryAction === 'DELETE') { const entryNum = val('#diary-entry-num'); commandString += ` ${entryNum || '<number>'}`; } break; // Body handled separately for RECORD
-            case 'GET': const filename = val('#get-filename'); commandString = `GET ${filename || '<filename>'}`; break;
-            case 'WHOIS': const whoisEmail = val('#whois-email'); commandString = `WHOIS ${whoisEmail || '<email_or_prefix>'}`; break;
-            case 'SET': const setOpt = val('#set-option'); const setVal = rawVal('#set-value'); commandString = `SET ${setOpt || '<option>'} ${setVal || '<value>'}`; break;
-            case 'SET ABSENCE': const absStart = val('#absence-start'); const absEnd = val('#absence-end'); commandString = `SET ABSENCE ${absStart || '<start_date>'}`; if (absEnd) commandString += ` TO ${absEnd}`; break;
-            case 'SET DRAW': const drawPowers = val('#draw-powers'); commandString = `SET DRAW`; if (drawPowers) commandString += ` ${drawPowers}`; break;
-            case 'SET CONCEDE': const concedePower = val('#concede-power').toUpperCase(); commandString = `SET CONCEDE ${concedePower || '<P>'}`; break;
-            case 'SET PASSWORD': const newPass = rawVal('#new-password'); commandString = `SET PASSWORD ${newPass || '<new_password>'}`; break;
-            case 'SET ADDRESS': const newAddr = val('#new-address'); commandString = `SET ADDRESS`; if (newAddr) commandString += ` ${newAddr}`; break;
-            case 'SET PREFERENCE': const prefList = val('#preference-list'); commandString = `SET PREFERENCE ${prefList || '<list_or_*>'}`; break;
-            case 'PHASE': const phSeason = val('#phase-season'); const phYear = val('#phase-year'); const phType = val('#phase-type'); commandString = `PHASE ${phSeason || '<Season>'} ${phYear || '<Year>'} ${phType || '<Phase>'}`; break; // Body handled separately
-            case 'IF': const ifCond = val('#if-condition'); commandString = `IF ${ifCond || '<condition>'}`; break; // Body handled separately
-            case 'PROCESS': const procPhase = val('#process-phase'); commandString = `PROCESS`; if (procPhase) commandString += ` ${procPhase}`; break;
-            case 'ROLLBACK': const rbTurn = val('#rollback-turn'); commandString = `ROLLBACK`; if (rbTurn) commandString += ` ${rbTurn}`; break;
-            case 'EJECT': const ejectTarget = val('#eject-target'); commandString = `EJECT ${ejectTarget || '<power_or_email>'}`; break;
-            case 'BECOME': const becomePower = val('#become-power'); commandString = `BECOME ${becomePower || '<power>'}`; break; // Body handled separately
-            case 'PROMOTE': const promoteObserver = val('#promote-observer'); commandString = `PROMOTE ${promoteObserver || '<observer_email>'}`; break;
-            // Simple commands with no options generated here
-            case 'SET WAIT': case 'SET NOWAIT': case 'SET NOABSENCE': case 'SET NODRAW': case 'SET NOCONCEDE': case 'CLEAR': case 'RESIGN': case 'WITHDRAW': case 'HELP': case 'VERSION': case 'PAUSE': case 'RESUME': case 'TERMINATE': case 'FORCE BEGIN': case 'UNSTART': commandString = selectedCommand; break;
-            // ORDERS and MANUAL are handled specially in updateGeneratedCommandText
-            case 'ORDERS': case 'MANUAL': commandString = ''; break; // Start empty
-            default: commandString = selectedCommand; break; // Default to just the command verb
+            case 'DIARY': const diaryAction = val('#diary-action'); commandString = `DIARY ${diaryAction}`; if (diaryAction === 'READ' || diaryAction === 'DELETE') { commandString += ` ${val('#diary-entry-num', '<number>')}`; } break; // Body handled separately for RECORD
+            case 'RESIGN': case 'WITHDRAW': commandString = selectedCommand; break;
+
+            // --- In-Game Player Settings / Future Orders ---
+             case 'SET WAIT': case 'SET NOWAIT': case 'SET NOABSENCE': case 'SET NODRAW': case 'SET NOCONCEDE': case 'CLEAR': commandString = selectedCommand; break;
+             case 'SET ABSENCE': case 'SET HOLIDAY': case 'SET VACATION': const absStart = val('#absence-start', '<start_date>'); const absEnd = val('#absence-end'); commandString = `SET ABSENCE ${absStart}`; if (absEnd) commandString += ` TO ${absEnd}`; break;
+             case 'SET DRAW': const drawPowers = val('#draw-powers'); commandString = `SET DRAW`; if (drawPowers) commandString += ` ${drawPowers}`; break;
+             case 'SET CONCEDE': commandString = `SET CONCEDE ${val('#concede-power', '<P>').toUpperCase()}`; break;
+             case 'SET PREFERENCE': commandString = `SET PREFERENCE ${val('#preference-list', '<list_or_*>')}`; break;
+             case 'PHASE': commandString = `PHASE ${val('#phase-season', '<Season>')} ${val('#phase-year', '<Year>')} ${val('#phase-type', '<Phase>')}`; break; // Body handled separately
+             case 'IF': commandString = `IF ${val('#if-condition', '<condition>')}`; break; // Body handled separately
+
+            // --- Master Commands ---
+             case 'BECOME MASTER': case 'SET MODERATE': case 'SET UNMODERATE': case 'FORCE BEGIN': case 'PAUSE': case 'RESUME': case 'TERMINATE': case 'PREDICT': case 'UNSTART': commandString = selectedCommand; break;
+             case 'BECOME': commandString = `BECOME ${val('#become-power', '<power>')}`; break; // Body handled separately
+             case 'EJECT': commandString = `EJECT ${val('#eject-target', '<power_or_email>')}`; break;
+             case 'PROMOTE': commandString = `PROMOTE ${val('#promote-observer', '<observer_email>')}`; break;
+             case 'PROCESS': const procPhase = val('#process-phase'); commandString = `PROCESS`; if (procPhase) commandString += ` ${procPhase}`; break;
+             case 'ROLLBACK': const rbTurn = val('#rollback-turn'); commandString = `ROLLBACK`; if (rbTurn) commandString += ` ${rbTurn}`; break;
+
+            // --- Master Settings ---
+             case 'SET': commandString = `SET ${val('#set-option', '<option>')} ${rawVal('#set-value', '<value>')}`; break;
+             case 'SET DEADLINE': case 'SET GRACE': case 'SET START': commandString = `${selectedCommand} ${val(`set-${selectedCommand.toLowerCase()}-date`, '<date>')}`; break;
+             case 'SET COMMENT': commandString = `SET COMMENT ${val('#set-comment-text', '<text>')}`; break;
+             case 'SET COMMENT BEGIN': commandString = `SET COMMENT BEGIN`; break; // Body handled separately
+             // Add other specific SET commands if needed, otherwise use generic SET or MANUAL
+             case 'SET NMR': case 'SET NO NMR': case 'SET CD': case 'SET NO CD': commandString = selectedCommand; break;
+             case 'SET VARIANT': commandString = `SET VARIANT ${val('#set-variant-name', '<variant_or_option>')}`; break;
+             case 'SET NOT VARIANT': commandString = `SET NOT VARIANT ${val('#set-not-variant-name', '<option>')}`; break;
+             // Generic handler for simple SET commands (most master settings)
+             case 'SET ALL PRESS': case 'SET NORMAL PRESS': case 'SET QUIET': case 'SET NO QUIET':
+             case 'SET WATCH ALL PRESS': case 'SET NO WATCH ALL PRESS': case 'SET ACCESS':
+             case 'SET ALLOW PLAYER': case 'SET DENY PLAYER': case 'SET LEVEL': case 'SET DEDICATION':
+             case 'SET ONTIMERAT': case 'SET RESRAT': case 'SET APPROVAL': case 'SET APPROVE': case 'SET NOT APPROVE':
+             case 'SET BLANK PRESS': case 'SET BROADCAST': case 'SET NORMAL BROADCAST': case 'SET NO FAKE':
+             case 'SET GREY': case 'SET NO WHITE': case 'SET GREY/WHITE': case 'SET LATE PRESS':
+             case 'SET MINOR PRESS': case 'SET MUST ORDER': case 'SET NO PRESS': case 'SET NONE':
+             case 'SET OBSERVER': case 'SET PARTIAL': case 'SET PARTIAL FAKES BROADCAST': case 'SET PARTIAL MAY':
+             case 'SET POSTAL PRESS': case 'SET WHITE': case 'SET WHITE/GREY': case 'SET MAX ABSENCE':
+             case 'SET LATE COUNT': case 'SET STRICT GRACE': case 'SET STRICT WAIT': case 'SET MOVE':
+             case 'SET RETREAT': case 'SET ADJUST': case 'SET CONCESSIONS': case 'SET DIAS': case 'SET LIST':
+             case 'SET PUBLIC': case 'SET PRIVATE': case 'SET AUTO PROCESS': case 'SET MANUAL PROCESS':
+             case 'SET AUTO START': case 'SET MANUAL START': case 'SET RATED': case 'SET UNRATED':
+             case 'SET ANY CENTER': case 'SET ANY DISBAND': case 'SET ATTACK TRANSFORM': case 'SET AUTO DISBAND':
+             case 'SET BCENTERS': case 'SET BLANK BOARD': case 'SET EMPTY BOARD': case 'SET CENTERS':
+             case 'SET COASTAL CONVOYS': case 'SET DISBAND': case 'SET DUALITY': case 'SET GATEWAYS':
+             case 'SET HOME CENTER': case 'SET HONG KONG': case 'SET NORMAL DISBAND': case 'SET ONE CENTER':
+             case 'SET PLAYERS': case 'SET PORTAGE': case 'SET POWERS': case 'SET PROXY': case 'SET RAILWAYS':
+             case 'SET REVEAL': case 'SET SECRET': case 'SET SHOW': case 'SET SUMMER': case 'SET TOUCH PRESS':
+             case 'SET TRANSFORM': case 'SET TRAFO': case 'SET ADJACENT': case 'SET ADJACENCY':
+             case 'SET ASSASSINS': case 'SET ASSASSINATION': case 'SET BANK': case 'SET BANKERS': case 'SET LOANS':
+             case 'SET DICE': case 'SET FAMINE': case 'SET FORT': case 'SET FORTRESS': case 'SET GARRISON':
+             case 'SET MACH2': case 'SET MONEY': case 'SET PLAGUE': case 'SET SPECIAL': case 'SET STORM':
+                  commandString = selectedCommand; // Simple SET command, value might be needed in text area
+                  break;
+
+            // --- Manual ---
+             case 'MANUAL': commandString = ''; break; // Body is handled separately
+
+            // --- Default ---
+            default: commandString = selectedCommand; break; // Default to just the command verb if no options defined
         }
         return commandString;
     }
+
 
     // --- Event Listeners ---
     if (commandTypeSelect) {
         commandTypeSelect.addEventListener('change', () => {
             generateCommandOptions(commandTypeSelect.value);
         });
-        // Initial population if a command is pre-selected (e.g., on page load with state)
-        // generateCommandOptions(commandTypeSelect.value); // This is now handled in updateCommandGenerator
     }
-
     if (gameSelector) {
         gameSelector.addEventListener('change', () => {
             const selectedGame = gameSelector.value;
-            fetchAndDisplayGameState(selectedGame);
+            fetchAndDisplayGameState(selectedGame); // This already fetches state AND recommendations
         });
     }
-
-    if (targetPasswordInput) {
-        // Save password on blur or input change
-        targetPasswordInput.addEventListener('change', saveCredentialsForGame);
-        // Optionally save more frequently:
-        // targetPasswordInput.addEventListener('input', savePasswordForGame);
-    }
-
     if(refreshStateButton) {
         refreshStateButton.addEventListener('click', () => {
             const gameName = targetGameInput.value;
             if (gameName) {
                  outputDiv.textContent = `Refreshing state for ${gameName}...`;
                  outputDiv.className = 'bg-blue-50 border border-blue-200 rounded-md p-4 font-mono text-sm min-h-[250px] max-h-[600px] overflow-y-auto whitespace-pre-wrap break-words text-blue-700';
-                 // Execute LIST command for the target game
-                 sendCommand(`LIST ${gameName}`);
+                 sendCommand(`LIST ${gameName}`); // sendCommand will handle the refresh logic
             } else {
                 alert('Please select a game to refresh.');
             }
         });
     }
-
      if (clearCredentialsButton) {
          clearCredentialsButton.addEventListener('click', clearAllCredentials);
      }
+    if (targetPasswordInput) targetPasswordInput.addEventListener('blur', saveCredentialsForGame);
+    if (targetVariantInput) targetVariantInput.addEventListener('blur', saveCredentialsForGame);
 
-    // Send Command Logic (modified to include target game/password)
+
     async function sendCommand(commandOverride = null) {
         const commandToSend = commandOverride || generatedCommandTextarea.value.trim();
         const targetGame = targetGameInput.value;
         const targetPassword = targetPasswordInput.value;
-        const targetVariant = targetVariantInput.value; // Get variant value
+        const targetVariant = targetVariantInput.value;
 
         if (!commandToSend) {
             outputDiv.textContent = 'Error: Command cannot be empty.';
@@ -809,21 +974,33 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // Basic check: Warn if context needed but no game/password selected/entered
+        // Context warning logic (keep as is)
         const commandVerb = commandToSend.split(/\s+/)[0].toUpperCase();
-        const requiresContext = !['REGISTER', 'WHOIS', 'INFO', 'GET', 'VERSION', 'HELP', 'LIST', 'SIGN', 'OBSERVE', 'WATCH', 'CREATE', 'MANUAL', 'SET PASSWORD', 'SET ADDRESS'].includes(commandVerb);
-        if (requiresContext && (!targetGame || !targetPassword)) {
-             if (!targetGame) {
-                 outputDiv.textContent = `Warning: Command "${commandVerb}" likely requires a target game, but none is selected. Sending anyway...`;
-             } else { // No password
-                 outputDiv.textContent = `Warning: Command "${commandVerb}" likely requires the password for game "${targetGame}", but none is entered. Sending anyway...`;
+        const noContextCommands = ['REGISTER', 'WHOIS', 'INFO', 'GET', 'VERSION', 'HELP', 'LIST', 'SIGN', 'OBSERVE', 'WATCH', 'CREATE', 'MANUAL', 'SET PASSWORD', 'SET ADDRESS', 'I AM ALSO', 'GET DEDICATION', 'INFO PLAYER', 'SEND', 'MAP'];
+        const gameNameOptionalCommands = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'OBSERVE', 'WATCH'];
+        let needsContextCheck = true;
+        if (noContextCommands.includes(commandVerb)) { needsContextCheck = false; }
+        else if (gameNameOptionalCommands.includes(commandVerb)) {
+             const commandParts = commandToSend.trim().split(/\s+/);
+             if (commandParts.length > 1) {
+                 const potentialGameName = commandParts[1];
+                 const keywords = ['FULL', 'FROM', 'TO', 'LINES', 'EXCLSTART', 'EXCLEND', 'BROAD'];
+                 if (/^[a-zA-Z0-9]{1,8}$/.test(potentialGameName) && !keywords.includes(potentialGameName.toUpperCase())) {
+                     needsContextCheck = false;
+                 }
              }
+        }
+        if (needsContextCheck && (!targetGame || !targetPassword)) {
+             let warningMsg = !targetGame
+                 ? `Warning: Command "${commandVerb}" likely requires a target game, but none is selected. Sending anyway...`
+                 : `Warning: Command "${commandVerb}" likely requires the password for game "${targetGame}", but none is entered. Sending anyway...`;
+             outputDiv.textContent = warningMsg;
              outputDiv.className = 'bg-orange-50 border border-orange-200 rounded-md p-4 font-mono text-sm min-h-[250px] max-h-[600px] overflow-y-auto whitespace-pre-wrap break-words text-orange-700';
-             // Allow sending anyway, the judge will reject if needed
         } else {
              outputDiv.textContent = 'Sending command...';
              outputDiv.className = 'bg-gray-50 border border-gray-200 rounded-md p-4 font-mono text-sm min-h-[250px] max-h-[600px] overflow-y-auto whitespace-pre-wrap break-words text-gray-700';
         }
+        // End context warning logic
 
         sendButton.disabled = true;
         sendButton.textContent = 'Sending...';
@@ -833,87 +1010,104 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/execute-dip', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    command: commandToSend,
-                    targetGame: targetGame, // Send context
-                    targetPassword: targetPassword, // Send context
-                    targetVariant: targetVariant // Send variant context (added)
-                }),
+                body: JSON.stringify({ command: commandToSend, targetGame, targetPassword, targetVariant }),
             });
 
-            // Improved error handling for non-JSON responses
             let result;
             const contentType = response.headers.get('content-type');
             if (response.ok && contentType && contentType.includes('application/json')) {
                  result = await response.json();
-            } else if (!response.ok) {
+                 console.log("[sendCommand] Received result:", result);
+            } else {
                  const errorText = await response.text();
                  throw new Error(`Server error ${response.status}: ${errorText || response.statusText}`);
-            } else {
-                 // OK response but not JSON? Unexpected.
-                 const text = await response.text();
-                 throw new Error(`Unexpected server response: ${response.status} - ${text}`);
             }
-
 
             outputDiv.textContent = result.output || 'No output received.';
 
             if (result.success) {
-                outputDiv.classList.remove('text-red-700', 'text-orange-700');
+                outputDiv.classList.remove('text-red-700', 'text-orange-700', 'text-blue-700');
                 outputDiv.classList.add('text-green-700');
                 outputDiv.textContent = `Command Sent Successfully.\n\n${result.output}`;
 
-                // If sign on/observe/create was successful, update UI context
-                if (result.isSignOnOrObserveSuccess) {
-                    const gameName = result.createdGameName || targetGame; // Use created name if available
-                    outputDiv.textContent += `\n\nSign On / Observe / Create Successful for ${gameName}! Updating context...`;
-                    if (gameName && gameSelector) {
-                         // Check if game is already in selector, add if not (for CREATE)
-                         if (!Array.from(gameSelector.options).some(opt => opt.value === gameName)) {
-                              const option = document.createElement('option');
-                              option.value = gameName;
-                              option.textContent = `${gameName} (Forming)`; // Assume forming initially
-                              gameSelector.appendChild(option);
-                              allGamesList.push({ name: gameName, status: 'Forming' }); // Add to local list
-                         }
-                         gameSelector.value = gameName; // Select the game
-                         fetchAndDisplayGameState(gameName); // Fetch its state
+                // --- State and Recommendation Update Logic ---
+                let stateToUpdateUI = null;
+                let recommendationsToUpdateUI = null; // *** ADDED ***
+
+                if (result.refreshedGameState) {
+                    console.log("[sendCommand] Using refreshedGameState from response.");
+                    stateToUpdateUI = result.refreshedGameState;
+                    // *** ADDED: Use recommendations sent directly from server ***
+                    if (result.updatedRecommendedCommands) {
+                        console.log("[sendCommand] Using updatedRecommendedCommands from response.");
+                        recommendationsToUpdateUI = result.updatedRecommendedCommands;
                     }
                 }
-                // If state was refreshed by the server, update the sidebar
-                else if (result.refreshedGameState) {
-                     console.log("Received refreshed game state from server.");
-                     currentGameData = result.refreshedGameState;
-                     updateGameStateSidebar(currentGameData);
-                     // Also update recommendations based on new state
-                     updateCommandGenerator(getRecommendedCommands(currentGameData, document.body.dataset.userEmail));
+
+                if (result.isSignOnOrObserveSuccess) {
+                    const confirmedGameName = result.createdGameName || targetGame;
+                    outputDiv.textContent += `\n\nSign On / Observe / Create Successful for ${confirmedGameName}! Updating context...`;
+                    if (confirmedGameName && gameSelector) {
+                         if (!Array.from(gameSelector.options).some(opt => opt.value === confirmedGameName)) {
+                              allGamesList.push({ name: confirmedGameName, status: 'Forming' });
+                              populateGameSelector(allGamesList);
+                         }
+                         gameSelector.value = confirmedGameName;
+                         targetGameInput.value = confirmedGameName;
+                         loadCredentialsForGame(confirmedGameName);
+                         // If state wasn't included in *this* response, fetch it explicitly
+                         // This fetch will also get the correct recommendations
+                         if (!stateToUpdateUI) {
+                             console.log("[sendCommand] SignOn success but no refreshed state, fetching...");
+                             fetchAndDisplayGameState(confirmedGameName);
+                             stateToUpdateUI = null; // Prevent double update below
+                             recommendationsToUpdateUI = null; // Prevent double update below
+                         }
+                    }
                 }
-                 // If LIST was run manually and succeeded, parse and update
-                 else if (commandVerb === 'LIST' && result.output.includes('--- stdout ---')) {
-                     const stdout = result.output.substring(result.output.indexOf('--- stdout ---') + 14, result.output.indexOf('--- stderr ---'));
-                     const commandParts = commandToSend.trim().split(/\s+/); // Define commandParts from commandToSend
-                     const listGameName = commandParts.length > 1 ? commandParts[1] : null;
-                     if (listGameName && /^[a-zA-Z0-9]{1,8}$/.test(listGameName)) {
-                          // Parse and update the specific game listed
-                          // TODO: Implement client-side parsing of LIST output or rely solely on server-pushed refreshedGameState
-                          console.log(`Received LIST output for ${listGameName}, but no client-side parser exists. Output:\n${stdout}`);
-                     } else if (!listGameName) {
-                          // Handle global LIST output? Maybe update the game selector?
-                          // For now, just display the output. Server sync handles DB updates.
-                          console.log("Global LIST command executed.");
-                     }
-                 }
+
+                // If we have a refreshed state, update the sidebar
+                if (stateToUpdateUI) {
+                    console.log("[sendCommand] Updating UI sidebar with state:", stateToUpdateUI);
+                    currentGameData = stateToUpdateUI; // Update global state variable
+                    updateGameStateSidebar(currentGameData);
+                }
+
+                // If we have new recommendations (either from refresh or signon), update dropdown
+                // *** MODIFIED: Use recommendationsToUpdateUI directly ***
+                if (recommendationsToUpdateUI) {
+                    console.log("[sendCommand] Updating command generator with new recommendations:", recommendationsToUpdateUI);
+                    updateCommandGenerator(recommendationsToUpdateUI);
+                } else if (stateToUpdateUI && !recommendationsToUpdateUI) {
+                    // Fallback: If we got state but somehow no recommendations, fetch them
+                    // This shouldn't happen with the server-side change, but good for safety
+                    console.warn("[sendCommand] Refreshed state received, but no recommendations. Fetching separately.");
+                    fetch(`/api/game/${stateToUpdateUI.name}`)
+                       .then(res => res.json())
+                       .then(data => {
+                           if (data.success) {
+                               updateCommandGenerator(data.recommendedCommands);
+                           } else {
+                                console.error("Fallback fetch for recommendations failed:", data.message);
+                                updateCommandGenerator(null);
+                           }
+                       })
+                       .catch(err => {
+                            console.error("Error in fallback fetch for recommendations:", err);
+                            updateCommandGenerator(null);
+                       });
+                }
+                // --- End Update Logic ---
 
             } else { // result.success is false
-                outputDiv.classList.remove('text-green-700', 'text-orange-700');
+                outputDiv.classList.remove('text-green-700', 'text-orange-700', 'text-blue-700');
                 outputDiv.classList.add('text-red-700');
-                outputDiv.textContent = `Error: ${result.output || 'Unknown error'}`;
             }
 
         } catch (error) {
             console.error('Fetch Error:', error);
             outputDiv.textContent = `Client or Network Error: ${error.message}`;
-            outputDiv.classList.remove('text-green-700', 'text-orange-700');
+            outputDiv.classList.remove('text-green-700', 'text-orange-700', 'text-blue-700');
             outputDiv.classList.add('text-red-700');
         } finally {
             sendButton.disabled = false;
@@ -922,23 +1116,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    if (sendButton) {
-        sendButton.addEventListener('click', () => sendCommand());
-    }
 
-    // Save credentials on blur from password/variant fields
-    if (targetPasswordInput) {
-        targetPasswordInput.addEventListener('blur', saveCredentialsForGame);
-    }
-    if (targetVariantInput) {
-        targetVariantInput.addEventListener('blur', saveCredentialsForGame); // Added listener
-    }
     // --- Text Area Enter Key Listener ---
     if (generatedCommandTextarea) {
         generatedCommandTextarea.addEventListener('keydown', (event) => {
-            // Send on Enter, allow Shift+Enter for newline
             if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault(); // Prevent newline
+                event.preventDefault();
                 sendCommand();
             }
         });
@@ -946,10 +1129,5 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Initial Load ---
     initializeDashboard();
-    // Store user email in body dataset for client-side use if needed
-    const userEmailElement = document.querySelector('#user-email-indicator'); // Assuming you add an element like <span id="user-email-indicator" data-email="<%= email %>"></span>
-    if (userEmailElement) {
-         document.body.dataset.userEmail = userEmailElement.dataset.email;
-    }
 
 }); // End DOMContentLoaded

@@ -10,12 +10,12 @@
     </div>
 <% } %>
 
-<!-- Top Control Bar: Game Selection & Password -->
+<!-- Top Control Bar: Game Selection, Password, Variant -->
 <div class="card mb-6">
     <div class="flex flex-wrap items-center gap-4">
         <div class="flex-grow sm:flex-grow-0">
             <label for="game-selector" class="block text-sm font-medium text-gray-700 mb-1">Target Game:</label>
-            <select id="game-selector" class="input">
+            <select id="game-selector" class="input text-sm"> <%# Made text smaller %>
                 <option value="">-- Select Target Game --</option>
                 <% if (typeof allGames !== 'undefined' && allGames.length > 0) { %>
                     <% allGames.forEach(function(game) { %>
@@ -31,20 +31,20 @@
         </div>
         <div class="flex-grow sm:flex-grow-0">
             <label for="target-password" class="block text-sm font-medium text-gray-700 mb-1">Game Password:</label>
-            <input type="password" id="target-password" placeholder="Enter password for target game" class="input">
+            <input type="password" id="target-password" placeholder="Enter password" class="input text-sm"> <%# Made text smaller %>
             <p class="text-xs text-gray-500 mt-1">Needed for game-specific commands.</p>
         </div>
         <div class="flex-grow sm:flex-grow-0"> <%# New Variant Field %>
-            <label for="target-variant" class="block text-sm font-medium text-gray-700 mb-1">Variant (optional):</label>
-            <input type="text" id="target-variant" placeholder="e.g., chaos, ancient_med" class="input">
-            <p class="text-xs text-gray-500 mt-1">Specify if not standard variant.</p>
+            <label for="target-variant" class="block text-sm font-medium text-gray-700 mb-1">Variant/Options:</label>
+            <input type="text" id="target-variant" placeholder="e.g., chaos gunboat" class="input text-sm"> <%# Made text smaller %>
+            <p class="text-xs text-gray-500 mt-1">Specify if needed for SIGN ON.</p>
         </div>
         <div class="flex items-end space-x-2 mt-2 sm:mt-0">
-             <button id="refresh-game-state" title="Refresh selected game state" class="btn btn-secondary text-sm py-1.5 px-3">Refresh State</button>
-             <button id="clear-credentials" title="Clear selected game and stored password" class="btn btn-secondary text-sm py-1.5 px-3 bg-red-600 hover:bg-red-700 text-white">Clear Target</button>
+             <button id="refresh-game-state" title="Refresh selected game state (Runs LIST command)" class="btn btn-secondary text-sm py-1.5 px-3">Refresh State</button>
+             <button id="clear-credentials" title="Clear selected game and stored password/variant" class="btn btn-secondary text-sm py-1.5 px-3 bg-red-600 hover:bg-red-700 text-white">Clear Target</button>
         </div>
     </div>
-     <p class="text-xs text-orange-600 mt-2">Warning: Game password and variant stored in browser cookie for convenience. Clear target/sign out to remove.</p>
+     <p class="text-xs text-orange-600 mt-2">Warning: Game password and variant stored in browser cookies for convenience. Clear target/sign out to remove.</p>
 </div>
 
 
@@ -54,9 +54,10 @@
         <div class="card">
             <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Command Generator</h2>
             <label for="command-type" class="block text-sm font-medium text-gray-700 mb-2">Action:</label>
-            <select id="command-type" class="input mb-4">
+            <select id="command-type" class="input mb-4 text-sm"> <%# Made text smaller %>
                 <option value="">-- Select Action --</option>
                 <%# Options will be populated by client.js based on recommendations %>
+                <%# Keep initial server-side rendering as fallback/initial state %>
                 <% if (typeof initialRecommendedCommands !== 'undefined') { %>
                     <% const commands = initialRecommendedCommands; %>
                     <% if (commands.recommended && commands.recommended.length > 0) { %>
@@ -66,7 +67,7 @@
                     <% } %>
                     <% if (commands.playerActions && commands.playerActions.length > 0) { %>
                     <optgroup label="Player Actions" class="font-semibold bg-gray-100">
-                        <% commands.playerActions.forEach(function(cmd) { %><% if (cmd !== 'REGISTER') { %><option value="<%= cmd %>"><%= cmd %></option><% } %><% }); %>
+                        <% commands.playerActions.forEach(function(cmd) { %><option value="<%= cmd %>"><%= cmd %></option><% }); %>
                     </optgroup>
                     <% } %>
                      <% if (commands.settings && commands.settings.length > 0) { %>
@@ -86,7 +87,7 @@
                     <% } %>
                     <% if (commands.general && commands.general.length > 0) { %>
                     <optgroup label="General" class="font-semibold bg-gray-100">
-                        <% commands.general.forEach(function(cmd) { %><% if (cmd !== 'REGISTER') { %><option value="<%= cmd %>"><%= cmd %></option><% } %><% }); %>
+                        <% commands.general.forEach(function(cmd) { %><option value="<%= cmd %>"><%= cmd %></option><% }); %>
                     </optgroup>
                     <% } %>
                 <% } %>
@@ -105,7 +106,7 @@
             <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Manual Command / Generated Output</h2>
             <label for="generated-command" class="block text-sm font-medium text-gray-700 mb-2">Command Text (Press Enter to Send):</label>
             <textarea id="generated-command" placeholder="Select action or type command manually. Do NOT include SIGN OFF."
-                      class="input font-mono text-sm min-h-[150px] mb-4 resize-y"></textarea> <%# Added resize-y %>
+                      class="input font-mono text-sm min-h-[150px] mb-4 resize-y"></textarea>
             <button id="send-command" class="btn btn-primary">Send Command</button>
         </div>
 
@@ -119,7 +120,7 @@
 
     <!-- Sidebar (Right Column) -->
     <div class="lg:col-span-3">
-        <div class="card min-h-[300px]"> <%# Added min-height %>
+        <div class="card min-h-[300px]">
             <div id="game-state-sidebar">
                  <%# Initial state rendered server-side, updated client-side %>
                  <% if (typeof initialTargetGame !== 'undefined' && initialTargetGame) { %>
@@ -147,26 +148,39 @@
                                     <% gameState.players.sort((a,b) => (a.power || '').localeCompare(b.power || '')).forEach(p => { %>
                                         <li class="<%= p.email === email ? 'font-semibold text-blue-700' : '' %>">
                                             <%= p.power || '???' %>:
-                                            <% if (p.status && p.status !== 'Playing' && p.status !== 'Waiting') { %> <span class="<%= ['CD', 'Resigned', 'Abandoned', 'Eliminated'].includes(p.status) ? 'text-red-600' : 'text-gray-600' %>">(<%= p.status %>)</span> <% } else if (p.status === 'Waiting') { %> <span class="text-orange-600">(Waiting)</span> <% } %>
-                                            <% if (p.email && (!gameState.settings || !gameState.settings.gunboat)) { %> <span class="text-gray-500 text-xs ml-1">(<%= p.email %>)</span> <% } %>
+                                            <%# Display detailed player status %>
+                                            <% if (p.status && p.status !== 'Playing' && p.status !== 'Waiting') { %>
+                                                <span class="<%= ['CD', 'Resigned', 'Abandoned', 'Eliminated'].includes(p.status) ? 'text-red-600' : 'text-gray-600' %>">(<%= p.status %>)</span>
+                                            <% } else if (p.status === 'Waiting') { %>
+                                                <span class="text-orange-600">(Waiting)</span>
+                                            <% } %>
+                                            <%# Show email only if not gunboat %>
+                                            <% if (p.email && (!gameState.settings || !gameState.settings.gunboat)) { %>
+                                                <span class="text-gray-500 text-xs ml-1">(<%= p.email %>)</span>
+                                            <% } %>
                                         </li>
                                     <% }); %>
                                 </ul>
                             </div>
                         <% } else { %> <div><strong class="text-primary w-24 inline-block">Players:</strong> N/A</div> <% } %>
 
+                         <%# Display detailed game settings %>
                          <% if (gameState.settings && Object.keys(gameState.settings).length > 0) { %>
                             <div class="pt-2 mt-2 border-t border-gray-200">
                                 <strong class="text-primary block mb-1">Settings:</strong>
                                 <ul class="space-y-1 pl-2 text-xs">
-                                     <% Object.entries(gameState.settings).forEach(([key, value]) => { %>
-                                        <li><%= key.charAt(0).toUpperCase() + key.slice(1) %>: <%= typeof value === 'boolean' ? (value ? 'Yes' : 'No') : value %></li>
+                                     <% Object.entries(gameState.settings).sort(([keyA], [keyB]) => keyA.localeCompare(keyB)).forEach(([key, value]) => { %>
+                                        <% let displayValue = value; %>
+                                        <% if (typeof value === 'boolean') displayValue = value ? 'Yes' : 'No'; %>
+                                        <% const displayKey = key.charAt(0).toUpperCase() + key.slice(1); %>
+                                        <li><%= displayKey %>: <%= displayValue %></li>
                                      <% }); %>
                                 </ul>
                             </div>
                          <% } %>
                     </div>
                      <p class="text-xs text-gray-500 mt-4">(State last updated: <%= gameState.lastUpdated ? new Date(gameState.lastUpdated * 1000).toLocaleString() : 'N/A' %>)</p>
+                     <%# Add Floc.net link %>
                      <a href="https://www.floc.net/observer.py?partie=<%= gameState.name %>" target="_blank" rel="noopener noreferrer" class="text-sm text-primary hover:text-primary/80 mt-4 inline-block underline">View on Floc.net Observer</a>
                  <% } else { %>
                      <p class="text-gray-600 italic">Select a target game to view its state.</p>

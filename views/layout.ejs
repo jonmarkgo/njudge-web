@@ -9,6 +9,8 @@
     <style>
         /* Add minor style adjustments if needed */
         #game-selector { min-width: 150px; }
+        /* Ensure optgroup labels are visible */
+        optgroup { font-weight: bold; font-style: normal; }
     </style>
 </head>
 <body class="min-h-screen bg-gray-50 flex flex-col">
@@ -22,7 +24,8 @@
                 </div>
                 <% if (typeof user !== 'undefined' && user) { %>
                     <div class="flex items-center">
-                        <span id="user-email-indicator" class="text-gray-700 mr-4" data-email="<%= user %>"><%= user %></span>
+                        <%# Added id and data-email attribute %>
+                        <span id="user-email-indicator" class="text-gray-700 mr-4 text-sm" data-email="<%= user %>"><%= user %></span>
                         <form action="/signoff" method="POST" class="m-0">
                              <button type="submit" class="btn btn-secondary text-sm py-1 px-3">Sign Out</button>
                         </form>

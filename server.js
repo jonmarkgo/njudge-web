@@ -27,19 +27,19 @@ db.serialize(() => {
         name TEXT PRIMARY KEY,
         status TEXT DEFAULT 'Unknown',
         variant TEXT DEFAULT 'Standard',
-        options TEXT DEFAULT '[]',
+        options TEXT DEFAULT '[]', -- JSON array of variant options like 'Gunboat', 'Chaos'
         currentPhase TEXT DEFAULT 'Unknown',
         nextDeadline TEXT,
-        masters TEXT DEFAULT '[]',
-        players TEXT DEFAULT '[]',
-        observers TEXT DEFAULT '[]',
-        settings TEXT DEFAULT '{}',
+        masters TEXT DEFAULT '[]', -- JSON array of master emails
+        players TEXT DEFAULT '[]', -- JSON array of player objects {power, email, status, name}
+        observers TEXT DEFAULT '[]', -- JSON array of observer emails
+        settings TEXT DEFAULT '{}', -- JSON object of game settings {press, dias, nmr, etc.}
         lastUpdated INTEGER,
         rawListOutput TEXT
     )`, (err) => {
         if (err) console.error("Error creating game_states table:", err);
         else {
-            // Add columns if they don't exist (for upgrades)
+            // Add columns if they don't exist (for upgrades) - Check if all needed columns exist
              const columnsToAdd = [
                 { name: 'status', type: 'TEXT DEFAULT \'Unknown\'' }, { name: 'variant', type: 'TEXT DEFAULT \'Standard\'' },
                 { name: 'options', type: 'TEXT DEFAULT \'[]\'' }, { name: 'currentPhase', type: 'TEXT DEFAULT \'Unknown\'' },
@@ -125,7 +125,13 @@ const saveGameState = (gameName, gameState) => {
         }
         const now = Math.floor(Date.now() / 1000);
         const mastersStr = JSON.stringify(gameState.masters || []);
-        const validPlayers = (gameState.players || []).filter(p => p && typeof p === 'object' && p.power); // Ensure player objects are valid
+        // Ensure player objects are valid and contain expected fields
+        const validPlayers = (gameState.players || []).filter(p => p && typeof p === 'object' && p.power).map(p => ({
+             power: p.power,
+             email: p.email || null,
+             status: p.status || 'Unknown',
+             name: p.name || null // Add name if parsed
+        }));
         const playersStr = JSON.stringify(validPlayers);
         const observersStr = JSON.stringify(gameState.observers || []);
         const optionsStr = JSON.stringify(gameState.options || []);
@@ -155,6 +161,7 @@ const getGameState = (gameName) => {
             if (err) { console.error(`[DB Error] Failed to read state for game ${gameName}:`, err); reject(err); }
             else if (row) {
                 try {
+                    // Safely parse JSON fields, providing defaults on error
                     row.masters = JSON.parse(row.masters || '[]');
                     row.players = JSON.parse(row.players || '[]');
                     row.observers = JSON.parse(row.observers || '[]');
@@ -163,13 +170,13 @@ const getGameState = (gameName) => {
                     resolve(row);
                 } catch (parseError) {
                     console.error(`[DB Error] Failed to parse JSON state for game ${gameName}:`, parseError, 'Raw data:', row);
-                    // Return row with potentially unparsed fields or default empty arrays/objects
-                    row.masters = row.masters ? JSON.parse(row.masters || '[]') : [];
-                    row.players = row.players ? JSON.parse(row.players || '[]') : [];
-                    row.observers = row.observers ? JSON.parse(row.observers || '[]') : [];
-                    row.options = row.options ? JSON.parse(row.options || '[]') : [];
-                    row.settings = row.settings ? JSON.parse(row.settings || '{}') : {};
-                    resolve(row);
+                    // Attempt to recover with defaults
+                    row.masters = row.masters && typeof row.masters === 'string' ? JSON.parse(row.masters || '[]') : [];
+                    row.players = row.players && typeof row.players === 'string' ? JSON.parse(row.players || '[]') : [];
+                    row.observers = row.observers && typeof row.observers === 'string' ? JSON.parse(row.observers || '[]') : [];
+                    row.options = row.options && typeof row.options === 'string' ? JSON.parse(row.options || '[]') : [];
+                    row.settings = row.settings && typeof row.settings === 'string' ? JSON.parse(row.settings || '{}') : {};
+                    resolve(row); // Return row with potentially unparsed fields or default empty arrays/objects
                 }
             } else { resolve(null); }
         });
@@ -184,6 +191,7 @@ const getAllGameStates = () => {
                 const states = {};
                 rows.forEach(row => {
                     try {
+                        // Safely parse JSON fields
                         row.masters = JSON.parse(row.masters || '[]');
                         row.players = JSON.parse(row.players || '[]');
                         row.observers = JSON.parse(row.observers || '[]');
@@ -205,135 +213,187 @@ const getAllGameStates = () => {
 // --- Parsing Helper Functions ---
 const parseListOutput = (gameName, output) => {
     console.log(`[Parser LIST] Attempting to parse LIST output for ${gameName}`);
-    const gameState = { name: gameName, status: 'Unknown', variant: 'Standard', options: [], currentPhase: 'Unknown', nextDeadline: null, players: [], masters: [], observers: [], settings: {}, rawListOutput: output, lastUpdated: Math.floor(Date.now() / 1000) };
+    const gameState = {
+        name: gameName, status: 'Unknown', variant: 'Standard', options: [],
+        currentPhase: 'Unknown', nextDeadline: null, players: [], masters: [],
+        observers: [], settings: {}, rawListOutput: output,
+        lastUpdated: Math.floor(Date.now() / 1000)
+    };
     const lines = output.split('\n');
-    let readingPlayers = false; let readingSettings = false;
-    const deadlineRegex = /Deadline:\s*([SFUW]\d{4}[MRB][X]?)\s*(.*)/i;
+    let readingPlayers = false; // Flag to indicate if we are in the player/master list section
+    let readingSettings = false; // Flag for settings section
+
+    // --- Regex Definitions ---
+    const explicitDeadlineRegex = /::\s*Deadline:\s*([SFUW]\d{4}[MRB][X]?)\s+(.*)/i;
+    const activeStatusLineRegex = /Status of the (\w+) phase for (Spring|Summer|Fall|Winter) of (\d{4})\./i;
     const variantRegex = /Variant:\s*(\S+)\s*(.*)/i;
-    const playerLineRegex = /^\s+(Austria|England|France|Germany|Italy|Russia|Turkey)\s*:\s*(.*?)\s*$/i;
-    const masterLineRegex = /^\s+(?:Master|Moderator)\s*:\s*(.*?)\s*$/i; // Added Moderator
-    const observerLineRegex = /^\s+Observer\s*:\s*(.*?)\s*$/i;
+    // Player Regex: Start, Power Name, whitespace, number, whitespace, capture email, rest of line
+    const playerLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice)\s+\d+\s+([\w.-]+@[\w.-]+\.\w+).*$/i;
+    // Master Regex: Start, Master/Moderator, whitespace, number, whitespace, capture email, rest of line
+    const masterLineRegex = /^\s*(?:Master|Moderator)\s+\d+\s+([\w.-]+@[\w.-]+\.\w+).*$/i;
+    // Observer Regex: Assuming format "Observer : email@domain.com" - adjust if needed
+    const observerLineRegex = /^\s*Observer\s*:\s*([\w.-]+@[\w.-]+\.\w+).*$/i;
     const statusRegex = /Game status:\s*(.*)/i;
-    const settingsHeaderRegex = /Game settings:/i;
+    const settingsHeaderRegex = /The parameters for .*? are as follows:|Game settings:/i; // Match both possible headers
     const pressSettingRegex = /Press:\s*(.*?)(?:,|\s*$)/i;
     const diasSettingRegex = /\b(NoDIAS|DIAS)\b/i;
     const nmrSettingRegex = /\b(NMR|NoNMR)\b/i;
     const concessionSettingRegex = /\b(Concessions|No Concessions)\b/i;
-    const emailRegex = /[\w.-]+@[\w.-]+\.\w+/; // Regex to extract email
+    const emailRegex = /[\w.-]+@[\w.-]+\.\w+/; // General email regex for observer line if needed
 
+    // --- Parsing Loop ---
     lines.forEach(line => {
         const trimmedLine = line.trim();
-        let match = line.match(statusRegex);
-        if (match) { gameState.status = match[1].trim(); }
-        else {
-            // Infer status if not explicitly stated
-            if (line.includes("Game is forming")) gameState.status = 'Forming';
-            else if (line.includes("Movement results for") || line.includes("Retreats for") || line.includes("Adjustments for")) gameState.status = 'Active';
-            else if (line.includes("The game is over") || line.includes("is a draw") || line.includes("wins the game")) gameState.status = 'Finished';
-            else if (line.includes("Game is paused")) gameState.status = 'Paused';
-            else if (line.includes("Game is terminated")) gameState.status = 'Terminated';
-        }
+        let match;
 
-        match = line.match(deadlineRegex);
+        // 1. Check for Explicit Deadline Line
+        match = line.match(explicitDeadlineRegex);
         if (match) {
             gameState.currentPhase = match[1].trim();
-            const deadlineStr = match[2].trim();
-            gameState.nextDeadline = deadlineStr;
-            // Basic validation - don't try to parse if it doesn't look like a date
-            if (deadlineStr && /\w{3}\s+\w{3}\s+\d{1,2}\s+\d{4}\s+\d{2}:\d{2}:\d{2}/.test(deadlineStr)) {
-                try {
-                    const parsedDate = new Date(deadlineStr);
-                    if (isNaN(parsedDate)) {
-                        console.warn(`[Parser LIST ${gameName}] Could not parse deadline date string: ${deadlineStr}`);
-                    }
-                    // Store as string, let client format
-                } catch (e) {
-                    console.warn(`[Parser LIST ${gameName}] Error parsing deadline date: ${e}`);
-                }
+            gameState.nextDeadline = match[2].trim();
+            if (gameState.status === 'Unknown' || gameState.status === 'Forming') {
+                 gameState.status = 'Active';
+                 console.log(`[Parser LIST ${gameName}] Set status to Active based on explicit deadline line.`);
+            }
+            // Continue parsing other lines
+        }
+
+        // 2. Check for Active Status Line
+        match = line.match(activeStatusLineRegex);
+        if (match) {
+            const phaseTypeStr = match[1].toLowerCase();
+            const seasonStr = match[2].toLowerCase();
+            const year = match[3];
+            let seasonCode = 'S';
+            if (seasonStr === 'fall') seasonCode = 'F';
+            else if (seasonStr === 'winter') seasonCode = 'W';
+            else if (seasonStr === 'summer') seasonCode = 'U';
+            let phaseCode = 'M';
+            if (phaseTypeStr === 'retreat') phaseCode = 'R';
+            else if (phaseTypeStr === 'adjustment' || phaseTypeStr === 'builds') phaseCode = 'A';
+            gameState.currentPhase = `${seasonCode}${year}${phaseCode}`;
+            gameState.status = 'Active';
+            console.log(`[Parser LIST ${gameName}] Parsed active phase info: ${gameState.currentPhase} from line: ${trimmedLine}`);
+            // Continue parsing other lines
+        }
+
+        // 3. Check for Explicit Status Line
+        match = line.match(statusRegex);
+        if (match) {
+            const explicitStatus = match[1].trim();
+            if (explicitStatus !== 'Active' || gameState.status === 'Unknown') {
+                 gameState.status = explicitStatus;
+                 console.log(`[Parser LIST ${gameName}] Parsed explicit status: ${gameState.status}`);
             }
         }
 
+        // 4. Parse Variant Line
         match = line.match(variantRegex);
         if (match) {
             gameState.variant = match[1].trim();
             const optionsStr = match[2].replace(/,/g, ' ').trim();
             gameState.options = optionsStr.split(/\s+/).filter(opt => opt && opt !== 'Variant:');
-            // Infer some settings from options
             if (gameState.options.includes('Gunboat')) gameState.settings.gunboat = true;
-            if (gameState.options.includes('NMR')) gameState.settings.nmr = true; else gameState.settings.nmr = false; // Explicitly set false if not present
+            if (gameState.options.includes('NMR')) gameState.settings.nmr = true; else gameState.settings.nmr = false;
             if (gameState.options.includes('Chaos')) gameState.settings.chaos = true;
+            console.log(`[Parser LIST ${gameName}] Parsed variant: ${gameState.variant}, Options: ${gameState.options.join(', ')}`);
         }
 
-        // Start reading player/master/observer lines
-        if (trimmedLine.match(/^(Austria|England|France|Germany|Italy|Russia|Turkey|Master|Moderator|Observer)\s*:/i)) {
+        // 5. Check for Player/Master/Observer List Header
+        if (trimmedLine.startsWith("The following players are signed up for game")) {
             readingPlayers = true;
+            readingSettings = false; // Ensure we stop reading settings if we hit this header again
+            console.log(`[Parser LIST ${gameName}] Started reading player/master/observer block.`);
+            return; // Move to the next line
         }
 
+        // 6. Parse Player/Master/Observer Lines (only if flag is set)
         if (readingPlayers) {
-            match = line.match(playerLineRegex);
-            if (match) {
-                const power = match[1];
-                const details = match[2].trim();
-                const emailMatch = details.match(emailRegex);
-                const playerInfo = {
-                    power: power,
-                    email: emailMatch ? emailMatch[0] : null,
-                    status: 'Playing' // Default status
-                };
-                // Parse status from details string
-                const detailsLower = details.toLowerCase();
-                if (detailsLower.includes("waiting for orders")) playerInfo.status = "Waiting";
-                else if (detailsLower.includes("civil disorder") || detailsLower.includes("(cd)")) playerInfo.status = "CD";
-                else if (detailsLower.includes("resigned")) playerInfo.status = "Resigned";
-                else if (detailsLower.includes("abandoned")) playerInfo.status = "Abandoned";
-                else if (detailsLower.includes("eliminated")) playerInfo.status = "Eliminated";
-                gameState.players.push(playerInfo);
-            } else {
-                match = line.match(masterLineRegex);
-                if (match) {
-                    const email = match[1].trim().match(emailRegex)?.[0];
-                    if (email && !gameState.masters.includes(email)) gameState.masters.push(email);
-                } else {
-                    match = line.match(observerLineRegex);
-                    if (match) {
-                        const email = match[1].trim().match(emailRegex)?.[0];
-                        if (email && !gameState.observers.includes(email)) gameState.observers.push(email);
-                    } else if (!trimmedLine || trimmedLine.startsWith('-') || settingsHeaderRegex.test(trimmedLine)) {
-                        // Stop reading players if we hit settings or an empty/separator line
-                        readingPlayers = false;
-                    }
+            const playerMatch = line.match(playerLineRegex);
+            const masterMatch = line.match(masterLineRegex);
+            const observerMatch = line.match(observerLineRegex);
+
+            if (playerMatch) {
+                const power = playerMatch[1];
+                const email = playerMatch[2];
+                gameState.players.push({ power: power, email: email || null, status: 'Playing', name: null });
+                console.log(`[Parser LIST ${gameName}] Parsed Player: ${power} - ${email}`);
+            } else if (masterMatch) {
+                const email = masterMatch[1];
+                if (email && !gameState.masters.includes(email)) {
+                    gameState.masters.push(email);
+                    console.log(`[Parser LIST ${gameName}] Parsed Master: ${email}`);
                 }
+            } else if (observerMatch) {
+                // Observer regex might need adjustment based on actual output format
+                const email = observerMatch[1].trim().match(emailRegex)?.[0];
+                if (email && !gameState.observers.includes(email)) {
+                    gameState.observers.push(email);
+                    console.log(`[Parser LIST ${gameName}] Parsed Observer: ${email}`);
+                }
+            } else if (!trimmedLine || settingsHeaderRegex.test(line) || activeStatusLineRegex.test(line) || explicitDeadlineRegex.test(line) || line.startsWith("Status of the")) {
+                // Stop reading players if we hit settings, status, deadline, blank line, or the "Status of the..." line
+                if (readingPlayers) console.log(`[Parser LIST ${gameName}] Stopped reading player/master/observer block on line: "${line}"`);
+                readingPlayers = false;
             }
+            // If it's none of the above but readingPlayers is true, just ignore the line (could be spacing or sub-headers)
         }
 
-        if (settingsHeaderRegex.test(trimmedLine)) {
+        // 7. Parse Settings Lines
+        if (!readingSettings && settingsHeaderRegex.test(trimmedLine)) {
             readingSettings = true;
+            readingPlayers = false; // Ensure player reading stops
+            console.log(`[Parser LIST ${gameName}] Started reading settings block.`);
+            return; // Move to the next line after the header
         }
 
         if (readingSettings) {
-            match = line.match(pressSettingRegex); if (match) gameState.settings.press = match[1].trim();
-            match = line.match(diasSettingRegex); if (match) gameState.settings.dias = (match[1].toUpperCase() === 'DIAS');
-            match = line.match(nmrSettingRegex); if (match) gameState.settings.nmr = (match[1].toUpperCase() === 'NMR');
-            match = line.match(concessionSettingRegex); if (match) gameState.settings.concessions = (match[1].toLowerCase() === 'concessions');
-            if (line.toLowerCase().includes('gunboat')) gameState.settings.gunboat = true;
-            if (line.toLowerCase().includes('chaos')) gameState.settings.chaos = true;
-            // Add more settings parsing here if needed
+            // Stop reading settings if we encounter a blank line or a line indicating the start of the player list or status
+            if (!trimmedLine || trimmedLine.startsWith("The following players are signed up for game") || activeStatusLineRegex.test(line)) {
+                 if (readingSettings) console.log(`[Parser LIST ${gameName}] Stopped reading settings block on line: "${line}"`);
+                 readingSettings = false;
+            } else {
+                // Parse specific settings within the block
+                match = line.match(pressSettingRegex); if (match) gameState.settings.press = match[1].trim();
+                match = line.match(diasSettingRegex); if (match) gameState.settings.dias = (match[1].toUpperCase() === 'DIAS');
+                match = line.match(nmrSettingRegex); if (match) gameState.settings.nmr = (match[1].toUpperCase() === 'NMR');
+                match = line.match(concessionSettingRegex); if (match) gameState.settings.concessions = (match[1].toLowerCase() === 'concessions');
+                // Use includes for flags that might be part of a larger line (like Flags: NoNMR, NoList...)
+                if (line.toLowerCase().includes('gunboat')) gameState.settings.gunboat = true;
+                if (line.toLowerCase().includes('chaos')) gameState.settings.chaos = true;
+                if (line.toLowerCase().includes('partial allowed')) gameState.settings.partialPress = true;
+                if (line.toLowerCase().includes('no partial')) gameState.settings.partialPress = false;
+                if (line.toLowerCase().includes('observer any')) gameState.settings.observerPress = 'any';
+                if (line.toLowerCase().includes('observer white')) gameState.settings.observerPress = 'white';
+                if (line.toLowerCase().includes('observer none')) gameState.settings.observerPress = 'none';
+                if (line.toLowerCase().includes('strict convoy')) gameState.settings.strictConvoy = true;
+                if (line.toLowerCase().includes('strict wait')) gameState.settings.strictWait = true;
+                if (line.toLowerCase().includes('strict grace')) gameState.settings.strictGrace = true;
+                // Add more settings parsing here
+            }
         }
-    });
+    }); // End lines.forEach
 
-    // Set defaults for settings if not found and not inferred from options
+    // --- Final Status Check & Defaults ---
+    if (gameState.status === 'Unknown' && gameState.currentPhase && gameState.currentPhase !== 'Unknown') {
+        if (gameState.currentPhase.toUpperCase() === 'FORMING') {
+            gameState.status = 'Forming';
+        } else {
+            gameState.status = 'Active';
+        }
+         console.log(`[Parser LIST ${gameName}] Inferred status '${gameState.status}' from phase '${gameState.currentPhase}'.`);
+    }
+
+    // Set defaults for settings if not found
     if (gameState.settings.nmr === undefined) gameState.settings.nmr = false;
     if (gameState.settings.dias === undefined) gameState.settings.dias = true;
     if (gameState.settings.concessions === undefined) gameState.settings.concessions = true;
     if (gameState.settings.gunboat === undefined) gameState.settings.gunboat = false;
+    if (gameState.settings.press === undefined) gameState.settings.press = 'White';
+    if (gameState.settings.partialPress === undefined) gameState.settings.partialPress = true;
+    if (gameState.settings.observerPress === undefined) gameState.settings.observerPress = 'any';
 
-    // If status is still Unknown, try inferring from phase
-    if (gameState.status === 'Unknown' && gameState.currentPhase) {
-        if (gameState.currentPhase.toUpperCase() === 'FORMING') gameState.status = 'Forming';
-        else if (gameState.currentPhase !== 'Unknown') gameState.status = 'Active';
-    }
-
-    console.log(`[Parser LIST ${gameName}] Final Parsed State: Status=${gameState.status}, Phase=${gameState.currentPhase}, Variant=${gameState.variant}, Players=${gameState.players.length}, Settings=`, gameState.settings);
+    console.log(`[Parser LIST ${gameName}] Final Parsed State: Status=${gameState.status}, Phase=${gameState.currentPhase}, Variant=${gameState.variant}, Masters=${JSON.stringify(gameState.masters)}, Players=${gameState.players.length}, Settings=`, gameState.settings);
     return gameState;
 };
 
@@ -346,7 +406,8 @@ const parseWhogameOutput = (gameName, output) => {
         const trimmedLine = line.trim(); if (!trimmedLine) return;
         const masterMatch = trimmedLine.match(/^(?:Master|Moderator)\s*:\s*(.*)/i);
         const observerMatch = trimmedLine.match(/^(?:Observer|Watcher)\s*:\s*(.*)/i);
-        const powerMatch = trimmedLine.match(/^(Austria|England|France|Germany|Italy|Russia|Turkey)\s*:\s*(.*)/i);
+        // Adjusted regex to handle Machiavelli powers
+        const powerMatch = trimmedLine.match(/^(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice)\s*:\s*(.*)/i);
         if (masterMatch) {
             const detail = masterMatch[1].trim(); const email = detail.match(emailRegex)?.[0];
             if (email && !masters.includes(email)) masters.push(email);
@@ -365,60 +426,88 @@ const parseWhogameOutput = (gameName, output) => {
 };
 
 // --- Command Recommendation Logic ---
-// Updated to take gameState and userEmail, doesn't rely on session game/power
 const getRecommendedCommands = (gameState, userEmail) => {
-    const recommendations = { recommended: [], gameInfo: [], playerActions: [], settings: [], general: [], master: [] };
+    console.log(`[getRecommendedCommands] Generating for user: ${userEmail}, Game State:`, gameState ? { name: gameState.name, status: gameState.status, phase: gameState.currentPhase, masters: gameState.masters } : null); // Log input
 
+    const recommendations = {
+        recommended: [], playerActions: [], settings: [],
+        gameInfo: [], master: [], general: [],
+    };
+
+    // Define all possible commands (keep this list comprehensive)
+    const allCommands = [ /* ... Keep the full list from previous version ... */ ];
+    const generalCmds = ['GET', 'HELP', 'VERSION', 'WHOIS', 'LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'MAP', 'GET DEDICATION', 'INFO PLAYER', 'MANUAL'];
+    const playerAccountCmds = ['REGISTER', 'I AM ALSO', 'SET PASSWORD', 'SET ADDRESS'];
+    const joiningCmds = ['CREATE ?', 'SIGN ON ?', 'SIGN ON ?game', 'SIGN ON power', 'OBSERVE', 'WATCH'];
+    const playerActionCmds = ['ORDERS', 'PRESS', 'BROADCAST', 'POSTAL PRESS', 'DIARY', 'RESIGN', 'WITHDRAW'];
+    const playerSettingCmds = [
+        'SET WAIT', 'SET NOWAIT', 'SET ABSENCE', 'SET NOABSENCE', 'SET HOLIDAY', 'SET VACATION',
+        'SET DRAW', 'SET NODRAW', 'SET CONCEDE', 'SET NOCONCEDE', 'SET PREFERENCE', 'PHASE', 'IF', 'CLEAR'
+    ];
+    const masterCmds = [
+        'BECOME MASTER', 'SET MODERATE', 'SET UNMODERATE', 'BECOME', 'EJECT', 'FORCE BEGIN', 'PAUSE', 'PREDICT',
+        'PROMOTE', 'PROCESS', 'ROLLBACK', 'TERMINATE', 'RESUME', 'UNSTART', 'SET',
+        'SET DEADLINE', 'SET GRACE', 'SET START', 'SET COMMENT', 'SET COMMENT BEGIN', 'SET CD', 'SET NMR',
+        'SET CONCESSIONS', 'SET DIAS', 'SET LIST', 'SET PUBLIC', 'SET PRIVATE', 'SET AUTO PROCESS', 'SET MANUAL PROCESS',
+        'SET AUTO START', 'SET MANUAL START', 'SET RATED', 'SET UNRATED', 'SET MAX ABSENCE', 'SET LATE COUNT',
+        'SET STRICT GRACE', 'SET STRICT WAIT', 'SET MOVE', 'SET RETREAT', 'SET ADJUST', 'SET ALL PRESS', 'SET NORMAL PRESS',
+        'SET QUIET', 'SET NO QUIET', 'SET WATCH ALL PRESS', 'SET NO WATCH ALL PRESS', 'SET ACCESS', 'SET ALLOW PLAYER',
+        'SET DENY PLAYER', 'SET LEVEL', 'SET DEDICATION', 'SET ONTIMERAT', 'SET RESRAT', 'SET APPROVAL', 'SET APPROVE',
+        'SET NOT APPROVE', 'SET BLANK PRESS', 'SET BROADCAST', 'SET NORMAL BROADCAST', 'SET NO FAKE', 'SET GREY',
+        'SET NO WHITE', 'SET GREY/WHITE', 'SET LATE PRESS', 'SET MINOR PRESS', 'SET MUST ORDER', 'SET NO PRESS',
+        'SET NONE', 'SET OBSERVER', 'SET PARTIAL', 'SET PARTIAL FAKES BROADCAST', 'SET PARTIAL MAY', 'SET POSTAL PRESS',
+        'SET WHITE', 'SET WHITE/GREY', 'SET VARIANT', 'SET NOT VARIANT', 'SET ANY CENTER', 'SET ANY DISBAND',
+        'SET ATTACK TRANSFORM', 'SET AUTO DISBAND', 'SET BCENTERS', 'SET BLANK BOARD', 'SET EMPTY BOARD', 'SET CENTERS',
+        'SET COASTAL CONVOYS', 'SET DISBAND', 'SET DUALITY', 'SET GATEWAYS', 'SET HOME CENTER', 'SET HONG KONG',
+        'SET NORMAL DISBAND', 'SET ONE CENTER', 'SET PLAYERS', 'SET PORTAGE', 'SET POWERS', 'SET PROXY', 'SET RAILWAYS',
+        'SET REVEAL', 'SET SECRET', 'SET SHOW', 'SET SUMMER', 'SET TOUCH PRESS', 'SET TRANSFORM', 'SET TRAFO',
+        'SET ADJACENT', 'SET ADJACENCY', 'SET ASSASSINS', 'SET ASSASSINATION', 'SET BANK', 'SET BANKERS', 'SET LOANS',
+        'SET DICE', 'SET FAMINE', 'SET FORT', 'SET FORTRESS', 'SET GARRISON', 'SET MACH2', 'SET MONEY', 'SET PLAGUE',
+        'SET SPECIAL', 'SET STORM'
+    ];
+
+    // Assign all commands to basic categories first
+    recommendations.general = [...generalCmds, ...playerAccountCmds];
+    recommendations.gameInfo = [...joiningCmds];
+    recommendations.playerActions = [...playerActionCmds];
+    recommendations.settings = [...playerSettingCmds];
+    recommendations.master = [...masterCmds];
+
+    // Refine based on context
     if (!gameState || !userEmail) { // No game context or user email
-        recommendations.recommended = ['SIGN ON ?', 'SIGN ON ?game', 'SIGN ON power', 'OBSERVE', 'LIST'];
-        recommendations.gameInfo = ['WHOGAME', 'HISTORY', 'SUMMARY', 'CREATE ?'];
-        recommendations.playerActions = ['SET PASSWORD', 'SET ADDRESS']; // REGISTER handled separately
-        recommendations.general = ['GET', 'WHOIS', 'HELP', 'VERSION', 'MANUAL'];
+        console.log("[getRecommendedCommands] No game state or user email provided.");
+        recommendations.recommended = ['SIGN ON ?', 'SIGN ON ?game', 'SIGN ON power', 'OBSERVE', 'LIST', 'CREATE ?'];
     } else {
-        // Determine user's role in *this specific game*
-        const userIsMaster = gameState.masters?.includes(userEmail);
-        const myPlayerInfo = gameState.players?.find(p => p.email === userEmail);
+        // Determine user's role
+        // Ensure masters array exists and is an array before checking includes
+        const userIsMaster = Array.isArray(gameState.masters) && gameState.masters.includes(userEmail);
+        const myPlayerInfo = Array.isArray(gameState.players) ? gameState.players.find(p => p.email === userEmail) : null;
         const userIsPlayer = !!myPlayerInfo;
-        const userPower = userIsPlayer ? myPlayerInfo.power : null;
-        const userIsObserver = gameState.observers?.includes(userEmail) && !userIsPlayer && !userIsMaster;
+        const userIsObserver = Array.isArray(gameState.observers) && gameState.observers.includes(userEmail) && !userIsPlayer && !userIsMaster;
 
         const phase = gameState.currentPhase?.toUpperCase() || 'UNKNOWN';
+        // Ensure status check is case-insensitive and handles potential null/undefined
         const status = gameState.status?.toUpperCase() || 'UNKNOWN';
         const playerStatus = myPlayerInfo?.status?.toUpperCase() || 'UNKNOWN';
+        const isActivePlayer = userIsPlayer && !['CD', 'RESIGNED', 'ABANDONED', 'ELIMINATED'].includes(playerStatus);
 
-        // Basic game info is always useful
-        recommendations.gameInfo = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME'];
+        console.log(`[getRecommendedCommands] Role Check: Master=${userIsMaster}, Player=${userIsPlayer}, Observer=${userIsObserver}, ActivePlayer=${isActivePlayer}`);
+        console.log(`[getRecommendedCommands] Game Status: ${status}, Phase: ${phase}`);
 
-        // General commands
-        recommendations.general = ['GET', 'HELP', 'VERSION', 'MANUAL'];
-
-        // Player-specific actions
-        if (userIsPlayer) {
-            recommendations.playerActions.push(...['SET PASSWORD', 'SET ADDRESS', 'RESIGN', 'DIARY']);
-            recommendations.settings.push('PHASE', 'IF', 'CLEAR');
-
-            // Press/Broadcast based on game settings
-            if (gameState.settings?.press !== 'None') {
-                 recommendations.playerActions.push('PRESS', 'BROADCAST');
-            }
-
-            // Deadline related
-            recommendations.playerActions.push('SET ABSENCE', 'SET NOABSENCE');
-            if (gameState.settings?.wait !== false) recommendations.playerActions.push('SET WAIT', 'SET NOWAIT');
-
-            // Draw/Concede based on settings
-            if (gameState.settings?.dias !== false || gameState.settings?.dias === undefined) {
-                recommendations.playerActions.push('SET DRAW', 'SET NODRAW');
-            } else { // NoDIAS
-                recommendations.playerActions.push('SET DRAW', 'SET NODRAW'); // Syntax is different but command is same
-            }
-            if (gameState.settings?.concessions !== false) {
-                recommendations.playerActions.push('SET CONCEDE', 'SET NOCONCEDE');
-            }
-
-            // Recommended based on phase/status
-            if (status === 'ACTIVE' && !['CD', 'RESIGNED', 'ABANDONED', 'ELIMINATED'].includes(playerStatus)) {
-                if (phase.endsWith('M') || phase.endsWith('R') || phase.endsWith('B')) {
+        // --- Recommendations based on Status ---
+        if (status === 'FORMING') {
+            console.log("[getRecommendedCommands] Status: FORMING");
+            if (userIsPlayer) recommendations.recommended.push('SET PREFERENCE');
+            else if (!userIsMaster && !userIsObserver) recommendations.recommended.push('SIGN ON ?game');
+            if (userIsMaster) recommendations.recommended.push('FORCE BEGIN', 'SET');
+            recommendations.recommended.push('LIST', 'WHOGAME');
+        } else if (status === 'ACTIVE') {
+            console.log("[getRecommendedCommands] Status: ACTIVE");
+            // Player recommendations
+            if (isActivePlayer) {
+                console.log("[getRecommendedCommands] User is Active Player.");
+                // Check phase for ORDERS (Movement, Retreat, Build/Adjust)
+                if (phase.endsWith('M') || phase.endsWith('R') || phase.endsWith('B') || phase.endsWith('A')) {
                     recommendations.recommended.push('ORDERS');
                 }
                 if (gameState.settings?.press !== 'None') {
@@ -431,161 +520,176 @@ const getRecommendedCommands = (gameState, userEmail) => {
                 if (gameState.settings?.concessions !== false) {
                     recommendations.recommended.push('SET CONCEDE');
                 }
-            } else if (status === 'FORMING') {
-                recommendations.recommended = ['SET PREFERENCE'];
-                 if (gameState.settings?.press !== 'None') recommendations.recommended.push('PRESS');
-            } else if (status === 'PAUSED') {
-                 if (gameState.settings?.press !== 'None') recommendations.recommended.push('PRESS');
-            } else if (status === 'FINISHED' || status === 'TERMINATED') {
-                recommendations.recommended = ['HISTORY', 'SUMMARY'];
-            } else { // Unknown status or player inactive
-                recommendations.recommended = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME'];
+                recommendations.recommended.push('DIARY');
             }
+            // Observer recommendations
+            else if (userIsObserver && gameState.settings?.observerPress !== 'none' && gameState.settings?.press !== 'None') {
+                console.log("[getRecommendedCommands] User is Observer with Press rights.");
+                 recommendations.recommended.push('PRESS', 'BROADCAST');
+            }
+            // Uninvolved user recommendations
+            else if (!userIsPlayer && !userIsMaster && !userIsObserver) {
+                console.log("[getRecommendedCommands] User is not involved.");
+                 recommendations.recommended.push('SIGN ON power', 'OBSERVE');
+            }
+            // Master recommendations
+            if (userIsMaster) {
+                console.log("[getRecommendedCommands] User is Master.");
+                 recommendations.recommended.push('PROCESS', 'SET DEADLINE', 'PAUSE', 'EJECT', 'BECOME');
+                 // Add more common master actions if desired
+            }
+            // General recommendations for active games
+            recommendations.recommended.push('LIST', 'HISTORY', 'SUMMARY', 'WHOGAME');
 
-        } else if (userIsObserver) {
-            recommendations.playerActions.push(...['SET PASSWORD', 'SET ADDRESS', 'RESIGN']); // Observer can resign observation
-            if (gameState.settings?.observerPress !== 'none' && gameState.settings?.press !== 'None') {
-                recommendations.playerActions.push('PRESS', 'BROADCAST');
-                recommendations.recommended.push('PRESS', 'BROADCAST');
-            } else {
-                 recommendations.recommended = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME'];
-            }
-        } else if (!userIsMaster) { // User not in game at all
-             recommendations.recommended = ['SIGN ON power', 'OBSERVE']; // Suggest joining
-             recommendations.playerActions = ['SET PASSWORD', 'SET ADDRESS']; // Can still manage account
+        } else if (status === 'PAUSED') {
+            console.log("[getRecommendedCommands] Status: PAUSED");
+             if (userIsMaster) recommendations.recommended.push('RESUME', 'TERMINATE');
+             if (gameState.settings?.press !== 'None' && (isActivePlayer || (userIsObserver && gameState.settings?.observerPress !== 'none'))) {
+                 recommendations.recommended.push('PRESS', 'BROADCAST');
+             }
+             recommendations.recommended.push('LIST', 'HISTORY', 'SUMMARY', 'WHOGAME');
+        } else if (status === 'FINISHED' || status === 'TERMINATED') {
+            console.log("[getRecommendedCommands] Status: FINISHED/TERMINATED");
+             recommendations.recommended = ['HISTORY', 'SUMMARY', 'LIST'];
+             if (userIsMaster) recommendations.recommended.push('ROLLBACK', 'UNSTART');
+        } else { // Unknown status
+            console.log("[getRecommendedCommands] Status: UNKNOWN");
+             recommendations.recommended = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME'];
+             if (!userIsPlayer && !userIsMaster && !userIsObserver) recommendations.recommended.push('SIGN ON power', 'OBSERVE');
         }
 
-        // Master commands
-        if (userIsMaster) {
-            recommendations.master.push(...['SET', 'PROCESS', 'ROLLBACK', 'PAUSE', 'RESUME', 'TERMINATE', 'EJECT', 'BECOME', 'PROMOTE', 'FORCE BEGIN', 'UNSTART']);
-            // Add common SET options for masters
-            recommendations.master.push(...['SET DEADLINE', 'SET GRACE', 'SET START', 'SET NMR', 'SET NO NMR', 'SET DIAS', 'SET NO DIAS', 'SET CONCESSIONS', 'SET NO CONCESSIONS', 'SET VARIANT', 'SET NOT VARIANT', 'SET PUBLIC', 'SET PRIVATE']);
-            // Add press control settings
-             recommendations.master.push(...['SET ALL PRESS', 'SET NORMAL PRESS', 'SET QUIET', 'SET NO QUIET', 'SET WATCH ALL PRESS', 'SET NO WATCH ALL PRESS']);
+        // --- Adjust Categories ---
+        if (userIsPlayer || userIsMaster || userIsObserver) {
+            recommendations.gameInfo = recommendations.gameInfo.filter(cmd => !joiningCmds.includes(cmd));
+        }
+        recommendations.gameInfo.push('LIST', 'HISTORY', 'SUMMARY', 'WHOGAME');
 
-            if (status === 'UNKNOWN' || status === 'FORMING') recommendations.recommended.push('FORCE BEGIN', 'SET');
-            if (status === 'PAUSED') recommendations.recommended.push('RESUME');
-            if (status === 'FINISHED' || status === 'TERMINATED') recommendations.recommended.push('ROLLBACK', 'UNSTART');
+        if (!userIsMaster) {
+            recommendations.master = [];
+        }
+        if (!userIsPlayer && !userIsObserver && !userIsMaster) {
+            recommendations.playerActions = [];
+            recommendations.settings = [];
+        } else if (userIsObserver && !userIsMaster) {
+            recommendations.playerActions = recommendations.playerActions.filter(cmd => ['RESIGN', 'WITHDRAW', 'PRESS', 'BROADCAST'].includes(cmd));
+            recommendations.settings = [];
         }
     }
 
-    // Add global commands if not present
-    if (!recommendations.general.includes('WHOIS')) recommendations.general.push('WHOIS');
+    // --- Final Cleanup ---
+    const allListedCmds = new Set([
+        ...recommendations.recommended, ...recommendations.playerActions, ...recommendations.settings,
+        ...recommendations.gameInfo, ...recommendations.master, ...recommendations.general
+    ]);
+    if (!allListedCmds.has('MANUAL')) {
+        recommendations.general.push('MANUAL');
+    }
 
-    // Filter duplicates across all categories and sort
     const uniqueCommands = new Set();
-    const filterUnique = (arr) => arr.filter(cmd => {
-        if (uniqueCommands.has(cmd)) return false;
+    const filterUniqueAndSort = (arr) => arr.filter(cmd => {
+        if (uniqueCommands.has(cmd) || cmd === 'REGISTER' || cmd === 'SIGN OFF') return false;
         uniqueCommands.add(cmd);
         return true;
-    });
+    }).sort();
 
     const finalRecommendations = {};
     for (const key in recommendations) {
-        finalRecommendations[key] = filterUnique(recommendations[key]).sort();
+        finalRecommendations[key] = filterUniqueAndSort(recommendations[key]);
     }
 
-    // Ensure MANUAL is always available
-    if (!uniqueCommands.has('MANUAL')) {
-        finalRecommendations.general.push('MANUAL');
-        finalRecommendations.general.sort();
-    }
-
-    console.log(`[Recommendations for ${userEmail} in ${gameState?.name || 'No Game'}] Generated:`, finalRecommendations);
+    console.log(`[getRecommendedCommands] Final Recommendations:`, finalRecommendations); // Log final output
     return finalRecommendations;
 };
-
 // --- Dip Execution Function ---
-// Takes email, command, and optional game context (name, password)
+// Takes email, command, and optional game context (name, password, variant)
 const executeDipCommand = (email, command, targetGame = null, targetPassword = null, targetVariant = null) => {
     return new Promise(async (resolve, reject) => { // Make async to await getGameState
         const now = new Date();
         let fullCommand = command.trim();
-        const commandVerb = fullCommand.split(/\s+/)[0].toUpperCase();
+        const commandParts = fullCommand.split(/\s+/);
+        const commandVerb = commandParts[0].toUpperCase();
 
-        // Commands that require game context (SIGN ON prepended)
-        // This list needs careful review based on njudgedocs.txt
-        const gameContextCommands = [
-            'ORDERS', 'PRESS', 'BROADCAST', 'DIARY', 'RESIGN', 'WITHDRAW', // Player actions in-game
-            'SET WAIT', 'SET NOWAIT', 'SET ABSENCE', 'SET NOABSENCE', 'SET DRAW', 'SET NODRAW', 'SET CONCEDE', 'SET NOCONCEDE', // Player settings in-game
-            'PHASE', 'IF', 'CLEAR', // Future orders
-            'PROCESS', 'ROLLBACK', 'PAUSE', 'RESUME', 'TERMINATE', 'EJECT', 'BECOME', 'PROMOTE', // Master actions
-            'SET DEADLINE', 'SET GRACE', 'SET START', 'SET NMR', 'SET NO NMR', // Master settings (most SET need context)
-            // Add other SET commands that modify *this* game's state
-            'SET VARIANT', 'SET NOT VARIANT', 'SET PUBLIC', 'SET PRIVATE', 'SET APPROVAL', 'SET NO APPROVAL', 'SET APPROVE', 'SET NOT APPROVE',
-            // WHOGAME, HISTORY, SUMMARY *can* take a game name, but don't *require* sign-on if name is provided.
-            // LIST can take a game name, but doesn't require sign-on.
-            // SET PASSWORD/ADDRESS apply to the user account, not a specific game context directly.
-        ];
-
-        // Commands that *don't* need game context prepended
+        // Commands that *don't* need game context prepended (SIGN ON handled separately)
         const noContextCommands = [
             'REGISTER', 'WHOIS', 'INFO', 'GET', 'VERSION', 'HELP', 'LIST', // Global info
-            'SIGN', 'OBSERVE', 'WATCH', 'CREATE', // Initiating game interaction
+            'CREATE', // Initiating game interaction
             'SET PASSWORD', 'SET ADDRESS', // User account settings
-            'MANUAL' // User explicitly handles everything
+            'MANUAL', // User explicitly handles everything
+            'I AM ALSO', 'GET DEDICATION', 'INFO PLAYER', 'SEND', 'MAP' // More info/account commands
         ];
 
-        let requiresContext = false;
-        if (!noContextCommands.includes(commandVerb) && !(commandVerb === 'SIGN' && command.toUpperCase().includes('ON'))) {
-             // Assume context is needed if not explicitly excluded. Refine this list as needed.
-             requiresContext = true;
-             // Special case: Some SET commands might be global, others game-specific.
-             // For now, assume most SET commands target the current game context.
-             if (commandVerb === 'SET' && commandParts.length > 1) {
-                 const setOption = commandParts[1].toUpperCase();
-                 if (['PASSWORD', 'ADDRESS'].includes(setOption)) {
-                     requiresContext = false; // These are user-level
+        // Commands that *might* take a game name but don't require SIGN ON if provided
+        const gameNameOptionalCommands = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'OBSERVE', 'WATCH'];
+
+        let requiresSignOn = false;
+
+        if (commandVerb === 'SIGN' && command.toUpperCase().includes(' ON ')) {
+            // SIGN ON itself doesn't need a prefix, it *is* the prefix/context setter
+            requiresSignOn = false;
+        } else if (noContextCommands.includes(commandVerb)) {
+            requiresSignOn = false;
+        } else if (gameNameOptionalCommands.includes(commandVerb) && commandParts.length > 1) {
+            // Check if the second part looks like a game name and not a keyword
+            const potentialGameName = commandParts[1];
+            const keywords = ['FULL', 'FROM', 'TO', 'LINES', 'EXCLSTART', 'EXCLEND', 'BROAD'];
+            if (/^[a-zA-Z0-9]{1,8}$/.test(potentialGameName) && !keywords.includes(potentialGameName.toUpperCase())) {
+                 // Command provides its own game context, no SIGN ON needed
+                 requiresSignOn = false;
+                 // Update targetGame if specified differently
+                 if (targetGame && targetGame !== potentialGameName) {
+                     console.log(`[Execute Prep] Command ${commandVerb} specifies game '${potentialGameName}', using it instead of context '${targetGame}' for this execution.`);
+                     targetGame = potentialGameName; // Use the command's game for this specific execution
+                 } else if (!targetGame) {
+                     targetGame = potentialGameName;
                  }
-             }
+            } else {
+                 // Doesn't look like a game name, assume it needs context if targetGame is set
+                 requiresSignOn = !!targetGame;
+            }
+        } else {
+            // Default: Assume context is needed if a target game is selected
+            requiresSignOn = !!targetGame;
         }
 
 
-        if (requiresContext) {
+        let signOnPrefix = null;
+        if (requiresSignOn) {
             if (!targetGame || !targetPassword) {
-                return reject({ success: false, output: `Error: Command "${commandVerb}" requires a target game and password, but none were provided.` });
+                return reject({ success: false, output: `Error: Command "${commandVerb}" requires a target game and password, but none were provided or inferred.` });
             }
 
-            let signOnPrefix = null;
+            // Determine the correct SIGN ON prefix (Variant > Role > Default)
             const variant = targetVariant; // Use the passed-in variant
 
             if (variant && variant.trim() !== '') {
                 // Variant logic: Use the specific format requested, overriding role-based prefix
                 const cleanVariant = variant.trim();
+                // Use SIGN ON ?game password variant format
                 signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword} ${cleanVariant}`;
                 console.log(`[Execute Prep] Using variant sign-on for ${email} on game ${targetGame} with variant ${cleanVariant}`);
             } else {
-                // No variant: Use existing role-based logic
+                // No variant: Use role-based logic
                 try {
                     const gameState = await getGameState(targetGame);
                     if (!gameState) {
-                         // Game doesn't exist in DB yet, maybe it's being created or just not synced?
-                         // We can't determine the role. Let the command fail at the judge if needed.
-                         // Or, maybe assume observer/player sign on? Let's try player first.
-                         console.warn(`[Execute Prep] Game ${targetGame} not in DB. Assuming player sign-on ('?') for command ${commandVerb}.`);
-                         // Heuristic: Try signing on as power '?' (observer/joiner)
+                         console.warn(`[Execute Prep] Game ${targetGame} not in DB. Assuming join/observe sign-on ('?') for command ${commandVerb}.`);
                          signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword}`;
-
                     } else {
                         const userIsMaster = gameState.masters?.includes(email);
                         const myPlayerInfo = gameState.players?.find(p => p.email === email);
                         const userIsPlayer = !!myPlayerInfo;
-                        const userPower = userIsPlayer ? myPlayerInfo.power.charAt(0).toUpperCase() : null; // Use initial
+                        const userPowerInitial = userIsPlayer ? myPlayerInfo.power?.charAt(0).toUpperCase() : null;
                         const userIsObserver = gameState.observers?.includes(email) && !userIsPlayer && !userIsMaster;
 
-                        if (userIsPlayer && userPower) {
-                            signOnPrefix = `SIGN ON ${userPower}${targetGame} ${targetPassword}`;
+                        if (userIsPlayer && userPowerInitial) {
+                            signOnPrefix = `SIGN ON ${userPowerInitial}${targetGame} ${targetPassword}`;
                         } else if (userIsMaster) {
-                            // Masters sign on with 'M' initial
+                            // Masters sign on with 'M' initial (convention, might vary)
                             signOnPrefix = `SIGN ON M${targetGame} ${targetPassword}`;
                         } else if (userIsObserver) {
-                             // Observers sign on with 'O' initial
+                             // Observers sign on with 'O' initial (convention, might vary)
                             signOnPrefix = `SIGN ON O${targetGame} ${targetPassword}`;
                         } else {
-                            // User not found in this game. Maybe trying to join? Or error?
-                            // Let the judge handle the error if they aren't allowed.
-                            // We could try OBSERVE or SIGN ON ? but that complicates things.
-                            // Let's assume they *should* have access and try signing on as a player initial '?'
                              console.warn(`[Execute Prep] User ${email} not found as player/master/observer in ${targetGame}. Assuming join/observe sign-on ('?') for command ${commandVerb}.`);
                              signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword}`;
                         }
@@ -596,13 +700,12 @@ const executeDipCommand = (email, command, targetGame = null, targetPassword = n
                 }
             }
 
-            // Apply the determined prefix (either variant-based or role-based)
+            // Apply the determined prefix
             if (signOnPrefix) {
                 fullCommand = `${signOnPrefix}\n${fullCommand}`;
                 console.log(`[Execute Prep] Prepended "${signOnPrefix.split(' ')[0]}..." for user ${email} on game ${targetGame} for command ${commandVerb}`);
-            } else if (!variant || variant.trim() === '') { // Only log error if no prefix could be determined *and* no variant was supplied
+            } else { // Should only happen if requiresSignOn was true but no prefix could be determined (e.g., DB error handled above)
                  console.error(`[Execute Prep] Could not determine SIGN ON prefix for user ${email} on game ${targetGame} for command ${commandVerb}. Proceeding without prefix.`);
-                 // Proceed without prefix, judge might reject it.
             }
         }
 
@@ -634,14 +737,15 @@ const executeDipCommand = (email, command, targetGame = null, targetPassword = n
             }
             if (!executionSuccess) {
                  console.error(`[Execute Error] Execution Failed for ${email}: Exit code ${code}, Signal ${signal}`);
-                 // Provide more useful error message if possible
                  let errorMsg = `Execution failed: Exit code ${code}, Signal ${signal}`;
                  if (stderrData.includes('command not found') || stderrData.includes('No such file')) {
                      errorMsg += `\n\nPossible cause: dip binary path incorrect or binary not executable. Check DIP_BINARY_PATH in .env and permissions.`;
                  } else if (stderrData.includes('timeout')) {
                       errorMsg += `\n\nPossible cause: Command took too long to execute.`;
                  }
-                 return reject({ success: false, output: `${errorMsg}\n\n${output}` });
+                 // Include judge output in the error message if available
+                 errorMsg += `\n\n${output}`;
+                 return reject({ success: false, output: errorMsg });
             }
 
             // Resolve with success and output
@@ -687,7 +791,7 @@ app.use(session({
     secret: sessionSecret || 'fallback-secret-change-me',
     resave: false,
     saveUninitialized: false,
-    cookie: { secure: process.env.NODE_ENV === 'production', httpOnly: true, maxAge: 1000 * 60 * 60 * 24 * 7 }
+    cookie: { secure: process.env.NODE_ENV === 'production', httpOnly: true, maxAge: 1000 * 60 * 60 * 24 * 7 } // 1 week
 }));
 
 // Middleware to ensure email is in session
@@ -695,7 +799,12 @@ function requireEmail(req, res, next) {
     if (!req.session.email) {
         // Clear any potentially stale game cookies if session is lost
         res.clearCookie('targetGame');
-        res.clearCookie('targetPassword');
+        // Clear all game-specific password/variant cookies (more robust)
+        Object.keys(req.cookies).forEach(cookieName => {
+             if (cookieName.startsWith('targetPassword_') || cookieName.startsWith('targetVariant_')) {
+                 res.clearCookie(cookieName);
+             }
+        });
         if (req.path === '/') return next(); // Allow access to root
         if (req.xhr || req.headers.accept.indexOf('json') > -1) {
              return res.status(401).json({ success: false, output: 'Session expired or invalid. Please reload.' });
@@ -717,7 +826,7 @@ app.get('/', (req, res) => {
 
 app.post('/start', async (req, res) => {
     const email = req.body.email;
-    if (!email || !email.includes('@')) {
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { // Basic email format check
         return res.render('index', { layout: false, error: 'Please enter a valid email address.' });
     }
     try {
@@ -725,7 +834,11 @@ app.post('/start', async (req, res) => {
         req.session.email = email;
         // Clear any old game context on new login
         res.clearCookie('targetGame');
-        res.clearCookie('targetPassword');
+        Object.keys(req.cookies).forEach(cookieName => {
+             if (cookieName.startsWith('targetPassword_') || cookieName.startsWith('targetVariant_')) {
+                 res.clearCookie(cookieName);
+             }
+        });
         req.session.save(err => {
             if (err) { console.error("Session save error on /start:", err); return res.render('index', { layout: false, error: 'Session error. Please try again.' }); }
             res.redirect('/dashboard');
@@ -751,6 +864,7 @@ app.post('/register', requireEmail, async (req, res) => {
         return res.render('register', { email: email, error: 'All fields are required.', formData: req.body });
     }
 
+    // Construct REGISTER command carefully, ensuring newlines
     const registerCommand = `REGISTER
 name: ${name}
 address: ${address}
@@ -766,7 +880,8 @@ END`;
         // Registration doesn't need game context
         const result = await executeDipCommand(email, registerCommand);
 
-        const outputLower = result.stdout.toLowerCase();
+        const outputLower = result.stdout.trim().toLowerCase();
+        // Check for various success messages
         if (outputLower.includes("registration accepted") ||
             outputLower.includes("updated registration") ||
             outputLower.includes("already registered") ||
@@ -775,7 +890,7 @@ END`;
             console.log(`[Register Success] User ${email} registered with judge.`);
             req.session.save(err => {
                  if (err) console.error("Session save error after registration:", err);
-                 res.redirect('/dashboard');
+                 res.redirect('/dashboard'); // Redirect to dashboard on success
             });
         } else {
             console.error(`[Register Fail] Judge rejected registration for ${email}. Output:\n${result.output}`);
@@ -827,7 +942,13 @@ async function syncDipMaster() {
                             gamesFromMaster[gameName].currentPhase = phaseOrStatus;
                             gamesFromMaster[gameName].status = 'Active'; // Assume active if phase looks valid
                         } else {
-                            gamesFromMaster[gameName].status = phaseOrStatus; // Use Forming, Paused etc. as status
+                            // Use Forming, Paused etc. as status, ensure proper casing
+                            const statusLower = phaseOrStatus.toLowerCase();
+                            if (statusLower === 'forming') gamesFromMaster[gameName].status = 'Forming';
+                            else if (statusLower === 'paused') gamesFromMaster[gameName].status = 'Paused';
+                            else if (statusLower === 'finished') gamesFromMaster[gameName].status = 'Finished';
+                            else if (statusLower === 'terminated') gamesFromMaster[gameName].status = 'Terminated';
+                            else gamesFromMaster[gameName].status = 'Unknown'; // Fallback
                         }
                         console.log(`[Sync] Found game: ${gameName}, Status/Phase: ${phaseOrStatus} in ${dipMasterPath}`);
                     }
@@ -845,10 +966,11 @@ async function syncDipMaster() {
 
             if (!currentState) {
                 console.log(`[Sync DB] Game '${gameName}' not in DB. Adding basic state from dip.master.`);
+                // Create a minimal state based on dip.master info
                 currentState = { name: gameName, status: masterInfo.status, variant: 'Standard', options: [], currentPhase: masterInfo.currentPhase, nextDeadline: null, masters: [], players: [], observers: [], settings: {} };
                 needsSave = true;
             } else {
-                // Update phase/status if different from dip.master
+                // Update phase/status if different from dip.master AND dip.master has a meaningful value
                 if (masterInfo.currentPhase !== 'Unknown' && currentState.currentPhase !== masterInfo.currentPhase) {
                     console.log(`[Sync DB] Updating phase for game '${gameName}' from ${currentState.currentPhase} to ${masterInfo.currentPhase}`);
                     currentState.currentPhase = masterInfo.currentPhase;
@@ -885,6 +1007,8 @@ async function syncDipMaster() {
 // API endpoint to get all game names and basic status
 app.get('/api/games', requireEmail, async (req, res) => {
     try {
+        // Sync before getting list to ensure it's up-to-date
+        await syncDipMaster();
         const gameStates = await getAllGameStates();
         // Return only essential info for the dropdown
         const gameList = Object.values(gameStates).map(g => ({
@@ -908,9 +1032,16 @@ app.get('/api/game/:gameName', requireEmail, async (req, res) => {
     try {
         let gameState = await getGameState(gameName);
         if (!gameState) {
-            // Optionally trigger a LIST command if game not found in DB?
-            // For now, just return not found. Client can trigger refresh.
-            return res.status(404).json({ success: false, message: `Game '${gameName}' not found in database.` });
+            // If not in DB, maybe it exists in dip.master but hasn't been LISTed yet?
+            // Trigger a sync and try again.
+            console.log(`[API /api/game] Game ${gameName} not in DB, attempting sync and re-fetch.`);
+            await syncDipMaster();
+            gameState = await getGameState(gameName);
+
+            if (!gameState) {
+                 // Still not found after sync, return 404
+                 return res.status(404).json({ success: false, message: `Game '${gameName}' not found.` });
+            }
         }
         // Generate recommendations based on this specific game state
         const recommendedCommands = getRecommendedCommands(gameState, req.session.email);
@@ -922,7 +1053,7 @@ app.get('/api/game/:gameName', requireEmail, async (req, res) => {
 });
 
 
-// Main dashboard route - Now renders a single dashboard view
+// Main dashboard route
 app.get('/dashboard', requireEmail, async (req, res) => {
     const email = req.session.email;
     let errorMessage = req.session.errorMessage || null;
@@ -965,7 +1096,9 @@ app.get('/dashboard', requireEmail, async (req, res) => {
             } else {
                  console.warn(`[Dashboard] Initial target game '${initialTargetGameName}' from cookie not found in DB.`);
                  res.clearCookie('targetGame'); // Clear invalid cookie
-                 res.clearCookie('targetPassword');
+                 // Clear corresponding password/variant cookies
+                 res.clearCookie(`targetPassword_${initialTargetGameName}`);
+                 res.clearCookie(`targetVariant_${initialTargetGameName}`);
             }
         }
 
@@ -974,7 +1107,7 @@ app.get('/dashboard', requireEmail, async (req, res) => {
              initialRecommendedCommands = getRecommendedCommands(null, email);
         }
 
-        res.render('dashboard', { // Render the new unified dashboard view
+        res.render('dashboard', {
             email: email,
             allGames: gameList, // Pass list of all games for selector
             initialTargetGame: initialGameState, // Pass state of initially selected game (or null)
@@ -1003,9 +1136,14 @@ app.post('/signoff', (req, res) => {
     console.log(`[Auth] User ${email} signing off.`);
     req.session.destroy((err) => {
         // Clear cookies regardless of session destruction success
-        res.clearCookie('connect.sid');
-        res.clearCookie('targetGame');
-        res.clearCookie('targetPassword');
+        res.clearCookie('connect.sid'); // Session cookie
+        res.clearCookie('targetGame'); // General target game cookie
+        // Clear all game-specific password/variant cookies
+        Object.keys(req.cookies).forEach(cookieName => {
+             if (cookieName.startsWith('targetPassword_') || cookieName.startsWith('targetVariant_')) {
+                 res.clearCookie(cookieName);
+             }
+        });
         if (err) {
             console.error("Session destruction error:", err);
         }
@@ -1016,7 +1154,7 @@ app.post('/signoff', (req, res) => {
 
 // API endpoint to execute the dip command
 app.post('/execute-dip', requireEmail, async (req, res) => {
-    const { command, targetGame, targetPassword, targetVariant } = req.body; // Get context from client, including optional variant
+    const { command, targetGame, targetPassword, targetVariant } = req.body;
     const email = req.session.email;
 
     if (!command) {
@@ -1027,18 +1165,17 @@ app.post('/execute-dip', requireEmail, async (req, res) => {
     let actualTargetGame = targetGame; // Game context for the command
 
     // Determine the actual target game if the command itself specifies one
-    // (e.g., LIST game, CREATE ?game, SIGN ON Pgame, OBSERVE game)
      const commandParts = command.trim().split(/\s+/);
-     const gameNameCommands = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'OBSERVE', 'WATCH', 'SIGN', 'CREATE'];
+     const gameNameCommands = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'OBSERVE', 'WATCH', 'SIGN', 'CREATE', 'EJECT'];
      if (gameNameCommands.includes(commandVerb) && commandParts.length > 1) {
          let potentialGameName = commandParts[1];
          // Adjust for SIGN ON Pgame and CREATE/SIGN ON ?game syntax
          if (commandVerb === 'SIGN' && command.toUpperCase().includes(' ON ') && !potentialGameName.startsWith('?')) { if (potentialGameName.length > 1 && /^[A-Z]$/i.test(potentialGameName[0])) { potentialGameName = potentialGameName.substring(1); } }
          else if ((commandVerb === 'SIGN' || commandVerb === 'CREATE') && potentialGameName.startsWith('?')) { potentialGameName = potentialGameName.substring(1); }
+         else if (commandVerb === 'EJECT' && potentialGameName.includes('@')) { potentialGameName = null; }
 
-         const keywords = ['FULL', 'FROM', 'TO', 'LINES', 'EXCLSTART', 'EXCLEND', 'BROAD', 'ON', '?'];
-         // Basic check if it looks like a game name (1-8 alphanumeric) and not a keyword
-         if (/^[a-zA-Z0-9]{1,8}$/.test(potentialGameName) && !keywords.includes(potentialGameName.toUpperCase())) {
+         const keywords = ['FULL', 'FROM', 'TO', 'LINES', 'EXCLSTART', 'EXCLEND', 'BROAD', 'ON', '?', 'MASTER'];
+         if (potentialGameName && /^[a-zA-Z0-9]{1,8}$/.test(potentialGameName) && !keywords.includes(potentialGameName.toUpperCase())) {
              if (actualTargetGame && actualTargetGame !== potentialGameName) {
                  console.log(`[Execute Prep] Command ${commandVerb} specifies game '${potentialGameName}', overriding target context '${actualTargetGame}'.`);
              } else if (!actualTargetGame) {
@@ -1051,7 +1188,6 @@ app.post('/execute-dip', requireEmail, async (req, res) => {
     try {
         const result = await executeDipCommand(email, command, actualTargetGame, targetPassword, targetVariant);
         const stdoutData = result.stdout;
-        let stateModified = false;
         let requiresGameRefresh = false; // Flag to indicate if LIST should be run after
 
         // --- Post-Execution Processing ---
@@ -1065,75 +1201,77 @@ app.post('/execute-dip', requireEmail, async (req, res) => {
              }
         }
 
-        // 2. Handle SIGN ON / OBSERVE / CREATE Success (Update cookies, potentially refresh state)
+        // 2. Handle SIGN ON / OBSERVE / CREATE Success (Update cookies, flag for refresh)
         let isSignOnOrObserveSuccess = false;
         let newGameCreated = false;
-        let signedOnGame = null;
+        let signedOnGame = null; // The game name confirmed by the judge
 
-        if (commandVerb === 'SIGN' && command.toUpperCase().includes(' ON ') && !command.includes('?')) {
-            const successPattern = /signed on as (?:\w+)\s*(?:in game)?\s*'(\w+)'/i; // Simpler pattern, just capture game name
-            const match = stdoutData.match(successPattern);
-            if (match) {
-                signedOnGame = match[1];
-                console.log(`[Execute] SIGN ON Success detected for ${email}: Game=${signedOnGame}`);
-                isSignOnOrObserveSuccess = true; actualTargetGame = signedOnGame; requiresGameRefresh = true; stateModified = true;
-            } else { console.log(`[Execute] SIGN ON for ${email} completed, but success message not recognized.`); }
-        }
-        else if (commandVerb === 'OBSERVE' || commandVerb === 'WATCH') {
-             const observePattern = /(?:Observing|Watching) game '(\w+)'/i;
-             const match = stdoutData.match(observePattern);
-             if (match) {
-                 signedOnGame = match[1];
-                 console.log(`[Execute] OBSERVE Success detected for ${email}: Game=${signedOnGame}`);
-                 isSignOnOrObserveSuccess = true; actualTargetGame = signedOnGame; requiresGameRefresh = true; stateModified = true;
-             } else { console.log(`[Execute] OBSERVE/WATCH for ${email} completed, but success message not recognized.`); }
-        }
-        else if (commandVerb === 'CREATE' && command.toUpperCase().includes('?')) {
-             const createPattern = /Game '(\w+)' created/i;
-             const match = stdoutData.match(createPattern);
-             if (match) {
-                 signedOnGame = match[1]; // Game created, treat as the new target
-                 console.log(`[Execute] CREATE Success detected for ${email}: Game=${signedOnGame}`);
-                 isSignOnOrObserveSuccess = true; // Treat create like a successful sign on for UI update
-                 actualTargetGame = signedOnGame; newGameCreated = true; requiresGameRefresh = true; stateModified = true;
-                 // Trigger dip.master sync after creation
-                 console.log(`[Execute Sync] Triggering dip.master sync after CREATE ${actualTargetGame}`);
-                 syncDipMaster().catch(syncErr => console.error("Error during post-create sync:", syncErr));
-             } else { console.log(`[Execute] CREATE for ${email} completed, but success message not recognized.`); }
+        const signOnSuccessPattern = /signed on as (?:\w+)\s*(?:in game)?\s*'(\w+)'/i;
+        const observeSuccessPattern = /(?:Observing|Watching) game '(\w+)'/i;
+        const createSuccessPattern = /Game '(\w+)' created/i;
+
+        let match;
+        if ((match = stdoutData.match(signOnSuccessPattern)) && (commandVerb === 'SIGN' && command.toUpperCase().includes(' ON '))) {
+            signedOnGame = match[1];
+            console.log(`[Execute] SIGN ON Success detected for ${email}: Game=${signedOnGame}`);
+            isSignOnOrObserveSuccess = true;
+        } else if ((match = stdoutData.match(observeSuccessPattern)) && (commandVerb === 'OBSERVE' || commandVerb === 'WATCH')) {
+            signedOnGame = match[1];
+            console.log(`[Execute] OBSERVE/WATCH Success detected for ${email}: Game=${signedOnGame}`);
+            isSignOnOrObserveSuccess = true;
+        } else if ((match = stdoutData.match(createSuccessPattern)) && commandVerb === 'CREATE') {
+            signedOnGame = match[1];
+            console.log(`[Execute] CREATE Success detected for ${email}: Game=${signedOnGame}`);
+            isSignOnOrObserveSuccess = true;
+            newGameCreated = true;
+            console.log(`[Execute Sync] Triggering dip.master sync after CREATE ${signedOnGame}`);
+            syncDipMaster().catch(syncErr => console.error("Error during post-create sync:", syncErr));
         }
 
-        // Update cookies if sign on/observe/create was successful
-        if (isSignOnOrObserveSuccess && signedOnGame && targetPassword) {
-            res.cookie('targetGame', signedOnGame, { maxAge: 1000 * 60 * 60 * 24 * 30, httpOnly: true, secure: process.env.NODE_ENV === 'production' });
-            // WARNING: Storing password in cookie is insecure. Only do this if you understand the risks.
-            // Consider prompting user instead. For now, implementing as requested.
-            res.cookie('targetPassword', targetPassword, { maxAge: 1000 * 60 * 60 * 24 * 30, httpOnly: true, secure: process.env.NODE_ENV === 'production' });
-            console.log(`[Execute] Set cookies for targetGame=${signedOnGame}`);
+        if (isSignOnOrObserveSuccess && signedOnGame) {
+            actualTargetGame = signedOnGame;
+            requiresGameRefresh = true;
+            console.log(`[Execute] SignOn/Observe/Create success for ${signedOnGame}. Client should update context.`);
         }
 
         // 3. Identify other commands that likely modify game state and require refresh
-        const stateChangingCommands = ['PROCESS', 'SET', 'RESIGN', 'WITHDRAW', 'EJECT', 'TERMINATE', 'ROLLBACK', 'FORCE BEGIN', 'UNSTART', 'PROMOTE'];
+        const stateChangingCommands = [
+            'PROCESS', 'SET', 'RESIGN', 'WITHDRAW', 'EJECT', 'TERMINATE', 'ROLLBACK', 'FORCE BEGIN', 'UNSTART', 'PROMOTE',
+            'PAUSE', 'RESUME', 'BECOME MASTER', 'SET MODERATE', 'SET UNMODERATE', 'CLEAR'
+        ];
         if (stateChangingCommands.includes(commandVerb) && result.success && actualTargetGame) {
-            // Check output for confirmation if possible (e.g., "processed", "terminated", "resigned")
             const outputLower = stdoutData.toLowerCase();
-            if (outputLower.includes('processed') || outputLower.includes('terminated') || outputLower.includes('resigned') || outputLower.includes('ejected') || outputLower.includes('rolled back') || outputLower.includes('set') || outputLower.includes('promoted')) {
+            if (outputLower.includes('processed') || outputLower.includes('terminated') || outputLower.includes('resigned') ||
+                outputLower.includes('ejected') || outputLower.includes('rolled back') || outputLower.includes('set') ||
+                outputLower.includes('promoted') || outputLower.includes('paused') || outputLower.includes('resumed') ||
+                outputLower.includes('cleared') || outputLower.includes('moderated') || outputLower.includes('unmoderated'))
+            {
                  console.log(`[Execute] Command ${commandVerb} likely modified state for ${actualTargetGame}. Flagging for refresh.`);
                  requiresGameRefresh = true;
-                 stateModified = true; // Indicate state potentially changed
             }
         }
+        if (commandVerb === 'LIST' && result.success && actualTargetGame) {
+             requiresGameRefresh = true;
+        }
+
 
         // 4. Refresh game state from Judge if needed
         let refreshedGameState = null;
+        let updatedRecommendedCommands = null; // *** ADDED VARIABLE ***
+
         if (requiresGameRefresh && actualTargetGame) {
             console.log(`[Execute Refresh] Running LIST ${actualTargetGame} to refresh state after ${commandVerb}`);
             try {
-                // Use the *original* user email and the potentially updated target game/password
-                const listResult = await executeDipCommand(email, `LIST ${actualTargetGame}`, actualTargetGame, targetPassword);
+                const listResult = await executeDipCommand(email, `LIST ${actualTargetGame}`, actualTargetGame, targetPassword, targetVariant);
                 if (listResult.success) {
                     refreshedGameState = parseListOutput(actualTargetGame, listResult.stdout);
                     await saveGameState(actualTargetGame, refreshedGameState);
                     console.log(`[Execute Refresh] Successfully refreshed and saved state for ${actualTargetGame}`);
+
+                    // *** ADDED: Calculate recommendations based on the *just parsed* state ***
+                    updatedRecommendedCommands = getRecommendedCommands(refreshedGameState, email);
+                    console.log(`[Execute Refresh] Generated recommendations for refreshed state.`);
+
                 } else {
                     console.error(`[Execute Refresh] Failed to run LIST command for ${actualTargetGame}:`, listResult.output);
                 }
@@ -1143,19 +1281,18 @@ app.post('/execute-dip', requireEmail, async (req, res) => {
         }
 
         // 5. Send Response
-        // Include the potentially refreshed game state in the response
         res.json({
             success: result.success,
             output: result.output,
-            isSignOnOrObserveSuccess: isSignOnOrObserveSuccess, // Let client know to potentially reload UI context
+            isSignOnOrObserveSuccess: isSignOnOrObserveSuccess,
             createdGameName: newGameCreated ? signedOnGame : null,
-            refreshedGameState: refreshedGameState // Send back the latest state if refreshed
+            refreshedGameState: refreshedGameState,
+            updatedRecommendedCommands: updatedRecommendedCommands // *** ADDED: Send new recommendations ***
         });
 
     } catch (error) {
-        // Handle errors from executeDipCommand (non-zero exit, spawn fail, stdin fail, context missing)
         console.error(`[Execute Error] Command "${commandVerb}" for ${email} failed:`, error);
-        res.status(500).json({
+        res.status(error.output?.includes('Spawn failed') ? 503 : 500).json({
              success: false,
              output: error.output || 'Unknown execution error',
              isSignOnOrObserveSuccess: false
@@ -1164,6 +1301,7 @@ app.post('/execute-dip', requireEmail, async (req, res) => {
 });
 
 // --- Start Server ---
+// ... (Keep server start and graceful shutdown as is) ...
 app.listen(port, () => {
     console.log(`Dip Web App listening at http://localhost:${port}`);
     console.log(`Using dip binary: ${dipBinaryPath}`);
@@ -1191,12 +1329,19 @@ app.listen(port, () => {
     }
 });
 
-// Graceful shutdown
 process.on('SIGINT', () => {
     console.log('SIGINT signal received: closing databases...');
-    db.close((err) => { if (err) console.error('Error closing game_states DB:', err.message); else console.log('Game states DB closed.'); });
-    sessionDb.close((err) => { if (err) console.error('Error closing sessions DB:', err.message); else console.log('Sessions DB closed.'); });
-    userDb.close((err) => { if (err) console.error('Error closing users DB:', err.message); else console.log('Users DB closed.'); process.exit(0); });
-    // Force exit after a delay if DBs don't close quickly
-    setTimeout(() => { console.error("Databases did not close gracefully, forcing exit."); process.exit(1); }, 5000);
+    let closedCount = 0;
+    const totalDbs = 3;
+    const tryExit = () => {
+        closedCount++;
+        if (closedCount === totalDbs) {
+            console.log('All databases closed gracefully.');
+            process.exit(0);
+        }
+    };
+    db.close((err) => { if (err) console.error('Error closing game_states DB:', err.message); else console.log('Game states DB closed.'); tryExit(); });
+    sessionDb.close((err) => { if (err) console.error('Error closing sessions DB:', err.message); else console.log('Sessions DB closed.'); tryExit(); });
+    userDb.close((err) => { if (err) console.error('Error closing users DB:', err.message); else console.log('Users DB closed.'); tryExit(); });
+    setTimeout(() => { console.error("Databases did not close gracefully within 5s, forcing exit."); process.exit(1); }, 5000);
 });
