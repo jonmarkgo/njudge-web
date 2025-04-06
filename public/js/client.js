@@ -412,7 +412,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 content += createCheckbox('list-full', 'Full List (if no game name)?', false, 'Shows player details for all games.');
                 break;
             case 'HISTORY':
-                content += createInput('hist-game-name', 'text', 'Game Name', targetGame !== '<game>' ? targetGame : '', true);
+                content += createInput('hist-game-name', 'text', 'Game Name', 'Game Name', true, targetGame !== '<game>' ? targetGame : '');
                 content += createSeparator();
                 content += createInput('hist-from', 'text', 'From Date (optional)', 'e.g., Jan 1 2023 or S1901M', false, '', 'Defaults to 1 week ago.');
                 content += createInput('hist-to', 'text', 'To Date (optional)', 'e.g., Dec 31 2023 or F1905B', false, '', 'Defaults to now.');
@@ -424,15 +424,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 content += createCheckbox('hist-broad', 'Include Broadcasts (with EXCL)?', false);
                 break;
             case 'SUMMARY':
-                content += createInput('summary-game-name', 'text', 'Game Name', targetGame !== '<game>' ? targetGame : '', true);
+                content += createInput('summary-game-name', 'text', 'Game Name', 'Game Name', true, targetGame !== '<game>' ? targetGame : '');
                 break;
             case 'WHOGAME':
-                content += createInput('whogame-game-name', 'text', 'Game Name', targetGame !== '<game>' ? targetGame : '', true);
+                content += createInput('whogame-game-name', 'text', 'Game Name', 'Game Name', true, targetGame !== '<game>' ? targetGame : '');
                 content += createCheckbox('whogame-full', 'Include Observers (FULL)?', false);
                 break;
             case 'MAP': // Deprecated but included
                 content += createWarning('MAP command is deprecated. Use Floc.net link in sidebar.');
-                content += createInput('map-game-name', 'text', 'Game Name or *', targetGame !== '<game>' ? targetGame : '', true);
+                content += createInput('map-game-name', 'text', 'Game Name or *', 'Game Name or *', true, targetGame !== '<game>' ? targetGame : '');
                 content += createCheckbox('map-n', 'Plain Postscript (N)?', false);
                 break;
 
@@ -466,17 +466,17 @@ document.addEventListener('DOMContentLoaded', () => {
                  content += createInput('signon-next-password', 'password', 'Password', '', true, '', 'Password for the next available forming game.');
                  break;
             case 'SIGN ON ?game':
-                 content += createInput('signon-q-game', 'text', 'Game Name', targetGame !== '<game>' ? targetGame : '', true, '', 'Name of the specific forming game.');
+                 content += createInput('signon-q-game', 'text', 'Game Name', 'Game Name', true, targetGame !== '<game>' ? targetGame : '', 'Name of the specific forming game.');
                  content += createInput('signon-q-password', 'password', 'Password', '', true);
                  content += createInput('signon-q-variant', 'text', 'Variant/Options (if required)', 'e.g., Chaos Gunboat', false, '', 'Must match game settings if specified.');
                  break;
             case 'SIGN ON power':
                  content += createInput('signon-power', 'text', 'Power Initial', 'e.g., F', true, '', 'Single letter (A, E, F, G, I, R, T for standard).', {size: 1, maxlength: 1});
-                 content += createInput('signon-game', 'text', 'Game Name', targetGame !== '<game>' ? targetGame : '', true);
+                 content += createInput('signon-game', 'text', 'Game Name', 'Game Name', true, targetGame !== '<game>' ? targetGame : '');
                  content += createInput('signon-password', 'password', 'Password', '', true);
                  break;
             case 'OBSERVE': case 'WATCH':
-                 content += createInput('observe-game', 'text', 'Game Name', targetGame !== '<game>' ? targetGame : '', true);
+                 content += createInput('observe-game', 'text', 'Game Name', 'Game Name', true, targetGame !== '<game>' ? targetGame : '');
                  content += createInput('observe-password', 'password', 'Password', '', true);
                  break;
 
