@@ -2561,6 +2561,11 @@ app.listen(port, () => {
         console.log(`Found dip.master at '${dipMasterPath}'. Performing initial sync...`);
         syncDipMaster().catch(err => console.error("[Startup Sync Error]", err));
     }
+    app._router.stack.forEach(function(r){
+        if (r.route && r.route.path){
+          console.log(r.route.path)
+        }
+      })
 });
 
 process.on('SIGINT', () => {
