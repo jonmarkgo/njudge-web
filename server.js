@@ -425,6 +425,268 @@ const parseWhogameOutput = (gameName, output) => {
     return { players, masters, observers };
 };
 
+
+// NEW FUNCTION START
+// Helper to convert phase string like "Spring 1901 Movement" to "S1901M"
+function getPhaseCode(phaseStr, year) {
+    if (!phaseStr || !year) return 'Unknown';
+    const lowerPhase = phaseStr.toLowerCase();
+    let seasonCode = 'S'; // Default Spring
+    if (lowerPhase.includes('fall')) seasonCode = 'F';
+    else if (lowerPhase.includes('winter')) seasonCode = 'W';
+    else if (lowerPhase.includes('summer')) seasonCode = 'U'; // Less common
+
+    let phaseTypeCode = 'M'; // Default Movement
+    if (lowerPhase.includes('retreat')) phaseTypeCode = 'R';
+    else if (lowerPhase.includes('adjustment') || lowerPhase.includes('build')) phaseTypeCode = 'A';
+
+    // Handle cases where only year/season might be present (e.g., pre-game)
+    if (!phaseTypeCode && (seasonCode === 'S' || seasonCode === 'F' || seasonCode === 'W' || seasonCode === 'U')) {
+         // If it looks like a phase start but no type, assume Movement for S/F, Build for W
+         phaseTypeCode = (seasonCode === 'W') ? 'A' : 'M';
+    } else if (!phaseTypeCode) {
+        // Fallback if completely unparsable
+        return `${year || '?'}${seasonCode || '?'}${phaseTypeCode || '?'}`;
+    }
+
+
+    return `${seasonCode}${year}${phaseTypeCode}`;
+}
+
+
+const parseHistoryOutput = (gameName, output) => {
+    console.log(`[Parser HISTORY] Attempting to parse HISTORY output for ${gameName}`);
+    const history = {
+        gameName: gameName,
+        variant: null,
+        statusTimestamp: null,
+        phases: [],
+    };
+    const lines = output.split('\n');
+    let currentPhaseData = null;
+    let readingPress = false;
+    let currentPress = null;
+
+    // --- Regex Definitions ---
+    const gameHeaderRegex = /^History of (.*) \((.*)\)$/; // 1: gameName, 2: variant
+    const statusTimestampRegex = /^Status of the game .* as of (.*)$/; // 1: timestamp
+    const deadlineRegex = /^Deadline for (.*), (\d{4}) is (.*)$/; // 1: phaseStr, 2: year, 3: deadlineStr
+    const supplyCenterRegex = /^([A-Z][a-z]+): +(\d+) supply centers/; // 1: power, 2: count
+    const eliminationRegex = /^([A-Z][a-z]+) has been eliminated\.$/; // 1: power
+    const unitRegex = /^([A-Z][a-z]+): +(A|F) +([A-Z][a-z ]+)$/; // 1: power, 2: unitType, 3: location
+    const orderResultRegex = /^\*+(.*)\*+$/; // 1: result description
+    const pressHeaderRegex = /^Press from (.*) to (.*):$/; // 1: fromPower, 2: toPowerOrAll
+
+    // Order Regex (simplified examples, more robust parsing might be needed)
+    const holdOrderRegex = /^([A-Z][a-z]+): +(A|F) +([A-Z][a-z ]+) H(?:old)?$/i; // 1: power, 2: unitType, 3: unitLocation
+    const moveOrderRegex = /^([A-Z][a-z]+): +(A|F) +([A-Z][a-z ]+) - ([A-Z][a-z ]+)$/i; // 1: power, 2: unitType, 3: unitLocation, 4: destination
+    const supportHoldOrderRegex = /^([A-Z][a-z]+): +(A|F) +([A-Z][a-z ]+) S +(?:A|F) +([A-Z][a-z ]+)$/i; // 1: power, 2: unitType, 3: unitLocation, 4: supportedUnitLocation
+    const supportMoveOrderRegex = /^([A-Z][a-z]+): +(A|F) +([A-Z][a-z ]+) S +(?:A|F) +([A-Z][a-z ]+) - ([A-Z][a-z ]+)$/i; // 1: power, 2: unitType, 3: unitLocation, 4: supportedUnitLocation, 5: supportedUnitDestination
+    const convoyOrderRegex = /^([A-Z][a-z]+): +(F) +([A-Z][a-z ]+) C +(A) +([A-Z][a-z ]+) - ([A-Z][a-z ]+)$/i; // 1: power, 2: unitType(F), 3: unitLocation, 4: convoyedUnitType(A), 5: convoyedUnitLocation, 6: convoyedUnitDestination
+    const retreatOrderRegex = /^([A-Z][a-z]+): +(A|F) +([A-Z][a-z ]+) R +([A-Z][a-z ]+)$/i; // 1: power, 2: unitType, 3: unitLocation, 4: destination
+    const disbandOrderRegex = /^([A-Z][a-z]+): +(A|F) +([A-Z][a-z ]+) D(?:isband)?$/i; // 1: power, 2: unitType, 3: unitLocation
+    const buildOrderRegex = /^([A-Z][a-z]+): +Build (A|F) +([A-Z][a-z ]+)$/i; // 1: power, 2: unitType, 3: location
+    const waiveBuildOrderRegex = /^([A-Z][a-z]+): +Waive Build$/i; // 1: power
+    const removeOrderRegex = /^([A-Z][a-z]+): +Remove (A|F) +([A-Z][a-z ]+)$/i; // 1: power, 2: unitType, 3: location
+    const waiveRemovalOrderRegex = /^([A-Z][a-z]+): +Waive Removal$/i; // 1: power
+
+    // Function to initialize a phase data object
+    const createPhaseData = (phaseCode, deadline) => ({
+        phase: phaseCode,
+        deadline: deadline,
+        supplyCenters: {},
+        eliminations: [],
+        units: {},
+        orders: {},
+        results: [], // Store results as simple strings for now
+        press: [],
+    });
+
+    // --- Parsing Loop ---
+    lines.forEach((line, index) => {
+        const trimmedLine = line.trim();
+        let match;
+
+        // Stop reading press if we hit a non-press line
+        if (readingPress && !pressHeaderRegex.test(trimmedLine) && !trimmedLine.startsWith(" ") && trimmedLine !== "") {
+             if (currentPress && currentPhaseData) {
+                 currentPress.message = currentPress.message.trim();
+                 // Only add if message is not empty
+                 if (currentPress.message) {
+                    currentPhaseData.press.push(currentPress);
+                 }
+                 console.log(`[Parser HISTORY ${gameName}] Finished reading press from ${currentPress.from} to ${currentPress.to}.`);
+             }
+             readingPress = false;
+             currentPress = null;
+        }
+
+
+        // 1. Game Header
+        match = trimmedLine.match(gameHeaderRegex);
+        if (match) {
+            history.gameName = match[1].trim(); // Update game name if different
+            history.variant = match[2].trim();
+            console.log(`[Parser HISTORY ${gameName}] Parsed Header: Name=${history.gameName}, Variant=${history.variant}`);
+            return; // Continue to next line
+        }
+
+        // 2. Status Timestamp
+        match = trimmedLine.match(statusTimestampRegex);
+        if (match) {
+            history.statusTimestamp = match[1].trim();
+            console.log(`[Parser HISTORY ${gameName}] Parsed Status Timestamp: ${history.statusTimestamp}`);
+            return; // Continue to next line
+        }
+
+        // 3. Deadline (Indicates start of a new phase)
+        match = trimmedLine.match(deadlineRegex);
+        if (match) {
+            // Push previous phase data if it exists
+            if (currentPhaseData) {
+                history.phases.push(currentPhaseData);
+                console.log(`[Parser HISTORY ${gameName}] Finished parsing phase: ${currentPhaseData.phase}`);
+            }
+            readingPress = false; // Ensure press reading stops at phase boundary
+            currentPress = null;
+
+            const phaseStr = match[1].trim();
+            const year = match[2].trim();
+            const deadlineStr = match[3].trim();
+            const phaseCode = getPhaseCode(phaseStr, year);
+            currentPhaseData = createPhaseData(phaseCode, deadlineStr);
+            console.log(`[Parser HISTORY ${gameName}] Started parsing phase: ${phaseCode}, Deadline: ${deadlineStr}`);
+            return; // Continue to next line
+        }
+
+        // Ensure we have a phase context before parsing phase-specific data
+        if (!currentPhaseData) {
+            // Skip lines before the first deadline if they aren't global headers
+            // console.log(`[Parser HISTORY ${gameName}] Skipping line outside phase context: ${trimmedLine}`);
+            return;
+        }
+
+        // 4. Supply Centers
+        match = trimmedLine.match(supplyCenterRegex);
+        if (match) {
+            const power = match[1];
+            const count = parseInt(match[2], 10);
+            currentPhaseData.supplyCenters[power] = count;
+            return;
+        }
+
+        // 5. Eliminations
+        match = trimmedLine.match(eliminationRegex);
+        if (match) {
+            const power = match[1];
+            currentPhaseData.eliminations.push(power);
+            return;
+        }
+
+        // 6. Unit Positions (typically listed before orders)
+        match = trimmedLine.match(unitRegex);
+        if (match) {
+            const power = match[1];
+            const unitType = match[2].toUpperCase();
+            const location = match[3].trim();
+            if (!currentPhaseData.units[power]) {
+                currentPhaseData.units[power] = [];
+            }
+            // Avoid duplicates if units listed multiple times
+            if (!currentPhaseData.units[power].some(u => u.type === unitType && u.location === location)) {
+                 currentPhaseData.units[power].push({ type: unitType, location: location });
+            }
+            return;
+        }
+
+        // 7. Order Results
+        match = trimmedLine.match(orderResultRegex);
+        if (match) {
+            currentPhaseData.results.push(match[1].trim());
+            return;
+        }
+
+        // 8. Press Header
+        match = trimmedLine.match(pressHeaderRegex);
+        if (match) {
+             // Finalize previous press message if one was being read
+             if (readingPress && currentPress && currentPhaseData) {
+                 currentPress.message = currentPress.message.trim();
+                 if (currentPress.message) { // Only add if not empty
+                     currentPhaseData.press.push(currentPress);
+                 }
+             }
+
+            readingPress = true;
+            currentPress = {
+                from: match[1].trim(),
+                to: match[2].trim(),
+                message: ''
+            };
+            console.log(`[Parser HISTORY ${gameName}] Started reading press from ${currentPress.from} to ${currentPress.to}.`);
+            return;
+        }
+
+        // 9. Press Content
+        if (readingPress && currentPress) {
+            // Append line to current press message, preserving leading spaces for formatting
+            currentPress.message += line + '\n'; // Keep original line ending for multi-line
+            return;
+        }
+
+        // 10. Orders (Check various types) - Store raw order string for now
+        // More detailed parsing could create structured order objects
+        const parseOrder = (regex, orderType) => {
+             match = trimmedLine.match(regex);
+             if (match) {
+                 const power = match[1];
+                 if (!currentPhaseData.orders[power]) {
+                     currentPhaseData.orders[power] = [];
+                 }
+                 // Store the raw line as the order for simplicity, could parse details later
+                 currentPhaseData.orders[power].push({ raw: trimmedLine, type: orderType });
+                 return true; // Indicate match found
+             }
+             return false;
+        };
+
+        if (parseOrder(holdOrderRegex, 'Hold')) return;
+        if (parseOrder(moveOrderRegex, 'Move')) return;
+        if (parseOrder(supportHoldOrderRegex, 'Support Hold')) return;
+        if (parseOrder(supportMoveOrderRegex, 'Support Move')) return;
+        if (parseOrder(convoyOrderRegex, 'Convoy')) return;
+        if (parseOrder(retreatOrderRegex, 'Retreat')) return;
+        if (parseOrder(disbandOrderRegex, 'Disband')) return;
+        if (parseOrder(buildOrderRegex, 'Build')) return;
+        if (parseOrder(waiveBuildOrderRegex, 'Waive Build')) return;
+        if (parseOrder(removeOrderRegex, 'Remove')) return;
+        if (parseOrder(waiveRemovalOrderRegex, 'Waive Removal')) return;
+
+        // If line didn't match anything known, log it (optional)
+        // if (trimmedLine) {
+        //     console.log(`[Parser HISTORY ${gameName}] Unmatched line in phase ${currentPhaseData?.phase}: ${trimmedLine}`);
+        // }
+
+    }); // End lines.forEach
+
+    // Push the last phase's data if it exists
+    if (currentPhaseData) {
+         // Finalize any pending press message
+         if (readingPress && currentPress) {
+             currentPress.message = currentPress.message.trim();
+             if (currentPress.message) { // Only add if not empty
+                 currentPhaseData.press.push(currentPress);
+             }
+         }
+        history.phases.push(currentPhaseData);
+        console.log(`[Parser HISTORY ${gameName}] Finished parsing final phase: ${currentPhaseData.phase}`);
+    }
+
+    console.log(`[Parser HISTORY ${gameName}] Final Parsed Object:`, history); // Log the full object for debugging
+    return history;
+};
+// NEW FUNCTION END
+
 // --- Command Recommendation Logic ---
 const getRecommendedCommands = (gameState, userEmail) => {
     console.log(`[getRecommendedCommands] Generating for user: ${userEmail}, Game State:`, gameState ? { name: gameState.name, status: gameState.status, phase: gameState.currentPhase, masters: gameState.masters } : null); // Log input
@@ -1298,6 +1560,44 @@ app.post('/execute-dip', requireEmail, async (req, res) => {
              isSignOnOrObserveSuccess: false
         });
     }
+
+// NEW ENDPOINT START
+app.get('/api/game/:gameName/history', requireEmail, async (req, res) => {
+    const gameName = req.params.gameName;
+    const userEmail = req.session.email; // Assuming requireEmail middleware sets this
+
+    if (!gameName) {
+        return res.status(400).json({ error: 'Game name is required.' });
+    }
+
+    console.log(`[API HISTORY] Request received for game: ${gameName} from user: ${userEmail}`);
+
+    try {
+        // Execute the 'HISTORY <gameName>' command
+        // Use the existing executeDipCommand function
+        const historyOutput = await executeDipCommand(userEmail, `HISTORY ${gameName}`, gameName);
+
+        // Check if the command returned an error message within the output
+        if (typeof historyOutput === 'string' && (historyOutput.includes('No such game') || historyOutput.includes('Error:'))) {
+             console.warn(`[API HISTORY Warning] Command for ${gameName} returned error message: ${historyOutput}`);
+             // Determine appropriate status code based on error message
+             const statusCode = historyOutput.includes('No such game') ? 404 : 500;
+             return res.status(statusCode).json({ error: historyOutput.trim() });
+        }
+
+        const parsedHistory = parseHistoryOutput(gameName, historyOutput);
+        res.json(parsedHistory);
+
+    } catch (error) {
+        console.error(`[API HISTORY Error] Failed to get or parse history for game ${gameName}:`, error);
+        // Handle potential errors from executeDipCommand (e.g., spawn issues)
+        const statusCode = error.output?.includes('Spawn failed') ? 503 : (error.message?.includes('No such game') ? 404 : 500);
+        const errorMessage = error.message || 'Failed to retrieve game history.';
+        res.status(statusCode).json({ error: errorMessage, details: error.output || null });
+    }
+});
+// NEW ENDPOINT END
+
 });
 
 // --- Start Server ---
