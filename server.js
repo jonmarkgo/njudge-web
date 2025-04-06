@@ -2375,6 +2375,7 @@ app.delete('/api/games/:gameName', requireAuth, async (req, res) => {
 
 // GET /api/map/:gameName/:phase?
 // Provides combined map data (geometry, metadata, game state) for rendering.
+console.log(`[Route Definition Check] Defining GET /api/map/:gameName/:phase?`); // Roo Debug Log
 app.get('/api/map/:gameName/:phase?', requireAuth, async (req, res) => { // Roo: Added requireAuth
     const { gameName, phase } = req.params;
     console.log(`[Map API Request] Handler Reached. gameName: ${gameName}, phase: ${phase}, user: ${req.userId}`); // Roo Debug Log
@@ -2413,6 +2414,7 @@ app.get('/api/map/:gameName/:phase?', requireAuth, async (req, res) => { // Roo:
 // --- User Preference API Endpoints ---
 
 // GET all preferences for the logged-in user
+console.log(`[Route Definition Check] Defining GET /api/user/preferences`); // Roo Debug Log
 app.get('/api/user/preferences', requireAuth, async (req, res) => {
     try {
         const preferences = await getUserPreferences(req.userId);
