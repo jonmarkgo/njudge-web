@@ -264,6 +264,198 @@ window.currentGameData = null;
 let gameStatusChartInstance = null; // To hold the chart instance
 
 
+// --- Map Rendering ---
+async function renderMap(gameName, phase) {
+    const mapContainer = document.getElementById('map-container');
+    if (!mapContainer) {
+        console.error("Map container element not found.");
+        return;
+    }
+
+    // Clear previous content and show loading state
+    mapContainer.innerHTML = '<p class="text-gray-500 italic p-4">Loading map data...</p>';
+
+    if (!gameName) {
+        mapContainer.innerHTML = '<p class="text-gray-500 italic p-4">Select a game to view the map.</p>';
+        return;
+    }
+
+    // Use phase if provided, otherwise the API defaults to latest
+    const phaseParam = phase ? `/${phase}` : '';
+    const apiUrl = `/api/map/${encodeURIComponent(gameName)}${phaseParam}`;
+    console.log(`Fetching map data from: ${apiUrl}`);
+
+    try {
+        const response = await fetch(apiUrl);
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ message: 'Failed to parse error response' }));
+            throw new Error(`HTTP error ${response.status}: ${errorData.message || 'Unknown error'}`);
+        }
+
+        const mapData = await response.json();
+
+        if (mapData.success && mapData.svgContent) {
+            // Inject base SVG
+            mapContainer.innerHTML = mapData.svgContent;
+            const svgElement = mapContainer.querySelector('svg');
+
+            if (!svgElement) {
+                throw new Error("SVG element not found after injection.");
+            }
+
+            // Ensure SVG has a known size or viewBox for coordinate mapping
+            // If viewBox is present, use it. Otherwise, might need width/height.
+            const viewBox = svgElement.viewBox.baseVal;
+            const svgWidth = viewBox ? viewBox.width : svgElement.width.baseVal.value;
+            const svgHeight = viewBox ? viewBox.height : svgElement.height.baseVal.value;
+
+            if (!svgWidth || !svgHeight) {
+                 console.warn("SVG dimensions or viewBox not found. Positioning might be inaccurate.");
+            }
+
+            // --- Define colors/styles (can be customized) ---
+            const powerColors = {
+                AUS: '#ffcc00', GER: '#4d4d4d', ENG: '#add8e6', FRA: '#0000ff',
+                ITA: '#008000', RUS: '#800080', TUR: '#ff4500',
+                DEFAULT: '#cccccc' // For neutral SCs
+            };
+            const unitStyles = {
+                AMY: { shape: 'rect', width: 10, height: 10, text: 'A' },
+                FLT: { shape: 'polygon', points: '0,-6 6,6 -6,6', text: 'F' } // Triangle for fleet
+            };
+            const scRadius = 8;
+            const unitFontSize = 10;
+
+            // --- Helper to create SVG elements ---
+            const createSvgElement = (tag, attributes) => {
+                const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+                for (const key in attributes) {
+                    el.setAttribute(key, attributes[key]);
+                }
+                return el;
+            };
+
+            // --- Render Supply Centers ---
+            if (mapData.supplyCenters && mapData.provinces) {
+                 const scGroup = createSvgElement('g', { id: 'sc-layer' });
+                 svgElement.appendChild(scGroup);
+
+                mapData.supplyCenters.forEach(sc => {
+                    const province = mapData.provinces[sc.province];
+                    if (province && province.scX !== undefined && province.scY !== undefined) {
+                        const color = powerColors[sc.owner] || powerColors.DEFAULT;
+                        const circle = createSvgElement('circle', {
+                            cx: province.scX,
+                            cy: province.scY,
+                            r: scRadius,
+                            fill: color,
+                            stroke: '#333',
+                            'stroke-width': 1,
+                            'data-province': sc.province,
+                            'data-owner': sc.owner || 'Neutral'
+                        });
+                        // Basic tooltip
+                        circle.innerHTML = `<title>SC: ${province.name} (${sc.owner || 'Neutral'})</title>`;
+                        scGroup.appendChild(circle);
+                    } else {
+                         console.warn(`SC coordinates not found for province: ${sc.province}`);
+                    }
+                });
+            }
+
+            // --- Render Units ---
+             if (mapData.units && mapData.provinces) {
+                 const unitGroup = createSvgElement('g', { id: 'unit-layer' });
+                 svgElement.appendChild(unitGroup);
+
+                 mapData.units.forEach(unit => {
+                     const province = mapData.provinces[unit.province];
+                     if (province && province.unitX !== undefined && province.unitY !== undefined) {
+                         const color = powerColors[unit.power] || powerColors.DEFAULT;
+                         const style = unitStyles[unit.type] || unitStyles.AMY; // Default to Army style if type unknown
+
+                         let unitElement;
+                         if (style.shape === 'rect') {
+                             unitElement = createSvgElement('rect', {
+                                 x: province.unitX - style.width / 2,
+                                 y: province.unitY - style.height / 2,
+                                 width: style.width,
+                                 height: style.height,
+                                 fill: color,
+                                 stroke: '#000',
+                                 'stroke-width': 1
+                             });
+                         } else if (style.shape === 'polygon') {
+                              unitElement = createSvgElement('polygon', {
+                                 points: style.points,
+                                 transform: `translate(${province.unitX}, ${province.unitY})`, // Center the shape
+                                 fill: color,
+                                 stroke: '#000',
+                                 'stroke-width': 1
+                             });
+                         } else { // Fallback to text if shape unknown
+                              unitElement = createSvgElement('text', {
+                                 x: province.unitX,
+                                 y: province.unitY,
+                                 'font-size': unitFontSize,
+                                 fill: '#000', // Use black for text for contrast
+                                 'text-anchor': 'middle',
+                                 'dominant-baseline': 'middle',
+                             });
+                             unitElement.textContent = style.text || '?';
+                         }
+
+                         unitElement.setAttribute('data-unit-type', unit.type);
+                         unitElement.setAttribute('data-unit-power', unit.power);
+                         unitElement.setAttribute('data-unit-province', unit.province);
+                         // Basic tooltip
+                         unitElement.innerHTML = `<title>Unit: ${unit.power} ${unit.type} ${unit.province}</title>`;
+                         unitGroup.appendChild(unitElement);
+
+                     } else {
+                          console.warn(`Unit coordinates not found for province: ${unit.province}`);
+                     }
+                 });
+             }
+
+             // --- (Optional) Render Province Names/Labels ---
+             if (mapData.provinces) {
+                 const labelGroup = createSvgElement('g', { id: 'label-layer', 'pointer-events': 'none' }); // Disable pointer events for labels
+                 svgElement.appendChild(labelGroup);
+                 Object.values(mapData.provinces).forEach(province => {
+                     // Use unit coordinates as a fallback if label coords aren't specific
+                     const x = province.labelX !== undefined ? province.labelX : province.unitX;
+                     const y = province.labelY !== undefined ? province.labelY : province.unitY;
+                     if (x !== undefined && y !== undefined && province.abbr) { // Only render if coords and abbr exist
+                         const label = createSvgElement('text', {
+                             x: x,
+                             y: y + 15, // Offset slightly below unit/sc position
+                             'font-size': 9,
+                             fill: '#555',
+                             'text-anchor': 'middle',
+                             'dominant-baseline': 'middle',
+                         });
+                         label.textContent = province.abbr;
+                         labelGroup.appendChild(label);
+                     }
+                 });
+             }
+
+
+        } else if (mapData.success && !mapData.svgContent) {
+            mapContainer.innerHTML = '<p class="text-gray-500 italic p-4">Map SVG not available for this variant.</p>';
+        } else {
+             throw new Error(mapData.message || "Failed to load map data.");
+        }
+
+    } catch (error) {
+        console.error('Error rendering map:', error);
+        mapContainer.innerHTML = `<p class="text-red-600 p-4">Error loading map: ${error.message}</p>`;
+    }
+}
+// --- End Map Rendering ---
+
+
 // --- DOM Ready ---
 document.addEventListener('DOMContentLoaded', () => {
     // --- Global Elements ---
@@ -817,6 +1009,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     updateCommandGenerator(data.recommendedCommands); // Update commands based on fetched state
                     targetGameInput.value = gameName; // Update hidden input
                     setCookie('targetGame', gameName, 30); // Update cookie
+                    renderMap(gameName, data.gameState.currentPhase); // Render the map
+
                     loadCredentialsForGame(gameName); // Load credentials for this game
                 } else {
                     console.error(`Failed to fetch game state for ${gameName}:`, data.message);

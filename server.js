@@ -4,10 +4,15 @@ const path = require('path');
 const { spawn } = require('child_process');
 const session = require('express-session');
 const fs = require('fs');
+const fsPromises = require('fs').promises;
 const sqlite3 = require('sqlite3').verbose();
 const expressLayouts = require('express-ejs-layouts');
 const SQLiteStore = require('connect-sqlite3')(session);
 const cookieParser = require('cookie-parser'); // Added
+
+
+// --- Map Info Parsing Cache ---
+const mapInfoCache = {};
 
 // --- Environment Setup ---
 const dipBinaryPath = process.env.DIP_BINARY_PATH || './dip';
@@ -986,6 +991,93 @@ const parseHistoryOutput = (gameName, output) => {
     console.log(`[Parser HISTORY ${gameName}] Final Parsed Object:`, history); // Log the full object for debugging
     return history;
 };
+
+
+// --- Map Info Parsing Function ---
+const parseMapInfoFile = async (variantName) => {
+    if (!variantName || typeof variantName !== 'string') {
+        console.error('[Map Parse Error] Invalid variant name provided:', variantName);
+        throw new Error('Invalid variant name provided.');
+    }
+
+    // Check cache first
+    if (mapInfoCache[variantName]) {
+        console.log(`[Map Parse Cache] Returning cached info for variant: ${variantName}`);
+        return mapInfoCache[variantName];
+    }
+
+    console.log(`[Map Parse] Parsing info file for variant: ${variantName}`);
+    const filePath = path.join(__dirname, 'scripts', 'mapit', 'maps', `${variantName}.info`);
+    let fileContent;
+
+    try {
+        fileContent = await fs.promises.readFile(filePath, 'utf-8');
+    } catch (error) {
+        console.error(`[Map Parse Error] Could not read file ${filePath}:`, error);
+        // Decide how to handle: throw error, return null, return default structure?
+        // For now, let's throw, as the caller likely needs this data.
+        throw new Error(`Failed to read map info file for variant ${variantName}.`);
+    }
+
+    const lines = fileContent.split(/\r?\n/);
+    const mapData = {
+        powers: [],
+        provinces: {}
+    };
+    let parsingSection = 'powers'; // Start by parsing powers
+
+    // Regex to capture province data: X Y |ABR|---|FullName|...
+    // Handles optional spaces around delimiters and captures relevant parts.
+    // Group 1: X, Group 2: Y, Group 3: ABR, Group 4: FullName
+    const provinceRegex = /^\s*(\d+)\s+(\d+)\s*\|([A-Z]{3})\|(?:[^|]*?\|){1}([^|]+)\|/;
+
+    for (const line of lines) {
+        const trimmedLine = line.trim();
+
+        // Skip empty lines and comments
+        if (!trimmedLine || trimmedLine.startsWith('#')) {
+            continue;
+        }
+
+        if (parsingSection === 'powers') {
+            if (trimmedLine === '-1') {
+                parsingSection = 'provinces'; // Switch to parsing provinces
+            } else {
+                // Assuming power names don't contain special characters needing complex parsing
+                mapData.powers.push(trimmedLine);
+            }
+        } else if (parsingSection === 'provinces') {
+            const match = trimmedLine.match(provinceRegex);
+            if (match) {
+                const [, x, y, abbr, name] = match;
+                const provinceName = name.trim(); // Trim whitespace from name
+                if (abbr && provinceName) {
+                     mapData.provinces[abbr] = {
+                         name: provinceName,
+                         abbr: abbr,
+                         x: parseInt(x, 10),
+                         y: parseInt(y, 10)
+                     };
+                } else {
+                    console.warn(`[Map Parse Warn] Skipping province line with missing data in ${variantName}: ${line}`);
+                }
+            } else {
+                // Log lines that don't match the expected province format (and aren't comments/empty)
+                console.warn(`[Map Parse Warn] Unrecognized line format in province section of ${variantName}: ${line}`);
+            }
+        }
+    }
+
+     if (mapData.powers.length === 0 && Object.keys(mapData.provinces).length === 0) {
+         console.warn(`[Map Parse Warn] No powers or provinces found for variant ${variantName}. Check file format.`);
+         // Optionally throw an error or return a specific indicator of failure/empty data
+     }
+
+    // Cache the result before returning
+    mapInfoCache[variantName] = mapData;
+    console.log(`[Map Parse Success] Parsed and cached info for variant: ${variantName}`);
+    return mapData;
+};
 // NEW FUNCTION END
 
 // --- Command Recommendation Logic ---
@@ -1326,6 +1418,108 @@ const executeDipCommand = (email, command, targetGame = null, targetPassword = n
     });
 };
 
+
+
+// --- Map Data Helper ---
+
+/**
+ * Fetches and combines map data (geometry, metadata, game state) for a specific game phase.
+ * @param {string} gameName - The name of the game.
+ * @param {string} [phase] - The specific phase (e.g., 'S1901M'). If omitted, fetches the latest phase.
+ * @returns {Promise<object|null>} - Combined map data or null if essential data is missing.
+ */
+async function getMapData(gameName, phase) {
+    console.log(`[Map Data] Fetching map data for game: ${gameName}, phase: ${phase || 'latest'}`);
+    try {
+        // 1. Get basic game info (like variant) and potentially latest phase if needed
+        const basicGameState = await getGameState(gameName);
+        if (!basicGameState) {
+            console.error(`[Map Data Error] Game not found: ${gameName}`);
+            return null;
+        }
+        const variantName = basicGameState.variant || 'Standard'; // Default to Standard if not set
+
+        // 2. Fetch full game history
+        // Use judgeEmail or a system identity for fetching public data
+        const historyOutput = await executeDipCommand(judgeEmail, 'HISTORY', gameName);
+        if (!historyOutput || historyOutput.error) {
+            console.error(`[Map Data Error] Failed to fetch history for ${gameName}:`, historyOutput?.error || 'No output');
+            return null;
+        }
+
+        // 3. Parse history
+        const parsedHistory = parseHistoryOutput(gameName, historyOutput.output);
+        if (!parsedHistory || Object.keys(parsedHistory.phases).length === 0) {
+            console.error(`[Map Data Error] Failed to parse history or no phases found for ${gameName}`);
+            // Return basic info if history parsing fails but we have variant/map info?
+            // For now, let's return null as state is crucial.
+            return null;
+        }
+
+        // 4. Determine the target phase code
+        let targetPhaseCode = phase;
+        if (!targetPhaseCode) {
+            // Find the latest phase from parsed history keys
+            const phaseKeys = Object.keys(parsedHistory.phases).sort(); // Simple sort often works for standard phases
+            // TODO: Implement more robust phase sorting if needed (e.g., considering year and season)
+            targetPhaseCode = phaseKeys[phaseKeys.length - 1];
+            console.log(`[Map Data] No phase specified, using latest: ${targetPhaseCode}`);
+        }
+
+        const phaseData = parsedHistory.phases[targetPhaseCode];
+        if (!phaseData) {
+            console.error(`[Map Data Error] Target phase ${targetPhaseCode} not found in history for ${gameName}`);
+            return null; // Phase not found
+        }
+
+        // 5. Get province metadata from .info file (using cache)
+        const provinceMetadata = await parseMapInfoFile(variantName);
+        if (!provinceMetadata) {
+            console.error(`[Map Data Error] Failed to parse map info file for variant: ${variantName}`);
+            // Proceed without province metadata? Or fail? Let's proceed for now.
+        }
+
+        // 6. Construct SVG path and read SVG file content
+        const svgPath = path.join('scripts', 'mapit', 'maps', `${variantName}.svg`);
+        let svgContent = null;
+        try {
+            svgContent = await fsPromises.readFile(svgPath, 'utf-8');
+            console.log(`[Map Data] Successfully read SVG file: ${svgPath}`);
+        } catch (err) {
+            if (err.code === 'ENOENT') {
+                console.warn(`[Map Data] SVG file not found, expected at: ${svgPath}. Proceeding without SVG content.`);
+            } else {
+                console.error(`[Map Data Error] Error reading SVG file ${svgPath}:`, err);
+            }
+            // Proceed without SVG content if not found or error reading
+        }
+
+        // 7. Combine data
+        const mapData = {
+            gameName: gameName,
+            phase: targetPhaseCode,
+            variant: variantName,
+            units: phaseData.units || [], // Ensure arrays exist
+            supplyCenters: phaseData.supplyCenters || [], // Ensure arrays exist
+            provinces: provinceMetadata ? provinceMetadata.provinces : {},
+            provinceNameToAbbr: provinceMetadata ? provinceMetadata.provinceNameToAbbr : {},
+            abbrToProvinceName: provinceMetadata ? provinceMetadata.abbrToProvinceName : {},
+            svgContent: svgContent,
+            // Include deadline if available in phaseData?
+            deadline: phaseData.deadline || null
+        };
+
+        console.log(`[Map Data] Successfully assembled map data for ${gameName} / ${targetPhaseCode}`);
+        return mapData;
+
+    } catch (error) {
+        console.error(`[Map Data Fatal Error] Unexpected error fetching map data for ${gameName} / ${phase || 'latest'}:`, error);
+        return null;
+    }
+}
+
+
+// --- API Endpoints ---
 
 // --- Express App Setup ---
 const app = express();
@@ -2147,6 +2341,42 @@ app.delete('/api/games/:gameName', requireAuth, async (req, res) => {
             details: error.stderr || error.message || 'Unknown error',
             stdout: error.stdout
         });
+    }
+});
+
+
+// --- Map Data API Endpoint ---
+
+// GET /api/map/:gameName/:phase?
+// Provides combined map data (geometry, metadata, game state) for rendering.
+app.get('/api/map/:gameName/:phase?', async (req, res) => {
+    const { gameName, phase } = req.params;
+
+    if (!gameName) {
+        return res.status(400).json({ error: 'Game name is required.' });
+    }
+
+    try {
+        const mapData = await getMapData(gameName, phase);
+
+        if (!mapData) {
+            // Distinguish between 'game not found' and 'error fetching data'?
+            // For now, use 404 if the core data couldn't be assembled.
+            // Check if game exists first?
+            const gameExists = await getGameState(gameName);
+            if (!gameExists) {
+                 return res.status(404).json({ error: `Game '${gameName}' not found.` });
+            } else {
+                 // Game exists, but data couldn't be fully assembled (e.g., history error, phase error)
+                 return res.status(500).json({ error: `Could not retrieve complete map data for game '${gameName}' phase '${phase || 'latest'}'. Check server logs.` });
+            }
+        }
+
+        res.json(mapData);
+
+    } catch (error) {
+        console.error(`[API Error] Failed to get map data for ${gameName} / ${phase || 'latest'}:`, error);
+        res.status(500).json({ error: 'An internal server error occurred while fetching map data.' });
     }
 });
 
