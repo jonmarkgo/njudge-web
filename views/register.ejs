@@ -1,0 +1,74 @@
+<%# views/register.ejs %>
+<%- /* This view is shown when the user needs to register with the judge */ %>
+<%- contentFor('body') %>
+
+<h1 class="text-3xl font-bold text-primary border-b-2 border-primary pb-3 mb-6">Register with Judge</h1>
+
+<div class="bg-blue-50 border border-blue-200 text-blue-800 rounded-md p-4 mb-6">
+    <p>Welcome, <strong><%= email %></strong>!</p>
+    <p>To interact with the judge (create games, play, observe), you first need to register your details with it. Please complete the form below.</p>
+    <p class="text-sm mt-2">This information is sent directly to the njudge adjudicator program.</p>
+</div>
+
+<% if (typeof error !== 'undefined' && error) { %>
+    <div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-md mb-6">
+        <p><strong>Registration Failed:</strong> <%= error %></p>
+        <% if (typeof judgeOutput !== 'undefined' && judgeOutput) { %>
+            <h4 class="font-semibold mt-2">Judge Output:</h4>
+            <pre class="bg-red-100 p-2 rounded text-xs mt-1 whitespace-pre-wrap break-words"><%= judgeOutput %></pre>
+        <% } %>
+    </div>
+<% } %>
+
+<div class="card max-w-2xl mx-auto">
+    <form action="/register" method="POST" class="space-y-4">
+        <input type="hidden" name="site" value="jonshouse"> <%# Consider making site configurable or removing if not needed %>
+        <div>
+            <label for="name" class="block text-sm font-medium text-gray-700 mb-1">Full Name:</label>
+            <input type="text" id="name" name="name" required placeholder="Your First and Last Name"
+                   value="<%= typeof formData !== 'undefined' ? formData.name : '' %>" class="input">
+        </div>
+         <div>
+            <label for="address" class="block text-sm font-medium text-gray-700 mb-1">Address (City, State/Province/Region):</label>
+            <input type="text" id="address" name="address" required placeholder="e.g., Anytown, CA"
+                   value="<%= typeof formData !== 'undefined' ? formData.address : '' %>" class="input">
+             <p class="text-xs text-gray-500 mt-1">Minimum required by judge rules.</p>
+        </div>
+        <div>
+            <label for="phone" class="block text-sm font-medium text-gray-700 mb-1">Phone Number:</label>
+            <input type="tel" id="phone" name="phone" required placeholder="e.g., +1-555-555-5555"
+                   value="<%= typeof formData !== 'undefined' ? formData.phone : '' %>" class="input">
+            <p class="text-xs text-gray-500 mt-1">Required by judge rules.</p>
+        </div>
+         <div>
+            <label for="country" class="block text-sm font-medium text-gray-700 mb-1">Country:</label>
+            <input type="text" id="country" name="country" required placeholder="e.g., USA"
+                   value="<%= typeof formData !== 'undefined' ? formData.country : '' %>" class="input">
+        </div>
+         <div>
+            <label for="level" class="block text-sm font-medium text-gray-700 mb-1">Experience Level:</label>
+            <select id="level" name="level" required class="input">
+                <option value="">-- Select Level --</option>
+                <option value="Novice" <%= (typeof formData !== 'undefined' && formData.level === 'Novice') ? 'selected' : '' %>>Novice</option>
+                <option value="Amateur" <%= (typeof formData !== 'undefined' && formData.level === 'Amateur') ? 'selected' : '' %>>Amateur</option>
+                <option value="Intermediate" <%= (typeof formData !== 'undefined' && formData.level === 'Intermediate') ? 'selected' : '' %>>Intermediate</option>
+                <option value="Advanced" <%= (typeof formData !== 'undefined' && formData.level === 'Advanced') ? 'selected' : '' %>>Advanced</option>
+                <option value="Expert" <%= (typeof formData !== 'undefined' && formData.level === 'Expert') ? 'selected' : '' %>>Expert</option>
+            </select>
+             <p class="text-xs text-gray-500 mt-1">See judge docs (GET level) for definitions.</p>
+        </div>
+
+        <%# Add other fields here if your judge 'form' requires them %>
+
+        <div class="border-t pt-4">
+             <p class="text-sm text-gray-600 mb-2">Your email <code class="bg-gray-100 px-1 py-0.5 rounded"><%= email %></code> will be automatically included.</p>
+            <button type="submit" class="btn btn-primary">Register with Judge</button>
+             <form action="/signoff" method="POST" class="inline-block ml-4"> <%# Changed to form for POST %>
+                 <button type="submit" class="text-sm text-gray-500 hover:text-gray-700 underline">Cancel (Sign Out)</button>
+             </form>
+        </div>
+    </form>
+</div>
+
+<%# No page-specific scripts needed for register.ejs currently %>
+<%- contentFor('scripts') %>

@@ -4,26 +4,41 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dip Adjudicator - Start Session</title>
-    <style>
-        body { font-family: sans-serif; line-height: 1.6; padding: 20px; max-width: 600px; margin: auto; }
-        label { display: block; margin-bottom: 5px; }
-        input[type="email"] { width: 100%; padding: 8px; margin-bottom: 10px; box-sizing: border-box; }
-        button { padding: 10px 15px; cursor: pointer; }
-        .error { color: red; margin-bottom: 10px; }
-    </style>
+    <link href="/css/styles.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
-<body>
-    <h1>Dip Adjudicator Interface</h1>
-    <p>Enter your email address to start interacting with the adjudicator.</p>
+<body class="min-h-screen bg-gray-50 py-8">
+    <div class="max-w-7xl mx-auto px-4">
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <!-- Left Column: Empty for balance -->
+            <div class="lg:col-span-3"></div>
 
-    <% if (typeof error !== 'undefined' && error) { %>
-        <p class="error"><%= error %></p>
-    <% } %>
+            <!-- Center Column: Main Content -->
+            <div class="lg:col-span-6">
+                <div class="card">
+                    <h1 class="text-3xl font-bold text-primary border-b-2 border-primary pb-3 mb-6">Dip Adjudicator Interface</h1>
+                    <p class="text-gray-600 mb-6">Enter your email address to start interacting with the adjudicator.</p>
 
-    <form action="/start" method="POST">
-        <label for="email">Your Email:</label>
-        <input type="email" id="email" name="email" required placeholder="you@example.com">
-        <button type="submit">Start Session</button>
-    </form>
+                    <% if (typeof error !== 'undefined' && error) { %>
+                        <div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-md mb-6">
+                            <%= error %>
+                        </div>
+                    <% } %>
+
+                    <form action="/start" method="POST" class="space-y-4">
+                        <div>
+                            <label for="email" class="block text-sm font-medium text-gray-700 mb-2">Your Email:</label>
+                            <input type="email" id="email" name="email" required placeholder="you@example.com" 
+                                   class="input">
+                        </div>
+                        <button type="submit" class="btn btn-primary">Start Session</button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Right Column: Empty for balance -->
+            <div class="lg:col-span-3"></div>
+        </div>
+    </div>
 </body>
 </html>
