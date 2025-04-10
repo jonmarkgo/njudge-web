@@ -55,11 +55,13 @@ async function fetchUserPreferences() {
     try {
         const response = await fetch('/api/user/preferences');
         if (!response.ok) {
-            if (response.status === 404 || response.status === 401) { // 404 No prefs saved yet, 401 Not logged in
-                console.log("No existing user preferences found or user not authenticated, using defaults.");
+            if (response.status === 404) { // No preferences saved yet is okay
+                console.log("No existing user preferences found, using defaults.");
                 userPreferences = JSON.parse(JSON.stringify(defaultPreferences));
             } else {
-                throw new Error(`HTTP error! status: ${response.status}`);
+                // Throw error for other non-ok statuses
+                const errorText = await response.text();
+                throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
             }
         } else {
             const prefs = await response.json();
@@ -75,13 +77,15 @@ async function fetchUserPreferences() {
                     }
                 };
             } else {
-                 console.warn("Failed to parse preferences from response or success=false:", prefs);
+                 // Handle cases where success might be true but preferences are missing/null
+                 console.warn("Fetched preferences response indicates success but preferences are missing or invalid:", prefs);
                  userPreferences = JSON.parse(JSON.stringify(defaultPreferences));
             }
         }
     } catch (error) {
         console.error('Error fetching user preferences:', error);
-        userPreferences = JSON.parse(JSON.stringify(defaultPreferences)); // Fallback to defaults on error
+        // Fallback to defaults on any error (network, parsing, etc.)
+        userPreferences = JSON.parse(JSON.stringify(defaultPreferences));
     }
     // Apply preferences after fetching (or falling back to defaults)
     applyPreferences();
@@ -92,22 +96,25 @@ async function fetchUserPreferences() {
 async function saveUserPreferences() {
     console.log("Saving user preferences:", userPreferences);
     try {
+        // Use PUT method to update preferences
         const response = await fetch('/api/user/preferences', {
-            method: 'PUT', // Use PUT to update/replace preferences
+            method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(userPreferences) // Send the whole object
+            body: JSON.stringify(userPreferences)
         });
         const result = await response.json();
-        if (result.success) {
+        if (response.ok && result.success) {
             console.log("Preferences saved successfully.");
             alert("Preferences saved!");
             applyPreferences(); // Re-apply in case logic depends on it elsewhere
         } else {
-            console.error("Failed to save preferences:", result.message);
-            alert(`Error saving preferences: ${result.message}`);
+            // Handle specific errors from the server
+            const errorMsg = result.message || `HTTP error ${response.status}`;
+            console.error("Failed to save preferences:", errorMsg);
+            alert(`Error saving preferences: ${errorMsg}`);
         }
     } catch (error) {
-        console.error('Error saving user preferences:', error);
+        console.error('Network or parsing error saving user preferences:', error);
         alert(`Network error saving preferences: ${error.message}`);
     }
 }
@@ -120,18 +127,19 @@ async function resetUserPreferences() {
     try {
         const response = await fetch('/api/user/preferences/reset', { method: 'POST' });
         const result = await response.json();
-        if (result.success) {
+        if (response.ok && result.success) {
             console.log("Preferences reset successfully.");
             alert("Preferences reset to default!");
             userPreferences = JSON.parse(JSON.stringify(defaultPreferences)); // Reset local state
             applyPreferences(); // Apply defaults
             renderPreferenceControls(); // Re-render controls with default values
         } else {
-            console.error("Failed to reset preferences:", result.message);
-            alert(`Error resetting preferences: ${result.message}`);
+            const errorMsg = result.message || `HTTP error ${response.status}`;
+            console.error("Failed to reset preferences:", errorMsg);
+            alert(`Error resetting preferences: ${errorMsg}`);
         }
     } catch (error) {
-        console.error('Error resetting user preferences:', error);
+        console.error('Network or parsing error resetting user preferences:', error);
         alert(`Network error resetting preferences: ${error.message}`);
     }
 }
@@ -194,7 +202,7 @@ function renderPreferenceControls() {
     sortSelect.addEventListener('change', (e) => {
         userPreferences.sort_order = e.target.value;
         // Optionally apply sort immediately or wait for save
-        applyPreferences(); // Apply immediately example
+        applyPreferences(); // Apply immediately to re-sort game list
     });
     sortDiv.appendChild(sortSelect);
     form.appendChild(sortDiv);
@@ -212,11 +220,16 @@ function renderPreferenceControls() {
         checkbox.type = 'checkbox';
         checkbox.id = `pref-vis-${key}`;
         checkbox.className = 'rounded border-gray-300 text-primary focus:ring-primary mr-2';
-        checkbox.checked = userPreferences.column_visibility[key];
+        // Ensure userPreferences.column_visibility exists before accessing key
+        checkbox.checked = userPreferences.column_visibility ? userPreferences.column_visibility[key] : defaultPreferences.column_visibility[key];
         checkbox.addEventListener('change', (e) => {
+            // Ensure column_visibility object exists before setting property
+            if (!userPreferences.column_visibility) {
+                userPreferences.column_visibility = { ...defaultPreferences.column_visibility };
+            }
             userPreferences.column_visibility[key] = e.target.checked;
              // Optionally apply visibility immediately or wait for save
-             applyPreferences(); // Apply immediately example
+             applyPreferences(); // Apply immediately to update sidebar
         });
 
         const label = document.createElement('label');
@@ -281,21 +294,28 @@ async function renderMap(gameName, phase) {
     }
 
     // Use phase if provided, otherwise the API defaults to latest
-    const phaseParam = phase ? `/${phase}` : '';
+    const phaseParam = phase ? `/${encodeURIComponent(phase)}` : ''; // Ensure phase is encoded
     const apiUrl = `/api/map/${encodeURIComponent(gameName)}${phaseParam}`;
     console.log(`Fetching map data from: ${apiUrl}`);
 
     try {
         const response = await fetch(apiUrl);
+        // Check if response is OK, otherwise try to parse error JSON
         if (!response.ok) {
-            const errorData = await response.json().catch(() => ({ message: 'Failed to parse error response' }));
-            throw new Error(`HTTP error ${response.status}: ${errorData.error || errorData.message || 'Unknown error'}`);
+            let errorData = { message: `HTTP error ${response.status}` }; // Default error
+            try {
+                errorData = await response.json(); // Try parsing JSON error
+            } catch (e) {
+                console.warn("Could not parse error response as JSON.");
+            }
+            throw new Error(errorData.message || `HTTP error ${response.status}`);
         }
 
-        const mapData = await response.json(); // Expecting the combined data object
+        const mapData = await response.json();
 
-        if (mapData.success === false) { // Check for explicit failure from backend
-             throw new Error(mapData.error || mapData.message || "Failed to load map data.");
+        // Check if the backend indicated success and provided SVG content
+        if (mapData.success === false) { // Explicit check for backend failure flag
+             throw new Error(mapData.message || "Backend indicated failure fetching map data.");
         }
 
         if (mapData.svgContent) {
@@ -308,6 +328,7 @@ async function renderMap(gameName, phase) {
             }
 
             // Ensure SVG has a known size or viewBox for coordinate mapping
+            // If viewBox is present, use it. Otherwise, might need width/height.
             const viewBox = svgElement.viewBox.baseVal;
             const svgWidth = viewBox ? viewBox.width : svgElement.width.baseVal.value;
             const svgHeight = viewBox ? viewBox.height : svgElement.height.baseVal.value;
@@ -321,16 +342,13 @@ async function renderMap(gameName, phase) {
                 AUS: '#ffcc00', GER: '#4d4d4d', ENG: '#add8e6', FRA: '#0000ff',
                 ITA: '#008000', RUS: '#800080', TUR: '#ff4500',
                 // Add Machiavelli colors if needed
-                FLORENCE: '#ffb6c1', // Light Pink
-                MILAN: '#a0522d',    // Sienna
-                NAPLES: '#ffff00',   // Yellow
-                PAPACY: '#ffffff',   // White (with border)
-                VENICE: '#00ced1',   // Dark Turquoise
+                MIL: '#e6194b', FLO: '#3cb44b', NAP: '#ffe119', PAP: '#4363d8', VEN: '#f58231',
                 DEFAULT: '#cccccc' // For neutral SCs
             };
             const unitStyles = {
                 A: { shape: 'rect', width: 10, height: 10, text: 'A' }, // Army
-                F: { shape: 'polygon', points: '0,-6 6,6 -6,6', text: 'F' } // Fleet
+                F: { shape: 'polygon', points: '0,-6 6,6 -6,6', text: 'F' } // Fleet (Triangle)
+                // Add other unit types if needed (e.g., W for Wing)
             };
             const scRadius = 8;
             const unitFontSize = 10;
@@ -345,27 +363,17 @@ async function renderMap(gameName, phase) {
             };
 
             // --- Render Supply Centers ---
-            if (mapData.supplyCenters && mapData.provinces) {
+            if (mapData.supplyCenters && Array.isArray(mapData.supplyCenters) && mapData.provinces) {
                  const scGroup = createSvgElement('g', { id: 'sc-layer' });
                  svgElement.appendChild(scGroup);
 
-                // SC data is now an object { Power: count } - need to link back to province data
-                // We need a list of which provinces *are* supply centers from the map info
-                // Let's assume mapData.provinces[abbr].isSupplyCenter = true if it is one
+                mapData.supplyCenters.forEach(sc => {
+                    // Find province data using the abbreviation from the SC object
+                    const provinceAbbr = sc.province; // Assuming sc object has { province: 'ABR', owner: 'POWER' }
+                    const province = mapData.provinces[provinceAbbr];
 
-                Object.entries(mapData.provinces).forEach(([abbr, province]) => {
-                    // Check if this province is a supply center (needs info from map file)
-                    // For now, let's assume we can check based on presence of scX/scY
                     if (province && province.scX !== undefined && province.scY !== undefined) {
-                        // Find the owner from the phase data
-                        let owner = 'Neutral';
-                        for (const power in mapData.supplyCenters) {
-                            // This logic is flawed - supplyCenters is {power: count}, not {province: owner}
-                            // We need the HISTORY parser to give us SC ownership per province for the phase
-                            // TODO: Fix HISTORY parser to return SC ownership by province: { provinceAbbr: ownerPower }
-                        }
-                        // TEMPORARY: Just draw all potential SCs as neutral until history parser is fixed
-                        const color = powerColors.DEFAULT;
+                        const color = powerColors[sc.owner] || powerColors.DEFAULT;
                         const circle = createSvgElement('circle', {
                             cx: province.scX,
                             cy: province.scY,
@@ -373,25 +381,32 @@ async function renderMap(gameName, phase) {
                             fill: color,
                             stroke: '#333',
                             'stroke-width': 1,
-                            'data-province': abbr,
-                            'data-owner': owner
+                            'data-province': provinceAbbr,
+                            'data-owner': sc.owner || 'Neutral'
                         });
-                        circle.innerHTML = `<title>SC: ${province.name} (${owner})</title>`;
+                        // Basic tooltip
+                        circle.innerHTML = `<title>SC: ${province.name} (${sc.owner || 'Neutral'})</title>`;
                         scGroup.appendChild(circle);
+                    } else {
+                         console.warn(`SC coordinates or province data not found for SC in province: ${provinceAbbr}`);
                     }
                 });
+            } else {
+                 console.warn("Supply center data or province metadata missing/invalid for rendering.");
             }
 
             // --- Render Units ---
-             if (mapData.units && mapData.provinces) {
+             if (mapData.units && Array.isArray(mapData.units) && mapData.provinces) {
                  const unitGroup = createSvgElement('g', { id: 'unit-layer' });
                  svgElement.appendChild(unitGroup);
 
                  mapData.units.forEach(unit => {
-                     const province = mapData.provinces[unit.location]; // Unit location is the key
+                     // Find province data using the abbreviation from the unit object
+                     const provinceAbbr = unit.location; // Assuming unit object has { type: 'A', location: 'ABR', power: 'POWER' }
+                     const province = mapData.provinces[provinceAbbr];
+
                      if (province && province.unitX !== undefined && province.unitY !== undefined) {
-                         const powerKey = unit.power.toUpperCase(); // Normalize power name for color lookup
-                         const color = powerColors[powerKey] || powerColors.DEFAULT;
+                         const color = powerColors[unit.power] || powerColors.DEFAULT;
                          const style = unitStyles[unit.type] || unitStyles.A; // Default to Army style if type unknown
 
                          let unitElement;
@@ -427,15 +442,17 @@ async function renderMap(gameName, phase) {
 
                          unitElement.setAttribute('data-unit-type', unit.type);
                          unitElement.setAttribute('data-unit-power', unit.power);
-                         unitElement.setAttribute('data-unit-province', unit.location);
+                         unitElement.setAttribute('data-unit-province', provinceAbbr);
                          // Basic tooltip
-                         unitElement.innerHTML = `<title>Unit: ${unit.power} ${unit.type} ${unit.location}</title>`;
+                         unitElement.innerHTML = `<title>Unit: ${unit.power} ${unit.type} ${province.name}</title>`;
                          unitGroup.appendChild(unitElement);
 
                      } else {
-                          console.warn(`Unit coordinates not found for province: ${unit.location}`);
+                          console.warn(`Unit coordinates or province data not found for unit in province: ${provinceAbbr}`);
                      }
                  });
+             } else {
+                  console.warn("Unit data or province metadata missing/invalid for rendering.");
              }
 
              // --- (Optional) Render Province Names/Labels ---
@@ -443,13 +460,13 @@ async function renderMap(gameName, phase) {
                  const labelGroup = createSvgElement('g', { id: 'label-layer', 'pointer-events': 'none' }); // Disable pointer events for labels
                  svgElement.appendChild(labelGroup);
                  Object.values(mapData.provinces).forEach(province => {
-                     // Use label coordinates if available, else unit coords
-                     const x = province.labelX !== undefined ? province.labelX : province.unitX;
-                     const y = province.labelY !== undefined ? province.labelY : province.unitY;
+                     // Use label coordinates if available, otherwise fallback (or skip)
+                     const x = province.labelX !== undefined ? province.labelX : province.x; // Use original x/y as label pos?
+                     const y = province.labelY !== undefined ? province.labelY : province.y;
                      if (x !== undefined && y !== undefined && province.abbr) { // Only render if coords and abbr exist
                          const label = createSvgElement('text', {
                              x: x,
-                             y: y + 15, // Offset slightly below unit/sc position
+                             y: y, // Adjust offset as needed
                              'font-size': 9,
                              fill: '#555',
                              'text-anchor': 'middle',
@@ -462,8 +479,11 @@ async function renderMap(gameName, phase) {
              }
 
 
-        } else { // No SVG content received
+        } else if (mapData.success && !mapData.svgContent) {
             mapContainer.innerHTML = '<p class="text-gray-500 italic p-4">Map SVG not available for this variant.</p>';
+        } else {
+             // This case should ideally be caught by the !response.ok check earlier
+             throw new Error(mapData.message || "Failed to load map data (unknown reason).");
         }
 
     } catch (error) {
@@ -506,12 +526,35 @@ document.addEventListener('DOMContentLoaded', () => {
     const newBookmarkNameInput = document.getElementById('new-bookmark-name');
     const saveBookmarkBtn = document.getElementById('save-bookmark-btn');
 
-    let currentGameData = null; // Store the detailed state of the selected game
-    // let allGamesList = []; // Moved to window scope for preferences access
+    // --- News Elements ---
+    const newsSection = document.getElementById('news-section');
+    const addNewsForm = document.getElementById('add-news-form');
+    const newsContentInput = document.getElementById('news-content');
+    const addNewsFeedback = document.getElementById('add-news-feedback');
+    const newsErrorDiv = document.getElementById('news-error');
+    const newsSectionContainer = document.getElementById('news-section-container');
+
+    // --- Game Management Elements ---
+    const addGameForm = document.getElementById('add-game-form');
+    const addGameNameInput = document.getElementById('add-game-name');
+    const addGameVariantInput = document.getElementById('add-game-variant');
+    const addGamePasswordInput = document.getElementById('add-game-password');
+    const removeGameBtn = document.getElementById('remove-game-btn');
+    const removeGamePasswordInput = document.getElementById('remove-game-password');
+    const gameManagementFeedbackDiv = document.getElementById('game-management-feedback');
+
+    // --- Chart Elements ---
+    const canvasElement = document.getElementById('gameStatusChart');
+    const chartErrorElement = document.getElementById('chart-error');
+
+    // --- State Variables ---
+    // window.currentGameData = null; // Defined globally now
+    // window.allGamesList = []; // Defined globally now
     let currentUserEmail = userEmailIndicator ? userEmailIndicator.dataset.email : null; // Store user email
     window.currentUserEmail = currentUserEmail; // Also store globally for easy check
     let currentFilters = {}; // Store the currently applied filters
     let savedBookmarks = []; // Store fetched bookmarks
+
     // --- Initial Setup ---
     async function initializeDashboard() { // Make async for await fetchUserPreferences
         // Fetch preferences first if logged in
@@ -531,7 +574,7 @@ document.addEventListener('DOMContentLoaded', () => {
             fetchAndPopulateBookmarks();
         }
 
-        // Add event listeners for filters and bookmarks
+        // Add event listeners for filters and bookmarks (check if elements exist)
         if (applyFiltersBtn) {
             applyFiltersBtn.addEventListener('click', () => {
                 currentFilters = getCurrentFilterValues();
@@ -551,22 +594,15 @@ document.addEventListener('DOMContentLoaded', () => {
             deleteBookmarkBtn.addEventListener('click', deleteBookmark);
         }
 
-
-        // Fetch and render the game status chart
-        fetchAndRenderGameStatusChart();
-
-        // Initial map render if a game is pre-selected
-        const initialGame = getCookie('targetGame');
-        if (initialGame) {
-            // Fetch state to get phase info if needed
-            const state = await fetch(`/api/game/${initialGame}`).then(res => res.ok ? res.json() : null);
-            if (state && state.success) {
-                 renderMap(initialGame, state.gameState.currentPhase);
-            } else {
-                 renderMap(initialGame); // Render latest if state fetch fails
-            }
+        // Fetch and render the game status chart if canvas exists
+        if (canvasElement) {
+            fetchAndRenderGameStatusChart();
         }
 
+        // Fetch news if container exists
+        if (newsSectionContainer) {
+            fetchAndDisplayNews();
+        }
     }
 
     // --- New Function: Fetch Games with Filters ---
@@ -585,7 +621,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (gameSelector) gameSelector.innerHTML = '<option value="">Loading games...</option>';
 
         fetch(fetchUrl)
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
             .then(data => {
                 if (data.success && data.games) {
                     window.allGamesList = data.games; // Store globally
@@ -620,7 +661,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (gameSelector) gameSelector.innerHTML = '<option value="">No games match filters</option>';
                     }
                 } else {
-                    console.error("Failed to fetch filtered game list:", data.message);
+                    // Handle cases where success might be false from backend
+                    const errorMsg = data.message || "Failed to fetch filtered game list (unknown reason).";
+                    console.error("Failed to fetch filtered game list:", errorMsg);
                     updateGameStateSidebar(null); // Show empty state on error
                     updateCommandGenerator(null);
                     if (gameSelector) gameSelector.innerHTML = '<option value="">Error loading games</option>';
@@ -663,11 +706,12 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const response = await fetch('/api/user/search-bookmarks');
             if (!response.ok) {
-                 if (response.status === 404 || response.status === 401) { // No bookmarks saved yet or not logged in
-                     console.log("No saved bookmarks found or user not authenticated.");
+                 if (response.status === 404) { // No bookmarks saved yet is okay
+                     console.log("No saved bookmarks found.");
                      savedBookmarks = [];
                  } else {
-                     throw new Error(`HTTP error! status: ${response.status}`);
+                     const errorText = await response.text();
+                     throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
                  }
             } else {
                 const result = await response.json();
@@ -761,17 +805,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: JSON.stringify(bookmarkData)
             });
             const result = await response.json();
-            if (result.success) {
+            if (response.ok && result.success) {
                 console.log("Bookmark saved successfully.");
                 alert(`Bookmark "${name}" saved!`);
                 newBookmarkNameInput.value = ''; // Clear input
                 fetchAndPopulateBookmarks(); // Refresh the list
             } else {
-                console.error("Failed to save bookmark:", result.message);
-                alert(`Error saving bookmark: ${result.message || 'Unknown error'}`);
+                const errorMsg = result.message || `HTTP error ${response.status}`;
+                console.error("Failed to save bookmark:", errorMsg);
+                alert(`Error saving bookmark: ${errorMsg}`);
             }
         } catch (error) {
-            console.error('Error saving bookmark:', error);
+            console.error('Network or parsing error saving bookmark:', error);
             alert(`Network error saving bookmark: ${error.message}`);
         }
     }
@@ -795,30 +840,30 @@ document.addEventListener('DOMContentLoaded', () => {
                 method: 'DELETE'
             });
             const result = await response.json(); // Even DELETE might return JSON
-            if (result.success) {
+            if (response.ok && result.success) {
                 console.log("Bookmark deleted successfully.");
                 alert(`Bookmark "${name}" deleted.`);
                 fetchAndPopulateBookmarks(); // Refresh the list
             } else {
                  // Handle cases where deletion might fail (e.g., not found, permissions)
-                 console.error("Failed to delete bookmark:", result.message);
-                 alert(`Error deleting bookmark: ${result.message || 'Unknown error'}`);
+                 const errorMsg = result.message || `HTTP error ${response.status}`;
+                 console.error("Failed to delete bookmark:", errorMsg);
+                 alert(`Error deleting bookmark: ${errorMsg}`);
             }
         } catch (error) {
-             console.error('Error deleting bookmark:', error);
+             console.error('Network or parsing error deleting bookmark:', error);
              alert(`Network error deleting bookmark: ${error.message}`);
         }
     }
 
     // --- Game Status Chart Functions ---
     async function fetchAndRenderGameStatusChart() {
-        const canvasElement = document.getElementById('gameStatusChart');
-        const errorElement = document.getElementById('chart-error');
+        // Ensure elements exist
         if (!canvasElement) {
             console.warn('Game status chart canvas element not found.');
             return;
         }
-        if (errorElement) errorElement.textContent = ''; // Clear previous errors
+        if (chartErrorElement) chartErrorElement.textContent = ''; // Clear previous errors
 
         try {
             console.log('Fetching game status stats...');
@@ -881,7 +926,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             } else if (result.success && result.stats.length === 0) {
                  console.log('No game status data to display.');
-                 if (errorElement) errorElement.textContent = 'No game status data available.';
+                 if (chartErrorElement) chartErrorElement.textContent = 'No game status data available.';
                  // Optionally destroy old chart if data becomes empty
                  if (gameStatusChartInstance) {
                     gameStatusChartInstance.destroy();
@@ -892,8 +937,8 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } catch (error) {
             console.error('Error fetching or rendering game status chart:', error);
-            if (errorElement) {
-                errorElement.textContent = `Error loading chart: ${error.message}`;
+            if (chartErrorElement) {
+                chartErrorElement.textContent = `Error loading chart: ${error.message}`;
             }
              // Optionally destroy old chart on error
              if (gameStatusChartInstance) {
@@ -959,7 +1004,7 @@ document.addEventListener('DOMContentLoaded', () => {
         clearCredentialsButton.addEventListener('click', () => {
              if (confirm("Are you sure you want to clear the selected target game and its stored password/variant?")) {
                 if (gameSelector) gameSelector.value = ''; // Reset dropdown
-                targetGameInput.value = ''; // Clear hidden input
+                if (targetGameInput) targetGameInput.value = ''; // Clear hidden input
                 if (targetPasswordInput) targetPasswordInput.value = ''; // Clear password field
                 if (targetVariantInput) targetVariantInput.value = ''; // Clear variant field
                 eraseCookie('targetGame'); // Erase game cookie
@@ -1021,49 +1066,59 @@ document.addEventListener('DOMContentLoaded', () => {
             window.currentGameData = null; // Store globally
             updateGameStateSidebar(null);
             updateCommandGenerator(null); // Update recommendations for "no game" context
-            targetGameInput.value = '';
+            if (targetGameInput) targetGameInput.value = '';
             loadCredentialsForGame(null); // Clear credentials fields
             renderMap(null); // Clear map
             return;
         }
 
         console.log("Fetching state for:", gameName);
-        gameStateSidebar.innerHTML = '<p class="text-gray-500 italic">Loading game state...</p>'; // Loading indicator
+        if (gameStateSidebar) gameStateSidebar.innerHTML = '<p class="text-gray-500 italic">Loading game state...</p>'; // Loading indicator
 
         fetch(`/api/game/${gameName}`)
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    // Handle 404 specifically
+                    if (response.status === 404) {
+                         throw new Error(`Game '${gameName}' not found.`);
+                    }
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
             .then(data => {
                 if (data.success) {
                     console.log("[fetchAndDisplayGameState] Received game state and recommendations:", data);
                     window.currentGameData = data.gameState; // Store globally
                     updateGameStateSidebar(currentGameData);
                     updateCommandGenerator(data.recommendedCommands); // Update commands based on fetched state
-                    targetGameInput.value = gameName; // Update hidden input
+                    if (targetGameInput) targetGameInput.value = gameName; // Update hidden input
                     setCookie('targetGame', gameName, 30); // Update cookie
                     renderMap(gameName, data.gameState.currentPhase); // Render the map
 
                     loadCredentialsForGame(gameName); // Load credentials for this game
                 } else {
-                    console.error(`Failed to fetch game state for ${gameName}:`, data.message);
-                    gameStateSidebar.innerHTML = `<p class="text-red-600">Error loading state for ${gameName}: ${data.message}</p>`;
+                    // Handle backend success=false
+                    const errorMsg = data.message || `Failed to fetch game state for ${gameName} (unknown reason).`;
+                    console.error(`Failed to fetch game state for ${gameName}:`, errorMsg);
+                    if (gameStateSidebar) gameStateSidebar.innerHTML = `<p class="text-red-600">Error loading state for ${gameName}: ${errorMsg}</p>`;
                     window.currentGameData = null; // Store globally
                     updateCommandGenerator(null); // Reset recommendations
                     loadCredentialsForGame(gameName); // Still try to load credentials
-                    renderMap(null); // Clear map on error
                 }
             })
             .catch(error => {
                 console.error(`Error fetching game state for ${gameName}:`, error);
-                gameStateSidebar.innerHTML = `<p class="text-red-600">Network error loading state for ${gameName}.</p>`;
+                if (gameStateSidebar) gameStateSidebar.innerHTML = `<p class="text-red-600">Network or server error loading state for ${gameName}: ${error.message}</p>`;
                 window.currentGameData = null; // Store globally
                 updateCommandGenerator(null);
                 loadCredentialsForGame(gameName);
-                renderMap(null); // Clear map on error
             });
     }
 
     function updateGameStateSidebar(gameState) {
-        const visibility = userPreferences.column_visibility;
+        // Ensure preferences are loaded before using them
+        const visibility = userPreferences?.column_visibility || defaultPreferences.column_visibility;
         if (!gameStateSidebar) return;
 
         if (!gameState) {
@@ -1163,9 +1218,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Credential Handling (Password + Variant) ---
     function saveCredentialsForGame() {
-        const gameName = targetGameInput.value;
-        const password = targetPasswordInput.value;
-        const variant = targetVariantInput.value; // Get variant value
+        const gameName = targetGameInput?.value; // Check if element exists
+        const password = targetPasswordInput?.value;
+        const variant = targetVariantInput?.value; // Get variant value
 
         if (gameName) {
             if (password) {
@@ -1184,26 +1239,28 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function loadCredentialsForGame(gameName) {
-        if (gameName) {
-            targetPasswordInput.value = getCookie(`targetPassword_${gameName}`) || '';
-            targetVariantInput.value = getCookie(`targetVariant_${gameName}`) || ''; // Set variant input
-        } else {
-            targetPasswordInput.value = ''; // Clear if no game selected
-            targetVariantInput.value = ''; // Clear variant input too
+        if (targetPasswordInput && targetVariantInput) { // Check elements exist
+            if (gameName) {
+                targetPasswordInput.value = getCookie(`targetPassword_${gameName}`) || '';
+                targetVariantInput.value = getCookie(`targetVariant_${gameName}`) || ''; // Set variant input
+            } else {
+                targetPasswordInput.value = ''; // Clear if no game selected
+                targetVariantInput.value = ''; // Clear variant input too
+            }
         }
     }
 
     function clearAllCredentials() {
          if (confirm('Are you sure you want to clear the stored password and variant for the current game and remove the target game selection?')) {
-             const gameName = targetGameInput.value;
+             const gameName = targetGameInput?.value;
              if (gameName) {
                  eraseCookie(`targetPassword_${gameName}`);
                  eraseCookie(`targetVariant_${gameName}`); // Erase variant cookie
              }
              eraseCookie('targetGame');
-             targetGameInput.value = '';
-             targetPasswordInput.value = '';
-             targetVariantInput.value = ''; // Clear variant input
+             if (targetGameInput) targetGameInput.value = '';
+             if (targetPasswordInput) targetPasswordInput.value = '';
+             if (targetVariantInput) targetVariantInput.value = ''; // Clear variant input
              if (gameSelector) gameSelector.value = '';
              fetchAndDisplayGameState(null); // Reset UI
              alert('Credentials and target game cleared.');
@@ -1263,19 +1320,23 @@ document.addEventListener('DOMContentLoaded', () => {
             commandTypeSelect.dispatchEvent(new Event('change'));
         } else {
              // Clear options if no command is selected
-             optionsArea.innerHTML = '<p class="text-sm text-gray-500 italic">Select an action above to see options.</p>';
-             generatedCommandTextarea.value = '';
-             generatedCommandTextarea.placeholder = "Select action or type command manually. Do NOT include SIGN OFF.";
+             if (optionsArea) optionsArea.innerHTML = '<p class="text-sm text-gray-500 italic">Select an action above to see options.</p>';
+             if (generatedCommandTextarea) {
+                 generatedCommandTextarea.value = '';
+                 generatedCommandTextarea.placeholder = "Select action or type command manually. Do NOT include SIGN OFF.";
+             }
         }
     }
 
     // --- generateCommandOptions: Expanded significantly ---
     function generateCommandOptions(selectedCommand) {
+        if (!optionsArea || !generatedCommandTextarea) return; // Ensure elements exist
+
         optionsArea.innerHTML = ''; // Clear previous options
         generatedCommandTextarea.value = ''; // Clear textarea
         generatedCommandTextarea.placeholder = "Configure options above or type command here directly. Do NOT include SIGN OFF."; // Reset placeholder
 
-        const targetGame = targetGameInput.value || '<game>'; // Use selected game or placeholder
+        const targetGame = targetGameInput?.value || '<game>'; // Use selected game or placeholder
         const inputClass = 'input text-sm'; // Consistent input styling
         const labelClass = 'block text-sm font-medium text-gray-700 mb-1';
         const helpTextClass = 'text-xs text-gray-500 mt-1';
@@ -1447,8 +1508,10 @@ document.addEventListener('DOMContentLoaded', () => {
                          const action = actionSelect.value;
                          numDiv.classList.toggle('hidden', action !== 'READ' && action !== 'DELETE');
                          bodyDiv.classList.toggle('hidden', action !== 'RECORD');
-                         qs('#diary-entry-num').required = (action === 'READ' || action === 'DELETE');
-                         qs('#diary-body').required = (action === 'RECORD');
+                         const numInput = numDiv.querySelector('#diary-entry-num');
+                         const bodyInput = bodyDiv.querySelector('#diary-body');
+                         if (numInput) numInput.required = (action === 'READ' || action === 'DELETE');
+                         if (bodyInput) bodyInput.required = (action === 'RECORD');
                          updateGeneratedCommandText(); // Update command text when visibility changes
                      };
                      actionSelect.addEventListener('change', updateDiaryFields);
@@ -1639,11 +1702,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Helper function to query selector safely within optionsArea
-    const qs = (selector) => optionsArea.querySelector(selector);
+    const qs = (selector) => optionsArea?.querySelector(selector); // Add check for optionsArea
 
     // --- updateGeneratedCommandText: Updated for multi-line and complex commands ---
     function updateGeneratedCommandText() {
-        if (!commandTypeSelect || !generatedCommandTextarea) return;
+        if (!commandTypeSelect || !generatedCommandTextarea || !optionsArea) return; // Check elements exist
 
         const selectedCommand = commandTypeSelect.value;
         if (!selectedCommand) {
@@ -1876,11 +1939,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if(refreshStateButton) {
         refreshStateButton.addEventListener('click', () => {
-            const gameName = targetGameInput.value;
+            const gameName = targetGameInput?.value;
             if (gameName) {
-                 outputDiv.textContent = `Refreshing state for ${gameName}...`;
-                 outputDiv.className = 'bg-blue-50 border border-blue-200 rounded-md p-4 font-mono text-sm min-h-[250px] max-h-[600px] overflow-y-auto whitespace-pre-wrap break-words text-blue-700';
-                 sendCommand(`LIST ${gameName}`); // sendCommand will handle the refresh logic
+                 if (outputDiv) {
+                     outputDiv.textContent = `Refreshing state for ${gameName}...`;
+                     outputDiv.className = 'bg-blue-50 border border-blue-200 rounded-md p-4 font-mono text-sm min-h-[250px] max-h-[600px] overflow-y-auto whitespace-pre-wrap break-words text-blue-700';
+                 }
+                 // Fetch state directly instead of sending LIST command via execute
+                 fetchAndDisplayGameState(gameName);
             } else {
                 alert('Please select a game to refresh.');
             }
@@ -1894,6 +1960,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
     async function sendCommand(commandOverride = null) {
+        if (!generatedCommandTextarea || !outputDiv || !sendButton || !targetGameInput || !targetPasswordInput || !targetVariantInput) {
+            console.error("One or more required elements are missing for sendCommand.");
+            alert("Error: UI elements missing, cannot send command.");
+            return;
+        }
+
         const commandToSend = commandOverride || generatedCommandTextarea.value.trim();
         const targetGame = targetGameInput.value;
         const targetPassword = targetPasswordInput.value;
@@ -1950,6 +2022,7 @@ document.addEventListener('DOMContentLoaded', () => {
                  result = await response.json();
                  console.log("[sendCommand] Received result:", result);
             } else {
+                 // Handle non-JSON or error responses
                  const errorText = await response.text();
                  throw new Error(`Server error ${response.status}: ${errorText || response.statusText}`);
             }
@@ -1976,21 +2049,27 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 if (result.isSignOnOrObserveSuccess) {
-                    const confirmedGameName = result.createdGameName || targetGame;
-                    outputDiv.textContent += `\n\nSign On / Observe / Create Successful for ${confirmedGameName}! Updating context...`;
+                    const confirmedGameName = result.createdGameName || targetGame || result.refreshedGameState?.name; // Try to get confirmed name
+                    outputDiv.textContent += `\n\nSign On / Observe / Create Successful${confirmedGameName ? ` for ${confirmedGameName}` : ''}! Updating context...`;
                     if (confirmedGameName && gameSelector) {
+                         // Check if game exists in list, add if not (relevant for CREATE)
                          if (!Array.from(gameSelector.options).some(opt => opt.value === confirmedGameName)) {
-                              allGamesList.push({ name: confirmedGameName, status: 'Forming' });
-                              populateGameSelector(allGamesList);
+                              console.log(`Game ${confirmedGameName} not in selector, fetching full list...`);
+                              fetchAndPopulateGames(); // Fetch full list to include the new game
+                              // Selection will be handled by fetchAndPopulateGames after list updates
+                         } else {
+                              // Game already exists, just select it
+                              gameSelector.value = confirmedGameName;
+                              if (targetGameInput) targetGameInput.value = confirmedGameName;
+                              loadCredentialsForGame(confirmedGameName);
                          }
-                         gameSelector.value = confirmedGameName;
-                         targetGameInput.value = confirmedGameName;
-                         loadCredentialsForGame(confirmedGameName);
+
                          // If state wasn't included in *this* response, fetch it explicitly
                          // This fetch will also get the correct recommendations
                          if (!stateToUpdateUI) {
                              console.log("[sendCommand] SignOn success but no refreshed state, fetching...");
-                             fetchAndDisplayGameState(confirmedGameName);
+                             // Use a timeout to allow fetchAndPopulateGames to potentially finish first if needed
+                             setTimeout(() => fetchAndDisplayGameState(confirmedGameName), 100);
                              stateToUpdateUI = null; // Prevent double update below
                              recommendationsToUpdateUI = null; // Prevent double update below
                          }
@@ -2000,7 +2079,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 // If we have a refreshed state, update the sidebar
                 if (stateToUpdateUI) {
                     console.log("[sendCommand] Updating UI sidebar with state:", stateToUpdateUI);
-                    currentGameData = stateToUpdateUI; // Update global state variable
+                    window.currentGameData = stateToUpdateUI; // Update global state variable
                     updateGameStateSidebar(currentGameData);
                 }
 
@@ -2033,6 +2112,8 @@ document.addEventListener('DOMContentLoaded', () => {
             } else { // result.success is false
                 outputDiv.classList.remove('text-green-700', 'text-orange-700', 'text-blue-700');
                 outputDiv.classList.add('text-red-700');
+                // Keep the error output from the server
+                outputDiv.textContent = `Command Failed.\n\n${result.output}`;
             }
 
         } catch (error) {
@@ -2048,55 +2129,28 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
 
-    // --- Game Management Elements ---
-    const addGameForm = document.getElementById('add-game-form');
-    const addGameNameInput = document.getElementById('add-game-name');
-    const addGameVariantInput = document.getElementById('add-game-variant');
-    const addGamePasswordInput = document.getElementById('add-game-password');
-    // const addGameBtn = document.getElementById('add-game-btn'); // Not needed directly, using form submit
-    const removeGameBtn = document.getElementById('remove-game-btn');
-    const removeGamePasswordInput = document.getElementById('remove-game-password');
-    const gameManagementFeedbackDiv = document.getElementById('game-management-feedback');
-    // gameSelector is already defined earlier
-
-    // --- Helper Function for Game Management Feedback ---
-    function displayGameManagementFeedback(message, isError = false) {
-        if (!gameManagementFeedbackDiv) return;
-        // Clear previous feedback first
-        gameManagementFeedbackDiv.innerHTML = '';
-
-        const p = document.createElement('p');
-        p.textContent = message;
-        p.className = ` ${isError ? 'text-red-600 font-semibold' : 'text-green-600 font-semibold'}`;
-        gameManagementFeedbackDiv.appendChild(p);
-
-        // Optional: Clear feedback after a few seconds?
-        // setTimeout(() => {
-        //     if (gameManagementFeedbackDiv.contains(p)) {
-        //         gameManagementFeedbackDiv.removeChild(p);
-        //     }
-        // }, 5000); // Clear after 5 seconds
-    }
-
-    // --- Add Game Logic ---
+    // --- Game Management ---
+    // Add Game Logic
     if (addGameForm) {
         addGameForm.addEventListener('submit', async (event) => {
             event.preventDefault(); // Prevent standard form submission
             displayGameManagementFeedback('Adding game...', false);
 
-            const gameName = addGameNameInput.value.trim();
-            const variant = addGameVariantInput.value.trim();
-            const password = addGamePasswordInput.value.trim(); // Optional
+            const gameName = addGameNameInput?.value.trim();
+            const variant = addGameVariantInput?.value.trim();
+            const password = addGamePasswordInput?.value.trim(); // Optional
 
             if (!gameName || !variant) {
                 displayGameManagementFeedback('Game Name and Variant are required.', true);
                 return;
             }
-
-            const body = { gameName, variant };
-            if (password) {
-                body.password = password;
+            // Require password for API creation for simplicity now
+            if (!password) {
+                 displayGameManagementFeedback('Master Password is required for game creation via API.', true);
+                 return;
             }
+
+            const body = { gameName, variant, password }; // Include password
 
             try {
                 const response = await fetch('/api/games', {
@@ -2135,47 +2189,45 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // --- Remove Game Logic ---
+    // Remove Game Logic
     if (removeGameBtn && gameSelector) { // Ensure both button and selector exist
         removeGameBtn.addEventListener('click', async () => {
             const gameName = gameSelector.value;
-            const password = removeGamePasswordInput.value.trim(); // Optional
+            const password = removeGamePasswordInput?.value.trim(); // Optional
 
             if (!gameName) {
                 displayGameManagementFeedback('Please select a game to remove from the "Target Game" dropdown.', true);
                 return;
             }
+            // Require password for removal via API for simplicity/security
+            if (!password) {
+                 displayGameManagementFeedback('Master Password is required for game removal via API.', true);
+                 return;
+            }
 
             // Confirmation dialog
-            if (!confirm(`Are you sure you want to permanently REMOVE the game "${gameName}"?\n\nThis action cannot be undone.`)) {
+            if (!confirm(`Are you sure you want to permanently REMOVE (Terminate) the game "${gameName}"?\n\nThis action cannot be undone.`)) {
                 displayGameManagementFeedback('Remove operation cancelled.', false);
                 return;
             }
 
             displayGameManagementFeedback(`Removing game '${gameName}'...`, false);
 
-            const body = {};
-            if (password) {
-                body.password = password;
-            }
+            const body = { password }; // Send password in body
 
             try {
                 const fetchOptions = {
                     method: 'DELETE',
-                    headers: {}, // Initialize headers
+                    headers: { 'Content-Type': 'application/json' }, // Need content type for body
+                    body: JSON.stringify(body)
                 };
-                // Only add Content-Type and body if password is provided
-                if (password) {
-                    fetchOptions.headers['Content-Type'] = 'application/json';
-                    fetchOptions.body = JSON.stringify(body);
-                }
 
                 const response = await fetch(`/api/games/${encodeURIComponent(gameName)}`, fetchOptions);
                 const result = await response.json(); // Assume backend sends JSON
 
                 if (response.ok && result.success) {
                     displayGameManagementFeedback(`Game '${gameName}' removed successfully. Refreshing list...`, false);
-                    removeGamePasswordInput.value = ''; // Clear password field
+                    if (removeGamePasswordInput) removeGamePasswordInput.value = ''; // Clear password field
                     const previouslySelectedGame = window.currentGameData ? window.currentGameData.name : null;
 
                     await fetchAndPopulateGames(); // Refresh list (removes game from dropdown)
@@ -2185,7 +2237,7 @@ document.addEventListener('DOMContentLoaded', () => {
                          console.log(`Clearing state as removed game (${gameName}) was selected.`);
                          updateGameStateSidebar(null); // Clear sidebar
                          updateCommandGenerator(null); // Clear command generator recommendations
-                         targetGameInput.value = ''; // Clear hidden input
+                         if (targetGameInput) targetGameInput.value = ''; // Clear hidden input
                          // Optionally clear password/variant fields too? Handled by clear credentials button usually.
                     }
                 } else {
@@ -2211,26 +2263,14 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // --- Initial Load ---
-    initializeDashboard();
-
-
-
-    // --- News System --- 
-    const newsSection = document.getElementById('news-section');
-    const addNewsForm = document.getElementById('add-news-form');
-    const newsContentInput = document.getElementById('news-content');
-    const addNewsFeedback = document.getElementById('add-news-feedback');
-    const newsErrorDiv = document.getElementById('news-error');
-    const newsSectionContainer = document.getElementById('news-section-container'); // Get the container
-
-    // --- Hypothetical Admin Check --- 
+    // --- News System ---
+    // --- Hypothetical Admin Check ---
     // Replace this with actual logic based on user roles/permissions from the server
     // For now, let's assume admin if the user email is 'admin@example.com' or if no email is present (guest?)
-    const isAdmin = !window.currentUserEmail || window.currentUserEmail === 'admin@example.com'; 
+    const isAdmin = !window.currentUserEmail || window.currentUserEmail === 'admin@example.com';
     console.log("Is Admin (for news):", isAdmin);
 
-    // --- Function to Fetch and Display News --- 
+    // --- Function to Fetch and Display News ---
     async function fetchAndDisplayNews() {
         if (!newsSection || !newsErrorDiv) return; // Elements not found
         newsSection.innerHTML = '<p class="text-gray-500 italic">Loading news...</p>'; // Show loading state
@@ -2252,7 +2292,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     result.news.forEach(item => {
                         const newsItemDiv = document.createElement('div');
                         newsItemDiv.className = 'p-3 border border-gray-200 rounded-md bg-white shadow-sm';
-                        
+
                         const timestamp = new Date(item.timestamp);
                         const formattedTime = !isNaN(timestamp) ? timestamp.toLocaleString() : 'Invalid Date';
 
@@ -2263,8 +2303,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
                         if (isAdmin) {
                             contentHTML += `
-                                <button 
-                                    class="delete-news-btn btn btn-danger btn-sm mt-2" 
+                                <button
+                                    class="delete-news-btn btn bg-red-600 hover:bg-red-700 text-white text-xs py-1 px-2 mt-2"
                                     data-id="${item._id}"
                                     title="Delete this news item"
                                 >
@@ -2272,7 +2312,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 </button>
                             `;
                         }
-                        
+
                         newsItemDiv.innerHTML = contentHTML;
                         newsSection.appendChild(newsItemDiv);
                     });
@@ -2287,7 +2327,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // --- Event Listener for Adding News --- 
+    // --- Event Listener for Adding News ---
     if (addNewsForm && newsContentInput && addNewsFeedback) {
         if (isAdmin) {
             addNewsForm.classList.remove('hidden'); // Show form for admins
@@ -2312,13 +2352,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 const result = await response.json();
 
-                if (result.success) {
+                if (response.ok && result.success) {
                     newsContentInput.value = ''; // Clear textarea
                     addNewsFeedback.textContent = 'News added successfully!';
                     addNewsFeedback.className = 'text-sm mt-2 text-green-600';
                     fetchAndDisplayNews(); // Refresh the news list
                 } else {
-                    throw new Error(result.message || 'Failed to add news.');
+                    throw new Error(result.message || `Failed to add news (Status: ${response.status})`);
                 }
             } catch (error) {
                 console.error('Error adding news:', error);
@@ -2328,16 +2368,16 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // --- Event Listener for Deleting News (Event Delegation) --- 
+    // --- Event Listener for Deleting News (Event Delegation) ---
     if (newsSection) {
         newsSection.addEventListener('click', async (e) => {
             if (e.target.classList.contains('delete-news-btn')) {
                 const button = e.target;
                 const newsId = button.dataset.id;
-                
+
                 if (!newsId) {
                     console.error('Delete button clicked but no ID found.');
-                    newsErrorDiv.textContent = 'Error: Could not identify news item to delete.';
+                    if (newsErrorDiv) newsErrorDiv.textContent = 'Error: Could not identify news item to delete.';
                     return;
                 }
 
@@ -2345,7 +2385,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
 
-                newsErrorDiv.textContent = ''; // Clear previous errors
+                if (newsErrorDiv) newsErrorDiv.textContent = ''; // Clear previous errors
                 button.disabled = true; // Prevent double clicks
                 button.textContent = 'Deleting...';
 
@@ -2355,27 +2395,25 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
                     const result = await response.json();
 
-                    if (result.success) {
+                    if (response.ok && result.success) {
                         console.log('News item deleted successfully:', newsId);
                         fetchAndDisplayNews(); // Refresh the list
                     } else {
-                        throw new Error(result.message || 'Failed to delete news item.');
+                        throw new Error(result.message || `Failed to delete news item (Status: ${response.status})`);
                     }
                 } catch (error) {
                     console.error('Error deleting news:', error);
-                    newsErrorDiv.textContent = `Error deleting news: ${error.message}`;
+                    if (newsErrorDiv) newsErrorDiv.textContent = `Error deleting news: ${error.message}`;
                      // Re-enable button on error if needed, or let refresh handle it
-                    // button.disabled = false;
-                    // button.textContent = 'Delete'; 
+                     button.disabled = false;
+                     button.textContent = 'Delete';
                 }
             }
         });
     }
 
-    // --- Initial Load --- 
-    if (newsSectionContainer) { // Only fetch if the container exists on the page
-        fetchAndDisplayNews();
-    }
+    // --- Initial Load ---
+    initializeDashboard();
 
 
 }); // End DOMContentLoaded

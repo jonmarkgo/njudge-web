@@ -78,6 +78,7 @@ db.serialize(() => {
         if (err) console.error("Error creating user_preferences table:", err);
         else console.log("User preferences table ensured.");
     });
+// }); // Removed closing parenthesis here
 
     // Create saved_searches table
     db.run(`CREATE TABLE IF NOT EXISTS saved_searches (
@@ -100,7 +101,8 @@ db.serialize(() => {
         if (err) console.error("Error creating news_items table:", err);
         else console.log("News items table ensured.");
     });
-});
+}); // Added closing parenthesis here
+
 
 // Initialize User Tracking DB
 userDb.serialize(() => {
@@ -358,36 +360,22 @@ const getUserPreferences = (userId) => {
     });
 };
 
-// Set or update multiple preferences for a user
-const setUserPreferences = (userId, preferences) => {
+// Set or update a specific preference for a user
+const setUserPreference = (userId, key, value) => {
     return new Promise((resolve, reject) => {
-        if (typeof preferences !== 'object' || preferences === null) {
-            return reject(new Error('Invalid preferences object provided.'));
-        }
-
-        const promises = [];
-        for (const key in preferences) {
-            if (Object.hasOwnProperty.call(preferences, key)) {
-                // Convert non-string values (like objects/arrays) to JSON strings for storage
-                const value = preferences[key];
-                const valueToStore = (typeof value === 'string' || value === null || value === undefined) ? value : JSON.stringify(value);
-                promises.push(new Promise((res, rej) => {
-                    db.run("INSERT OR REPLACE INTO user_preferences (user_id, preference_key, preference_value) VALUES (?, ?, ?)",
-                        [userId, key, valueToStore],
-                        (err) => {
-                            if (err) {
-                                console.error(`[DB Error] Failed to set preference '${key}' for user ${userId}:`, err);
-                                rej(err);
-                            } else {
-                                res();
-                            }
-                        }
-                    );
-                }));
+        // Convert non-string values (like objects/arrays) to JSON strings for storage
+        const valueToStore = (typeof value === 'string' || value === null || value === undefined) ? value : JSON.stringify(value);
+        db.run("INSERT OR REPLACE INTO user_preferences (user_id, preference_key, preference_value) VALUES (?, ?, ?)",
+            [userId, key, valueToStore],
+            (err) => {
+                if (err) {
+                    console.error(`[DB Error] Failed to set preference '${key}' for user ${userId}:`, err);
+                    reject(err);
+                } else {
+                    resolve();
+                }
             }
-        }
-
-        Promise.all(promises).then(resolve).catch(reject);
+        );
     });
 };
 
@@ -485,9 +473,9 @@ const getAllNewsItems = () => {
                 console.error("[DB Error] Failed to get news items:", err);
                 reject(err);
             } else {
-                // Rename 'id' to '_id' to match frontend expectation if necessary
-                const items = rows.map(row => ({ _id: row.id, timestamp: row.timestamp, content: row.content }));
-                resolve(items);
+                // Map id to _id for consistency if frontend expects _id
+                const mappedRows = rows.map(row => ({ ...row, _id: row.id }));
+                resolve(mappedRows);
             }
         });
     });
@@ -548,12 +536,12 @@ const parseListOutput = (gameName, output) => {
     const explicitDeadlineRegex = /::\s*Deadline:\s*([SFUW]\d{4}[MRB][X]?)\s+(.*)/i;
     const activeStatusLineRegex = /Status of the (\w+) phase for (Spring|Summer|Fall|Winter) of (\d{4})\./i;
     const variantRegex = /Variant:\s*(\S+)\s*(.*)/i;
-    // Player Regex: Start, Power Name (standard + machiavelli), whitespace, number, whitespace, capture email, rest of line
+    // Player Regex: Start, Power Name (expanded), whitespace, number, whitespace, capture email, rest of line
     const playerLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice)\s+\d+\s+([\w.-]+@[\w.-]+\.\w+).*$/i;
     // Master Regex: Start, Master/Moderator, whitespace, number, whitespace, capture email, rest of line
     const masterLineRegex = /^\s*(?:Master|Moderator)\s+\d+\s+([\w.-]+@[\w.-]+\.\w+).*$/i;
-    // Observer Regex: Assuming format "Observer : email@domain.com" or similar
-    const observerLineRegex = /^\s*(?:Observer|Watcher)\s*:\s*([\w.-]+@[\w.-]+\.\w+).*$/i;
+    // Observer Regex: Assuming format "Observer : email@domain.com" - adjust if needed
+    const observerLineRegex = /^\s*Observer\s*:\s*([\w.-]+@[\w.-]+\.\w+).*$/i;
     const statusRegex = /Game status:\s*(.*)/i;
     const settingsHeaderRegex = /The parameters for .*? are as follows:|Game settings:/i; // Match both possible headers
     const pressSettingRegex = /Press:\s*(.*?)(?:,|\s*$)/i;
@@ -591,7 +579,7 @@ const parseListOutput = (gameName, output) => {
             else if (seasonStr === 'summer') seasonCode = 'U';
             let phaseCode = 'M';
             if (phaseTypeStr === 'retreat') phaseCode = 'R';
-            else if (phaseTypeStr === 'adjustment' || phaseTypeStr === 'builds') phaseCode = 'A'; // Accept both terms
+            else if (phaseTypeStr === 'adjustment' || phaseTypeStr === 'builds') phaseCode = 'A'; // Changed B to A
             gameState.currentPhase = `${seasonCode}${year}${phaseCode}`;
             gameState.status = 'Active';
             console.log(`[Parser LIST ${gameName}] Parsed active phase info: ${gameState.currentPhase} from line: ${trimmedLine}`);
@@ -637,11 +625,8 @@ const parseListOutput = (gameName, output) => {
             if (playerMatch) {
                 const power = playerMatch[1];
                 const email = playerMatch[2];
-                // Avoid adding duplicates if LIST output repeats
-                if (!gameState.players.some(p => p.power === power && p.email === email)) {
-                    gameState.players.push({ power: power, email: email || null, status: 'Playing', name: null });
-                    console.log(`[Parser LIST ${gameName}] Parsed Player: ${power} - ${email}`);
-                }
+                gameState.players.push({ power: power, email: email || null, status: 'Playing', name: null });
+                console.log(`[Parser LIST ${gameName}] Parsed Player: ${power} - ${email}`);
             } else if (masterMatch) {
                 const email = masterMatch[1];
                 if (email && !gameState.masters.includes(email)) {
@@ -750,6 +735,7 @@ const parseWhogameOutput = (gameName, output) => {
 };
 
 
+// NEW FUNCTION START
 // Helper to convert phase string like "Spring 1901 Movement" to "S1901M"
 function getPhaseCode(phaseStr, year) {
     if (!phaseStr || !year) return 'Unknown';
@@ -761,16 +747,17 @@ function getPhaseCode(phaseStr, year) {
 
     let phaseTypeCode = 'M'; // Default Movement
     if (lowerPhase.includes('retreat')) phaseTypeCode = 'R';
-    else if (lowerPhase.includes('adjustment') || lowerPhase.includes('build')) phaseTypeCode = 'A';
+    else if (lowerPhase.includes('adjustment') || lowerPhase.includes('build')) phaseTypeCode = 'A'; // Changed B to A
 
     // Handle cases where only year/season might be present (e.g., pre-game)
-    if (phaseTypeCode === 'M' && !(lowerPhase.includes('movement') || lowerPhase.includes('retreat') || lowerPhase.includes('adjustment') || lowerPhase.includes('build'))) {
-         // If it looks like a phase start but no type, assume Movement for S/F/U, Build for W
+    if (!phaseTypeCode && (seasonCode === 'S' || seasonCode === 'F' || seasonCode === 'W' || seasonCode === 'U')) {
+         // If it looks like a phase start but no type, assume Movement for S/F, Build for W
          phaseTypeCode = (seasonCode === 'W') ? 'A' : 'M';
-    } else if (phaseTypeCode === 'M' && !lowerPhase.includes('movement')) {
-        // Fallback if completely unparsable, but we have season/year
-        phaseTypeCode = '?';
+    } else if (!phaseTypeCode) {
+        // Fallback if completely unparsable
+        return `${year || '?'}${seasonCode || '?'}${phaseTypeCode || '?'}`;
     }
+
 
     return `${seasonCode}${year}${phaseTypeCode}`;
 }
@@ -782,10 +769,11 @@ const parseHistoryOutput = (gameName, output) => {
         gameName: gameName,
         variant: null,
         statusTimestamp: null,
-        phases: {}, // Use object with phaseCode as key
+        phases: {}, // Use object keyed by phase code
     };
     const lines = output.split('\n');
-    let currentPhaseCode = null;
+    let currentPhaseData = null;
+    let currentPhaseCode = null; // Store the code for the current phase
     let readingPress = false;
     let currentPress = null;
 
@@ -795,8 +783,7 @@ const parseHistoryOutput = (gameName, output) => {
     const deadlineRegex = /^Deadline for (.*), (\d{4}) is (.*)$/; // 1: phaseStr, 2: year, 3: deadlineStr
     const supplyCenterRegex = /^([A-Z][a-z]+): +(\d+) supply centers/; // 1: power, 2: count
     const eliminationRegex = /^([A-Z][a-z]+) has been eliminated\.$/; // 1: power
-    // Regex for units: Power: F Location (coast) or Power: A Location
-    const unitRegex = /^([A-Z][a-z]+): +(A|F) +([A-Z][a-z ]+?)(?:\s*\((.*?)\))?$/; // 1: power, 2: unitType, 3: location, 4: coast (optional)
+    const unitRegex = /^([A-Z][a-z]+): +(A|F) +([A-Z][a-z ]+)$/; // 1: power, 2: unitType, 3: location
     const orderResultRegex = /^\*+(.*)\*+$/; // 1: result description
     const pressHeaderRegex = /^Press from (.*) to (.*):$/; // 1: fromPower, 2: toPowerOrAll
 
@@ -819,8 +806,8 @@ const parseHistoryOutput = (gameName, output) => {
         deadline: deadline,
         supplyCenters: {},
         eliminations: [],
-        units: [], // Store as array {power, type, location, coast}
-        orders: {}, // Store orders grouped by power {power: [{raw, type}]}
+        units: {}, // Units keyed by power { 'France': [{type: 'A', location: 'Paris'}], ... }
+        orders: {}, // Orders keyed by power { 'France': [{raw: '...', type: 'Hold'}], ... }
         results: [], // Store results as simple strings for now
         press: [],
     });
@@ -832,11 +819,11 @@ const parseHistoryOutput = (gameName, output) => {
 
         // Stop reading press if we hit a non-press line
         if (readingPress && !pressHeaderRegex.test(trimmedLine) && !trimmedLine.startsWith(" ") && trimmedLine !== "") {
-             if (currentPress && currentPhaseCode && history.phases[currentPhaseCode]) {
+             if (currentPress && currentPhaseData) {
                  currentPress.message = currentPress.message.trim();
                  // Only add if message is not empty
                  if (currentPress.message) {
-                    history.phases[currentPhaseCode].press.push(currentPress);
+                    currentPhaseData.press.push(currentPress);
                  }
                  console.log(`[Parser HISTORY ${gameName}] Finished reading press from ${currentPress.from} to ${currentPress.to}.`);
              }
@@ -865,35 +852,26 @@ const parseHistoryOutput = (gameName, output) => {
         // 3. Deadline (Indicates start of a new phase)
         match = trimmedLine.match(deadlineRegex);
         if (match) {
-            // No need to push previous phase data here, we use an object keyed by phaseCode
+            // No need to push previous phase data here, we use an object keyed by phase code
             readingPress = false; // Ensure press reading stops at phase boundary
             currentPress = null;
 
             const phaseStr = match[1].trim();
             const year = match[2].trim();
             const deadlineStr = match[3].trim();
-            currentPhaseCode = getPhaseCode(phaseStr, year); // Update current phase context
-
-            // Initialize phase data if it doesn't exist
-            if (!history.phases[currentPhaseCode]) {
-                history.phases[currentPhaseCode] = createPhaseData(currentPhaseCode, deadlineStr);
-                console.log(`[Parser HISTORY ${gameName}] Started parsing phase: ${currentPhaseCode}, Deadline: ${deadlineStr}`);
-            } else {
-                // If phase data already exists (e.g., from units listed before deadline), update deadline
-                history.phases[currentPhaseCode].deadline = deadlineStr;
-                console.log(`[Parser HISTORY ${gameName}] Updated deadline for existing phase: ${currentPhaseCode}, Deadline: ${deadlineStr}`);
-            }
+            currentPhaseCode = getPhaseCode(phaseStr, year); // Store the current phase code
+            currentPhaseData = createPhaseData(currentPhaseCode, deadlineStr);
+            history.phases[currentPhaseCode] = currentPhaseData; // Add to history object
+            console.log(`[Parser HISTORY ${gameName}] Started parsing phase: ${currentPhaseCode}, Deadline: ${deadlineStr}`);
             return; // Continue to next line
         }
 
         // Ensure we have a phase context before parsing phase-specific data
-        if (!currentPhaseCode || !history.phases[currentPhaseCode]) {
+        if (!currentPhaseData) {
             // Skip lines before the first deadline if they aren't global headers
             // console.log(`[Parser HISTORY ${gameName}] Skipping line outside phase context: ${trimmedLine}`);
             return;
         }
-
-        const currentPhaseData = history.phases[currentPhaseCode]; // Reference current phase data
 
         // 4. Supply Centers
         match = trimmedLine.match(supplyCenterRegex);
@@ -918,11 +896,12 @@ const parseHistoryOutput = (gameName, output) => {
             const power = match[1];
             const unitType = match[2].toUpperCase();
             const location = match[3].trim();
-            const coast = match[4] ? match[4].trim() : null; // Capture coast if present
-
+            if (!currentPhaseData.units[power]) {
+                currentPhaseData.units[power] = [];
+            }
             // Avoid duplicates if units listed multiple times
-            if (!currentPhaseData.units.some(u => u.power === power && u.type === unitType && u.location === location && u.coast === coast)) {
-                 currentPhaseData.units.push({ power: power, type: unitType, location: location, coast: coast });
+            if (!currentPhaseData.units[power].some(u => u.type === unitType && u.location === location)) {
+                 currentPhaseData.units[power].push({ type: unitType, location: location });
             }
             return;
         }
@@ -997,15 +976,15 @@ const parseHistoryOutput = (gameName, output) => {
 
     }); // End lines.forEach
 
-    // Finalize any pending press message after loop ends
-    if (readingPress && currentPress && currentPhaseCode && history.phases[currentPhaseCode]) {
+    // Finalize any pending press message after loop finishes
+    if (readingPress && currentPress && currentPhaseData) {
         currentPress.message = currentPress.message.trim();
         if (currentPress.message) { // Only add if not empty
-            history.phases[currentPhaseCode].press.push(currentPress);
+            currentPhaseData.press.push(currentPress);
         }
     }
 
-    console.log(`[Parser HISTORY ${gameName}] Final Parsed Object has ${Object.keys(history.phases).length} phases.`); // Log the full object for debugging
+    console.log(`[Parser HISTORY ${gameName}] Final Parsed Object:`, history); // Log the full object for debugging
     return history;
 };
 
@@ -1017,40 +996,42 @@ const parseMapInfoFile = async (variantName) => {
         throw new Error('Invalid variant name provided.');
     }
 
-    const normalizedVariant = variantName.toLowerCase(); // Normalize for cache key
-
     // Check cache first
-    if (mapInfoCache[normalizedVariant]) {
-        console.log(`[Map Parse Cache] Returning cached info for variant: ${normalizedVariant}`);
-        return mapInfoCache[normalizedVariant];
+    if (mapInfoCache[variantName]) {
+        console.log(`[Map Parse Cache] Returning cached info for variant: ${variantName}`);
+        return mapInfoCache[variantName];
     }
 
-    console.log(`[Map Parse] Parsing info file for variant: ${normalizedVariant}`);
-    // Correct path assuming server.js is in the root
-    const filePath = path.join(__dirname, 'scripts', 'mapit', 'maps', `${normalizedVariant}.info`);
+    console.log(`[Map Parse] Parsing info file for variant: ${variantName}`);
+    const filePath = path.join(__dirname, 'scripts', 'mapit', 'maps', `${variantName}.info`);
     let fileContent;
 
     try {
         fileContent = await fs.promises.readFile(filePath, 'utf-8');
     } catch (error) {
         console.error(`[Map Parse Error] Could not read file ${filePath}:`, error);
-        throw new Error(`Failed to read map info file for variant ${normalizedVariant}.`);
+        // Decide how to handle: throw error, return null, return default structure?
+        // For now, let's throw, as the caller likely needs this data.
+        throw new Error(`Failed to read map info file for variant ${variantName}.`);
     }
 
     const lines = fileContent.split(/\r?\n/);
     const mapData = {
         powers: [],
-        provinces: {}, // Keyed by ABBR
-        provinceNameToAbbr: {}, // Map Full Name -> ABBR
-        abbrToProvinceName: {} // Map ABBR -> Full Name
+        provinces: {} // Keyed by abbreviation
     };
     let parsingSection = 'powers'; // Start by parsing powers
 
     // Regex to capture province data: X Y |ABR|---|FullName|...
+    // Handles optional spaces around delimiters and captures relevant parts.
     // Group 1: X, Group 2: Y, Group 3: ABR, Group 4: FullName
-    // Adjusted to handle optional SC coordinates: X Y [SCX SCY] |ABR|...|FullName|...
-    // Group 1: X, Group 2: Y, Group 3: SCX (optional), Group 4: SCY (optional), Group 5: ABR, Group 6: FullName
-    const provinceRegex = /^\s*(\d+)\s+(\d+)(?:\s+(\d+)\s+(\d+))?\s*\|([A-Z]{3})\|(?:[^|]*?\|){1}([^|]+)\|/;
+    // Updated regex to handle optional unit/sc coordinates: X Y [UX UY] [SCX SCY] |ABR|...
+    // Group 1: X, Group 2: Y
+    // Group 3 (optional): UX, Group 4 (optional): UY
+    // Group 5 (optional): SCX, Group 6 (optional): SCY
+    // Group 7: ABR, Group 8: FullName
+    const provinceRegex = /^\s*(\d+)\s+(\d+)(?:\s+(\d+)\s+(\d+))?(?:\s+(\d+)\s+(\d+))?\s*\|([A-Z]{3})\|(?:[^|]*?\|){1}([^|]+)\|/;
+
 
     for (const line of lines) {
         const trimmedLine = line.trim();
@@ -1064,47 +1045,49 @@ const parseMapInfoFile = async (variantName) => {
             if (trimmedLine === '-1') {
                 parsingSection = 'provinces'; // Switch to parsing provinces
             } else {
+                // Assuming power names don't contain special characters needing complex parsing
                 mapData.powers.push(trimmedLine);
             }
         } else if (parsingSection === 'provinces') {
             const match = trimmedLine.match(provinceRegex);
             if (match) {
-                // Destructure with optional groups
-                const [, x, y, scX, scY, abbr, name] = match;
+                const [, x, y, ux, uy, scx, scy, abbr, name] = match;
                 const provinceName = name.trim(); // Trim whitespace from name
                 if (abbr && provinceName) {
                      mapData.provinces[abbr] = {
                          name: provinceName,
                          abbr: abbr,
-                         unitX: parseInt(x, 10), // Assume first coords are for unit placement
-                         unitY: parseInt(y, 10),
-                         // Use specific SC coords if present, otherwise null/undefined
-                         scX: scX ? parseInt(scX, 10) : undefined,
-                         scY: scY ? parseInt(scY, 10) : undefined,
-                         // Add label coordinates later if needed, maybe default to unitX/Y
+                         x: parseInt(x, 10), // Original coords (maybe label?)
+                         y: parseInt(y, 10),
+                         unitX: ux ? parseInt(ux, 10) : undefined, // Unit coords
+                         unitY: uy ? parseInt(uy, 10) : undefined,
+                         scX: scx ? parseInt(scx, 10) : undefined, // SC coords
+                         scY: scy ? parseInt(scy, 10) : undefined,
+                         // Add label coords if needed, maybe use x,y as default label?
                          labelX: parseInt(x, 10),
                          labelY: parseInt(y, 10)
                      };
-                     mapData.provinceNameToAbbr[provinceName.toLowerCase()] = abbr;
-                     mapData.abbrToProvinceName[abbr] = provinceName;
                 } else {
-                    console.warn(`[Map Parse Warn] Skipping province line with missing data in ${normalizedVariant}: ${line}`);
+                    console.warn(`[Map Parse Warn] Skipping province line with missing data in ${variantName}: ${line}`);
                 }
             } else {
-                console.warn(`[Map Parse Warn] Unrecognized line format in province section of ${normalizedVariant}: ${line}`);
+                // Log lines that don't match the expected province format (and aren't comments/empty)
+                console.warn(`[Map Parse Warn] Unrecognized line format in province section of ${variantName}: ${line}`);
             }
         }
     }
 
      if (mapData.powers.length === 0 && Object.keys(mapData.provinces).length === 0) {
-         console.warn(`[Map Parse Warn] No powers or provinces found for variant ${normalizedVariant}. Check file format.`);
+         console.warn(`[Map Parse Warn] No powers or provinces found for variant ${variantName}. Check file format.`);
+         // Optionally throw an error or return a specific indicator of failure/empty data
      }
 
     // Cache the result before returning
-    mapInfoCache[normalizedVariant] = mapData;
-    console.log(`[Map Parse Success] Parsed and cached info for variant: ${normalizedVariant}`);
+    mapInfoCache[variantName] = mapData;
+    console.log(`[Map Parse Success] Parsed and cached info for variant: ${variantName}`);
     return mapData;
 };
+// NEW FUNCTION END
 
 // --- Command Recommendation Logic ---
 const getRecommendedCommands = (gameState, userEmail) => {
@@ -1116,6 +1099,7 @@ const getRecommendedCommands = (gameState, userEmail) => {
     };
 
     // Define all possible commands (keep this list comprehensive)
+    const allCommands = [ /* ... Keep the full list from previous version ... */ ];
     const generalCmds = ['GET', 'HELP', 'VERSION', 'WHOIS', 'LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'MAP', 'GET DEDICATION', 'INFO PLAYER', 'MANUAL'];
     const playerAccountCmds = ['REGISTER', 'I AM ALSO', 'SET PASSWORD', 'SET ADDRESS'];
     const joiningCmds = ['CREATE ?', 'SIGN ON ?', 'SIGN ON ?game', 'SIGN ON power', 'OBSERVE', 'WATCH'];
@@ -1454,96 +1438,88 @@ const executeDipCommand = (email, command, targetGame = null, targetPassword = n
  * @returns {Promise<object|null>} - Combined map data or null if essential data is missing.
  */
 async function getMapData(gameName, phase) {
-    console.log(`[getMapData] Entering with gameName: ${gameName}, phase: ${phase}`);
+    console.log(`[getMapData] Entering with gameName: ${gameName}, phase: ${phase}`); // Roo Debug Log
+    console.log(`[Map Data] Fetching map data for game: ${gameName}, phase: ${phase || 'latest'}`);
     try {
         // 1. Get basic game info (like variant) and potentially latest phase if needed
         const basicGameState = await getGameState(gameName);
         if (!basicGameState) {
-            console.error(`[Map Data Error] Game not found in DB: ${gameName}`);
+            console.error(`[Map Data Error] Game not found: ${gameName}`);
+            console.error(`[getMapData Error] Game not found: ${gameName}`); // Roo Debug Log
             return null;
         }
         const variantName = basicGameState.variant || 'Standard'; // Default to Standard if not set
-        const latestKnownPhase = basicGameState.currentPhase;
-        console.log(`[getMapData] Game found: ${gameName}, Variant: ${variantName}, LatestKnownPhase: ${latestKnownPhase}`);
+        const variant = variantName; // Use variantName as variant for clarity below
+        console.log(`[getMapData] Fetched gameState:`, basicGameState ? basicGameState.name : 'Not Found'); // Roo Debug Log
+        console.log(`[getMapData] Determined variant: ${variant}`); // Roo Debug Log
 
         // 2. Fetch full game history
         // Use judgeEmail or a system identity for fetching public data
         const historyResult = await executeDipCommand(judgeEmail, `HISTORY ${gameName}`, gameName);
-        if (!historyResult || !historyResult.success) {
-            console.error(`[Map Data Error] Failed to fetch history for ${gameName}:`, historyResult?.output || 'No output');
+        if (!historyResult.success) {
+            console.error(`[Map Data Error] Failed to fetch history for ${gameName}:`, historyResult.output);
             return null;
         }
 
         // 3. Parse history
         const parsedHistory = parseHistoryOutput(gameName, historyResult.stdout);
-        if (!parsedHistory || Object.keys(parsedHistory.phases).length === 0) {
+        const historyData = parsedHistory; // Use parsedHistory as historyData
+        console.log(`[getMapData] Parsed history output for latest phase:`, historyData ? 'Success' : 'Failure'); // Roo Debug Log
+        if (!historyData || Object.keys(historyData.phases).length === 0) {
             console.error(`[Map Data Error] Failed to parse history or no phases found for ${gameName}`);
+            console.error(`[getMapData Error] Failed to parse history to find latest phase for game: ${gameName}`); // Roo Debug Log
+            // Return basic info if history parsing fails but we have variant/map info?
+            // For now, let's return null as state is crucial.
             return null;
         }
-        console.log(`[getMapData] Parsed history, found phases: ${Object.keys(parsedHistory.phases).join(', ')}`);
 
         // 4. Determine the target phase code
         let targetPhaseCode = phase;
-        if (!targetPhaseCode) {
+        let targetPhase = targetPhaseCode; // Use targetPhaseCode as targetPhase
+        if (!targetPhase) {
+            console.log(`[getMapData] Phase not provided, determining latest phase...`); // Roo Debug Log
             // Find the latest phase from parsed history keys
-            // Simple sort works for standard phases, might need refinement for complex variants
-            const phaseKeys = Object.keys(parsedHistory.phases).sort((a, b) => {
-                // Basic sort: Year first, then season order (S, U, F, W), then phase type (M, R, A/B)
-                const parsePhase = (p) => {
-                    const yearMatch = p.match(/\d{4}/);
-                    const seasonMatch = p.match(/^[SFUW]/);
-                    const typeMatch = p.match(/[MRAB]$/);
-                    const year = yearMatch ? parseInt(yearMatch[0], 10) : 0;
-                    const seasonOrder = { S: 1, U: 2, F: 3, W: 4 };
-                    const season = seasonMatch ? seasonOrder[seasonMatch[0]] || 0 : 0;
-                    const typeOrder = { M: 1, R: 2, A: 3, B: 3 }; // Treat A and B the same
-                    const type = typeMatch ? typeOrder[typeMatch[0]] || 0 : 0;
-                    return { year, season, type };
-                };
-                const pA = parsePhase(a);
-                const pB = parsePhase(b);
-                if (pA.year !== pB.year) return pA.year - pB.year;
-                if (pA.season !== pB.season) return pA.season - pB.season;
-                return pA.type - pB.type;
-            });
-            if (phaseKeys.length > 0) {
-                targetPhaseCode = phaseKeys[phaseKeys.length - 1];
-                console.log(`[Map Data] No phase specified, using latest from history: ${targetPhaseCode}`);
-            } else {
-                 console.error(`[Map Data Error] No phases found in parsed history for ${gameName}. Cannot determine latest phase.`);
+            const phaseKeys = Object.keys(historyData.phases).sort(); // Simple sort often works for standard phases
+            // TODO: Implement more robust phase sorting if needed (e.g., considering year and season)
+            targetPhase = phaseKeys[phaseKeys.length - 1];
+            if (!targetPhase) {
+                 console.error(`[Map Data Error] Latest phase could not be determined for game: ${gameName}`);
+                 console.error(`[getMapData Error] Latest phase could not be determined for game: ${gameName}`); // Roo Debug Log
                  return null;
             }
+            console.log(`[Map Data] No phase specified, using latest: ${targetPhase}`);
         }
+        console.log(`[getMapData] Target phase determined as: ${targetPhase}`); // Roo Debug Log
 
-        const phaseData = parsedHistory.phases[targetPhaseCode];
+        const phaseData = historyData.phases[targetPhase];
         if (!phaseData) {
-            console.error(`[Map Data Error] Target phase ${targetPhaseCode} not found in parsed history for ${gameName}`);
+            console.error(`[Map Data Error] Target phase ${targetPhase} not found in history for ${gameName}`);
             return null; // Phase not found
         }
-        console.log(`[getMapData] Found data for target phase: ${targetPhaseCode}`);
 
         // 5. Get province metadata from .info file (using cache)
-        let provinceMetadata;
-        try {
-             provinceMetadata = await parseMapInfoFile(variantName);
-             console.log(`[getMapData] Successfully parsed/retrieved map info for variant: ${variantName}`);
-        } catch (infoError) {
-             console.error(`[Map Data Error] Failed to parse map info file for variant ${variantName}:`, infoError);
-             // Decide if we can proceed without province metadata (map won't render correctly)
-             // For now, let's return null as coordinates are essential.
-             return null;
+        const provinceMetadata = await parseMapInfoFile(variant);
+        const mapInfo = provinceMetadata; // Use provinceMetadata as mapInfo
+        console.log(`[getMapData] Parsed map info file result:`, mapInfo ? 'Success' : 'Failure/Cached'); // Roo Debug Log
+        if (!mapInfo) {
+            console.error(`[Map Data Error] Failed to parse map info file for variant: ${variant}`);
+            console.error(`[getMapData Error] Failed to parse map info file for variant: ${variant}`); // Roo Debug Log
+            // Proceed without province metadata? Or fail? Let's proceed for now.
         }
 
         // 6. Construct SVG path and read SVG file content
-        const svgPath = path.join(__dirname, 'scripts', 'mapit', 'maps', `${variantName.toLowerCase()}.svg`);
-        console.log(`[getMapData] Attempting to read SVG file from: ${svgPath}`);
+        const svgPath = path.join(__dirname, 'scripts', 'mapit', 'maps', `${variant}.svg`);
+        console.log(`[getMapData] Constructed SVG path: ${svgPath}`); // Roo Debug Log
         let svgContent = null;
         try {
+            console.log(`[getMapData] Attempting to read SVG file...`); // Roo Debug Log
             svgContent = await fsPromises.readFile(svgPath, 'utf-8');
             console.log(`[Map Data] Successfully read SVG file: ${svgPath}`);
+            console.log(`[getMapData] SVG file read successfully.`); // Roo Debug Log
         } catch (err) {
             if (err.code === 'ENOENT') {
                 console.warn(`[Map Data] SVG file not found, expected at: ${svgPath}. Proceeding without SVG content.`);
+                console.warn(`[getMapData Warn] SVG file not found at path: ${svgPath}`); // Roo Debug Log
             } else {
                 console.error(`[Map Data Error] Error reading SVG file ${svgPath}:`, err);
             }
@@ -1551,23 +1527,49 @@ async function getMapData(gameName, phase) {
         }
 
         // 7. Combine data
-        const mapDataResponse = {
-            success: true, // Indicate overall success
+        // Flatten units from { power: [unit1, unit2] } to [ {power, type, location}, ... ]
+        const flatUnits = [];
+        if (phaseData.units) {
+            for (const power in phaseData.units) {
+                phaseData.units[power].forEach(unit => {
+                    flatUnits.push({ ...unit, power: power });
+                });
+            }
+        }
+
+        // Format supply centers to [ {province, owner}, ... ]
+        const formattedSCs = [];
+        if (phaseData.supplyCenters) {
+             // Need province metadata to map power names to province abbreviations if SCs are keyed by power
+             // Assuming phaseData.supplyCenters is { power: count } which isn't directly usable for location.
+             // We need the actual SC list from the game state or history results.
+             // Let's assume the LIST output parser populates gameState.supplyCenters correctly
+             // For now, we'll pass an empty array if the history parser doesn't provide it in the right format.
+             // TODO: Enhance history parser or rely on LIST output for SC ownership.
+             console.warn("[Map Data] History parser doesn't provide SC ownership list. SCs might be missing/incorrect on map.");
+        }
+
+
+        const mapData = {
+            success: true, // Indicate success
             gameName: gameName,
-            phase: targetPhaseCode,
-            variant: variantName,
-            units: phaseData.units || [], // Ensure arrays exist
-            supplyCenters: phaseData.supplyCenters || {}, // Use object keyed by power
-            provinces: provinceMetadata ? provinceMetadata.provinces : {}, // Province metadata (coords etc.)
+            phase: targetPhase,
+            variant: variant,
+            units: flatUnits, // Use flattened list
+            supplyCenters: formattedSCs, // Use formatted list (currently empty)
+            provinces: mapInfo ? mapInfo.provinces : {},
             svgContent: svgContent,
+            // Include deadline if available in phaseData?
             deadline: phaseData.deadline || null
         };
 
-        console.log(`[Map Data] Successfully assembled map data for ${gameName} / ${targetPhaseCode}`);
-        return mapDataResponse;
+        console.log(`[Map Data] Successfully assembled map data for ${gameName} / ${targetPhase}`);
+        console.log(`[getMapData] Returning success with SVG content.`); // Roo Debug Log
+        return mapData;
 
     } catch (error) {
         console.error(`[Map Data Fatal Error] Unexpected error fetching map data for ${gameName} / ${phase || 'latest'}:`, error);
+        console.error(`[getMapData Error] Unexpected error in getMapData for ${gameName}, phase ${phase}:`, error); // Roo Debug Log
         return null;
     }
 }
@@ -1756,38 +1758,35 @@ async function syncDipMaster() {
         // Split by the separator line '-' which must be on its own line
         const gameBlocks = masterContent.split(/^\s*-\s*$/m);
 
+        // Regex to capture game name (alphanumeric, 1-8 chars) and phase/status from the *first* line of a block
+        const gameLineRegex = /^([a-zA-Z0-9]{1,8})\s+\S+\s+([SFUW]\d{4}[MRB][X]?|Forming|Paused|Finished|Terminated)\b/i;
+
         gameBlocks.forEach((block) => {
-            const lines = block.trim().split('\n');
-            if (lines.length === 0 || lines[0].trim().length === 0) return; // Skip empty blocks
-
-            const firstLine = lines[0].trim();
-            // Regex to capture game name (alphanumeric, 1-8 chars) and phase/status from the first line
-            const gameLineRegex = /^([a-zA-Z0-9]{1,8})\s+\S+\s+([SFUW]\d{4}[MRB][X]?|Forming|Paused|Finished|Terminated)\b/i;
-            const match = firstLine.match(gameLineRegex);
-
-            if (match) {
-                const gameName = match[1];
-                const phaseOrStatus = match[2];
-                if (gameName && gameName !== 'control' && !gamesFromMaster[gameName]) { // Avoid duplicates within the file
-                    gamesFromMaster[gameName] = { name: gameName, status: 'Unknown', currentPhase: 'Unknown' };
-                    // Distinguish phase from status
-                    if (/^[SFUW]\d{4}[MRB][X]?$/i.test(phaseOrStatus)) {
-                        gamesFromMaster[gameName].currentPhase = phaseOrStatus;
-                        gamesFromMaster[gameName].status = 'Active'; // Assume active if phase looks valid
-                    } else {
-                        // Use Forming, Paused etc. as status, ensure proper casing
-                        const statusLower = phaseOrStatus.toLowerCase();
-                        if (statusLower === 'forming') gamesFromMaster[gameName].status = 'Forming';
-                        else if (statusLower === 'paused') gamesFromMaster[gameName].status = 'Paused';
-                        else if (statusLower === 'finished') gamesFromMaster[gameName].status = 'Finished';
-                        else if (statusLower === 'terminated') gamesFromMaster[gameName].status = 'Terminated';
-                        else gamesFromMaster[gameName].status = 'Unknown'; // Fallback
+            const blockLines = block.trim().split('\n');
+            if (blockLines.length > 0) {
+                const firstLine = blockLines[0].trim();
+                const match = firstLine.match(gameLineRegex);
+                if (match) {
+                    const gameName = match[1];
+                    const phaseOrStatus = match[2];
+                    if (gameName && gameName !== 'control' && !gamesFromMaster[gameName]) { // Avoid control entry and duplicates
+                        gamesFromMaster[gameName] = { name: gameName, status: 'Unknown', currentPhase: 'Unknown' };
+                        // Distinguish phase from status
+                        if (/^[SFUW]\d{4}[MRB][X]?$/i.test(phaseOrStatus)) {
+                            gamesFromMaster[gameName].currentPhase = phaseOrStatus;
+                            gamesFromMaster[gameName].status = 'Active'; // Assume active if phase looks valid
+                        } else {
+                            // Use Forming, Paused etc. as status, ensure proper casing
+                            const statusLower = phaseOrStatus.toLowerCase();
+                            if (statusLower === 'forming') gamesFromMaster[gameName].status = 'Forming';
+                            else if (statusLower === 'paused') gamesFromMaster[gameName].status = 'Paused';
+                            else if (statusLower === 'finished') gamesFromMaster[gameName].status = 'Finished';
+                            else if (statusLower === 'terminated') gamesFromMaster[gameName].status = 'Terminated';
+                            else gamesFromMaster[gameName].status = 'Unknown'; // Fallback
+                        }
+                        console.log(`[Sync] Found game: ${gameName}, Status/Phase: ${phaseOrStatus} in ${dipMasterPath}`);
                     }
-                    console.log(`[Sync] Found game: ${gameName}, Status/Phase: ${phaseOrStatus} in ${dipMasterPath}`);
                 }
-            } else {
-                 // Log the first line if it doesn't match the expected format (and isn't empty)
-                 if (firstLine) console.warn(`[Sync] Skipping block, first line did not match expected game format: "${firstLine}"`);
             }
         });
         console.log(`[Sync] Found ${Object.keys(gamesFromMaster).length} potential games in ${dipMasterPath}`);
@@ -1968,6 +1967,8 @@ app.delete('/api/user/search-bookmarks/:name', requireAuth, async (req, res) => 
 });
 
 
+// Main dashboard route
+
 // --- News API Endpoints ---
 
 // GET all news items (public)
@@ -1983,7 +1984,7 @@ app.get('/api/news', async (req, res) => {
 
 // POST a new news item (protected)
 // Make sure express.json() middleware is used globally or add it here if needed
-app.post('/api/news', requireAuth, express.json(), async (req, res) => {
+app.post('/api/news', requireAuth, async (req, res) => { // Removed redundant express.json()
     const { content } = req.body;
     const userId = req.session.email; // Identify who is posting
 
@@ -2024,7 +2025,7 @@ app.delete('/api/news/:id', requireAuth, async (req, res) => {
     }
 });
 
-// Main dashboard route
+
 app.get('/dashboard', requireEmail, async (req, res) => {
     const email = req.session.email;
     let errorMessage = req.session.errorMessage || null;
@@ -2274,22 +2275,37 @@ app.post('/execute-dip', requireEmail, async (req, res) => {
 // Endpoint to add a new game
 app.post('/api/games', requireAuth, async (req, res) => {
     // Basic implementation: requires gameName and variant in the body.
-    // Use CREATE ? command instead of ADDGAME
-    const { gameName, variant, password } = req.body;
+    // TODO: Extend to handle more complex ADDGAME parameters (press, deadlines, players etc.)
+    const { gameName, variant, password } = req.body; // Include password
     const userEmail = req.session.email;
 
-    if (!gameName || !variant || !password) {
-        return res.status(400).json({ success: false, message: 'Missing required parameters: gameName, variant, password' });
+    if (!gameName || !variant) {
+        return res.status(400).json({ success: false, message: 'Missing required parameters: gameName, variant' });
     }
 
     // Construct the CREATE ? command string
-    const command = `CREATE ?${gameName} ${password} ${variant}`;
+    let commandParts = ['CREATE', `?${gameName}`];
+    if (password) {
+        commandParts.push(password);
+    } else {
+        // If no password provided, use a default or handle as needed by judge
+        // For now, let's assume password is required by CREATE ? syntax, but maybe not?
+        // Let's make password required for CREATE via API for simplicity for now.
+        // If password is truly optional, the judge might handle it.
+        // Let's assume password IS required for CREATE ?game password variant
+        return res.status(400).json({ success: false, message: 'Password is required for game creation via this API.' });
+    }
+    commandParts.push(variant); // Add variant/options string
+    // Add BECOME MASTER if requested? Maybe a checkbox in UI?
+    // if (req.body.becomeMaster) commandParts.push('\nBECOME MASTER');
+
+    const command = commandParts.join(' ');
 
     console.log(`[API /api/games POST] User ${userEmail} attempting command: ${command}`);
 
     try {
         // Using executeDipCommand to run the CREATE command
-        const result = await executeDipCommand(userEmail, command);
+        const result = await executeDipCommand(userEmail, command); // Don't pass game context for CREATE
 
         // Check stdout for success message
         const createSuccessPattern = /Game '(\w+)' created/i;
@@ -2297,26 +2313,23 @@ app.post('/api/games', requireAuth, async (req, res) => {
 
         if (result.success && match && match[1] === gameName) {
             console.log(`[API /api/games POST] Command successful for ${gameName}. Output:\n${result.stdout}`);
-            // Trigger sync after successful creation
+            // Trigger sync to update master list
             await syncDipMaster();
+            // Optionally trigger a game list refresh here
             res.status(201).json({ success: true, message: `Game '${gameName}' created successfully.`, output: result.stdout });
         } else {
-            console.error(`[API /api/games POST] CREATE command failed or did not confirm creation for ${gameName}. Output:\n${result.output}`);
-            // Provide a more specific error if possible
-            let errorMsg = `Failed to create game '${gameName}'.`;
-            if (result.stderr?.includes('already exists')) {
-                errorMsg = `Game '${gameName}' already exists.`;
-                res.status(409).json({ success: false, message: errorMsg, output: result.output }); // Conflict
-            } else {
-                res.status(500).json({ success: false, message: errorMsg, output: result.output });
-            }
+             console.error(`[API /api/games POST] CREATE command failed or confirmation missing for ${gameName}. Output:\n${result.output}`);
+             res.status(500).json({ success: false, message: `Failed to create game '${gameName}'. Judge response might indicate the issue.`, output: result.output });
         }
     } catch (error) {
         console.error(`[API /api/games POST] Error executing CREATE command for ${gameName}:`, error);
-        const statusCode = error.output?.includes('Spawn failed') ? 503 : 500;
+        // Try to provide more specific status codes based on common errors
+        const statusCode = error.output?.includes('Spawn failed') ? 503 :
+                           error.output?.includes('already exists') ? 409 : // Conflict
+                           500; // Default internal server error
         res.status(statusCode).json({
             success: false,
-            message: `Failed to initiate game creation for '${gameName}'.`,
+            message: `Failed to add game '${gameName}'.`,
             output: error.output || error.message || 'Unknown error'
         });
     }
@@ -2326,57 +2339,54 @@ app.post('/api/games', requireAuth, async (req, res) => {
 app.delete('/api/games/:gameName', requireAuth, async (req, res) => {
     const { gameName } = req.params;
     // Password might be needed for REMOVEGAME, potentially passed in body
-    const { password } = req.body; // Assume password sent in body for DELETE
+    const { password } = req.body;
     const userEmail = req.session.email;
 
     if (!gameName) {
+        // Should not happen with route definition, but good practice
         return res.status(400).json({ success: false, message: 'Missing gameName in path parameter.' });
     }
 
-    // Construct the REMOVEGAME command string - Requires Master context
-    // We need to prepend SIGN ON M<game> <password>
-    const command = `REMOVEGAME ${gameName}`;
+    // Construct the TERMINATE command string (safer than REMOVEGAME?)
+    // Or use EJECT M<gameName> password? Let's try TERMINATE first.
+    const command = `TERMINATE`; // TERMINATE doesn't take game name directly, needs SIGN ON
 
     console.log(`[API /api/games DELETE] User ${userEmail} attempting command: ${command} for game ${gameName}`);
 
     try {
-        // Pass password to executeDipCommand - it will handle the SIGN ON M... prefix
+        // Pass password to executeDipCommand for SIGN ON context
         const result = await executeDipCommand(userEmail, command, gameName, password);
 
-        // Check stdout for success message (adjust pattern as needed)
-        const removeSuccessPattern = /Game removed/i; // Example pattern
-        if (result.success && removeSuccessPattern.test(result.stdout)) {
+        // Check stdout for success message
+        const terminateSuccessPattern = /Game terminated/i;
+        if (result.success && terminateSuccessPattern.test(result.stdout)) {
             console.log(`[API /api/games DELETE] Command successful for ${gameName}. Output:\n${result.stdout}`);
-            // Trigger sync after successful removal
-            await syncDipMaster();
-            // Also remove from DB immediately
-            db.run("DELETE FROM game_states WHERE name = ?", [gameName], (dbErr) => {
-                 if (dbErr) console.error(`[DB Error] Failed to delete game ${gameName} from DB after removal:`, dbErr);
-                 else console.log(`[DB Success] Deleted game ${gameName} from local DB.`);
-            });
-            res.status(200).json({ success: true, message: `Game '${gameName}' removed successfully.`, output: result.stdout });
+            // Update game status in DB to Terminated
+            const currentState = await getGameState(gameName);
+            if (currentState) {
+                currentState.status = 'Terminated';
+                currentState.lastUpdated = Math.floor(Date.now() / 1000);
+                await saveGameState(gameName, currentState);
+            }
+            // Optionally trigger game list refresh or remove from DB here?
+            // Sync might eventually remove it if judge cleans up dip.master
+            await syncDipMaster(); // Sync to reflect potential removal from master list
+            res.status(200).json({ success: true, message: `Game '${gameName}' terminated successfully.`, output: result.stdout });
         } else {
-             console.error(`[API /api/games DELETE] REMOVEGAME command failed or did not confirm removal for ${gameName}. Output:\n${result.output}`);
-             let errorMsg = `Failed to remove game '${gameName}'.`;
-             let statusCode = 500;
-             if (result.stderr?.includes('No such game') || result.stdout?.includes('No such game')) {
-                 errorMsg = `Game '${gameName}' not found.`;
-                 statusCode = 404;
-             } else if (result.stderr?.includes('incorrect password') || result.stdout?.includes('incorrect password')) {
-                 errorMsg = 'Incorrect master password provided.';
-                 statusCode = 401; // Unauthorized
-             } else if (result.stderr?.includes('not the master')) {
-                  errorMsg = 'You are not the master of this game.';
-                  statusCode = 403; // Forbidden
-             }
-             res.status(statusCode).json({ success: false, message: errorMsg, output: result.output });
+             console.error(`[API /api/games DELETE] TERMINATE command failed or confirmation missing for ${gameName}. Output:\n${result.output}`);
+             res.status(500).json({ success: false, message: `Failed to terminate game '${gameName}'. Judge response might indicate the issue.`, output: result.output });
         }
     } catch (error) {
-        console.error(`[API /api/games DELETE] Error executing REMOVEGAME command for ${gameName}:`, error);
-        const statusCode = error.output?.includes('Spawn failed') ? 503 : 500;
+        console.error(`[API /api/games DELETE] Error executing TERMINATE command for ${gameName}:`, error);
+         // Try to provide more specific status codes
+        const statusCode = error.output?.includes('Spawn failed') ? 503 :
+                           error.output?.includes('No such game') ? 404 : // Not Found
+                           error.output?.includes('incorrect password') ? 401 : // Unauthorized (or 403 Forbidden)
+                           error.output?.includes('only be issued by a Master') ? 403 : // Forbidden
+                           500; // Default internal server error
         res.status(statusCode).json({
             success: false,
-            message: `Failed to initiate game removal for '${gameName}'.`,
+            message: `Failed to terminate game '${gameName}'.`,
             output: error.output || error.message || 'Unknown error'
         });
     }
@@ -2394,7 +2404,7 @@ app.get('/api/map/:gameName/:phase?', requireAuth, async (req, res) => { // Roo:
     console.log(`[Map API Request] Handler Reached. gameName: ${gameName}, phase: ${phase}, user: ${req.userId}`); // Roo Debug Log
 
     if (!gameName) {
-        return res.status(400).json({ success: false, error: 'Game name is required.' });
+        return res.status(400).json({ success: false, message: 'Game name is required.' });
     }
 
     try {
@@ -2402,21 +2412,22 @@ app.get('/api/map/:gameName/:phase?', requireAuth, async (req, res) => { // Roo:
 
         if (!mapData) {
             // Distinguish between 'game not found' and 'error fetching data'?
+            // For now, use 404 if the core data couldn't be assembled.
+            // Check if game exists first?
             const gameExists = await getGameState(gameName);
             if (!gameExists) {
-                 console.log(`[Map API Response] Game ${gameName} not found.`);
-                 return res.status(404).json({ success: false, error: `Game '${gameName}' not found.` });
+                 return res.status(404).json({ success: false, message: `Game '${gameName}' not found.` });
             } else {
-                 console.log(`[Map API Response] Could not retrieve map data for ${gameName} / ${phase || 'latest'}.`);
-                 return res.status(500).json({ success: false, error: `Could not retrieve complete map data for game '${gameName}' phase '${phase || 'latest'}'. Check server logs.` });
+                 // Game exists, but data couldn't be fully assembled (e.g., history error, phase error)
+                 return res.status(500).json({ success: false, message: `Could not retrieve complete map data for game '${gameName}' phase '${phase || 'latest'}'. Check server logs.` });
             }
         }
-        console.log(`[Map API Response] Successfully returning map data for ${gameName} / ${mapData.phase}.`);
-        res.json(mapData); // mapData already includes success: true if successful
+
+        res.json(mapData); // Removed redundant success: true
 
     } catch (error) {
         console.error(`[API Error] Failed to get map data for ${gameName} / ${phase || 'latest'}:`, error);
-        res.status(500).json({ success: false, error: 'An internal server error occurred while fetching map data.' });
+        res.status(500).json({ success: false, message: 'An internal server error occurred while fetching map data.' });
     }
 });
 
@@ -2429,25 +2440,37 @@ console.log(`[Route Definition Check] Defining GET /api/user/preferences`); // R
 app.get('/api/user/preferences', requireAuth, async (req, res) => {
     try {
         const preferences = await getUserPreferences(req.userId);
-        // If no preferences found, return empty object instead of 404
-        res.json({ success: true, preferences: preferences || {} });
+        // Check if preferences object is empty
+        if (Object.keys(preferences).length === 0) {
+            console.log(`[API Info] No preferences found for user ${req.userId}. Returning 404.`);
+            // Return 404 if no preferences exist, but still indicate success=true for client handling
+            res.status(404).json({ success: true, preferences: {} });
+        } else {
+            res.json({ success: true, preferences });
+        }
     } catch (error) {
         console.error(`[API Error] GET /api/user/preferences failed for user ${req.userId}:`, error);
         res.status(500).json({ success: false, message: 'Failed to retrieve preferences.' });
     }
 });
 
-// PUT (set/update) multiple preferences for the logged-in user
+// PUT (set/update) multiple preferences for the logged-in user (Changed from POST)
 console.log(`[Route Definition Check] Defining PUT /api/user/preferences`); // Roo Debug Log
-app.put('/api/user/preferences', requireAuth, express.json(), async (req, res) => {
+app.put('/api/user/preferences', requireAuth, async (req, res) => { // Changed to PUT
     const preferencesToSet = req.body; // Expects an object like { key1: value1, key2: value2 }
     if (typeof preferencesToSet !== 'object' || preferencesToSet === null) {
         return res.status(400).json({ success: false, message: 'Invalid request body. Expected a JSON object of preferences.' });
     }
 
+    const promises = [];
+    for (const key in preferencesToSet) {
+        if (Object.hasOwnProperty.call(preferencesToSet, key)) {
+            promises.push(setUserPreference(req.userId, key, preferencesToSet[key]));
+        }
+    }
+
     try {
-        // Use the helper function that handles multiple keys
-        await setUserPreferences(req.userId, preferencesToSet);
+        await Promise.all(promises);
         res.json({ success: true, message: 'Preferences updated successfully.' });
     } catch (error) {
         console.error(`[API Error] PUT /api/user/preferences failed for user ${req.userId}:`, error);
@@ -2503,8 +2526,47 @@ app.get('/api/stats/game-status', async (req, res) => {
 });
 
 
+// NEW ENDPOINT START
+app.get('/api/game/:gameName/history', requireEmail, async (req, res) => {
+    const gameName = req.params.gameName;
+    const userEmail = req.session.email; // Assuming requireEmail middleware sets this
+
+    if (!gameName) {
+        return res.status(400).json({ success: false, message: 'Game name is required.' });
+    }
+
+    console.log(`[API HISTORY] Request received for game: ${gameName} from user: ${userEmail}`);
+
+    try {
+        // Execute the 'HISTORY <gameName>' command
+        // Use the existing executeDipCommand function
+        const historyResult = await executeDipCommand(userEmail, `HISTORY ${gameName}`, gameName);
+
+        // Check if the command returned an error message within the output
+        if (!historyResult.success) {
+             console.warn(`[API HISTORY Warning] Command for ${gameName} failed: ${historyResult.output}`);
+             // Determine appropriate status code based on error message
+             const statusCode = historyResult.output.includes('No such game') ? 404 : 500;
+             return res.status(statusCode).json({ success: false, message: historyResult.output.trim() });
+        }
+
+        const parsedHistory = parseHistoryOutput(gameName, historyResult.stdout);
+        res.json({ success: true, history: parsedHistory }); // Wrap in success object
+
+    } catch (error) {
+        console.error(`[API HISTORY Error] Failed to get or parse history for game ${gameName}:`, error);
+        // Handle potential errors from executeDipCommand (e.g., spawn issues)
+        const statusCode = error.output?.includes('Spawn failed') ? 503 : (error.message?.includes('No such game') ? 404 : 500);
+        const errorMessage = error.message || 'Failed to retrieve game history.';
+        res.status(statusCode).json({ success: false, message: errorMessage, details: error.output || null });
+    }
+});
+// NEW ENDPOINT END
+
+
 // --- Start Server ---
-app.use(express.static(path.join(__dirname, 'public'))); // Static files middleware
+// ... (Keep server start and graceful shutdown as is) ...
+app.use(express.static(path.join(__dirname, 'public'))); // Roo: Moved static middleware here
 app.listen(port, () => {
     console.log(`Dip Web App listening at http://localhost:${port}`);
     console.log(`Using dip binary: ${dipBinaryPath}`);
@@ -2530,37 +2592,38 @@ app.listen(port, () => {
         console.log(`Found dip.master at '${dipMasterPath}'. Performing initial sync...`);
         syncDipMaster().catch(err => console.error("[Startup Sync Error]", err));
     }
-    // Function to print routes (for debugging)
     function print (path, layer) {
-      if (layer.route) {
-        layer.route.stack.forEach(print.bind(null, path.concat(split(layer.route.path))))
-      } else if (layer.name === 'router' && layer.handle.stack) {
-        layer.handle.stack.forEach(print.bind(null, path.concat(split(layer.regexp))))
-      } else if (layer.method) {
-        console.log('[Route] %s /%s',
-          layer.method.toUpperCase(),
-          path.concat(split(layer.regexp)).filter(Boolean).join('/'))
+        if (layer.route) {
+          layer.route.stack.forEach(print.bind(null, path.concat(split(layer.route.path))))
+        } else if (layer.name === 'router' && layer.handle.stack) {
+          layer.handle.stack.forEach(print.bind(null, path.concat(split(layer.regexp))))
+        } else if (layer.method) {
+          console.log('%s /%s',
+            layer.method.toUpperCase(),
+            path.concat(split(layer.regexp)).filter(Boolean).join('/'))
+        }
       }
-    }
-    function split (thing) {
-      if (typeof thing === 'string') {
-        return thing.split('/')
-      } else if (thing.fast_slash) {
-        return ''
-      } else {
-        var match = thing.toString()
-          .replace('\\/?', '')
-          .replace('(?=\\/|$)', '$')
-          .match(/^\/\^((?:\\[.*+?^${}()|[\]\\\/]|[^.*+?^${}()|[\]\\\/])*)\$\//)
-        return match
-          ? match[1].replace(/\\(.)/g, '$1').split('/')
-          : '<complex:' + thing.toString() + '>'
+
+      function split (thing) {
+        if (typeof thing === 'string') {
+          return thing.split('/')
+        } else if (thing.fast_slash) {
+          return ''
+        } else {
+          var match = thing.toString()
+            .replace('\\/?', '')
+            .replace('(?=\\/|$)', '$')
+            .match(/^\/\^((?:\\[.*+?^${}()|[\]\\\/]|[^.*+?^${}()|[\]\\\/])*)\$\//)
+          return match
+            ? match[1].replace(/\\(.)/g, '$1').split('/')
+            : '<complex:' + thing.toString() + '>'
+        }
       }
-    }
-    // Print all defined routes after setup
-    console.log("--- Defined Routes ---");
-    app._router.stack.forEach(print.bind(null, []));
-    console.log("--------------------");
+
+      // Log all defined routes at startup
+      console.log("Defined Routes:");
+      app._router.stack.forEach(print.bind(null, []))
+      console.log("----------------");
 });
 
 process.on('SIGINT', () => {
