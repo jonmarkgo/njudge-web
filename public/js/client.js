@@ -50,13 +50,180 @@ const defaultPreferences = {
 };
 let userPreferences = JSON.parse(JSON.stringify(defaultPreferences)); // Deep copy defaults initially
 
+// --- Make allGamesList and currentGameData globally accessible ---
+window.allGamesList = [];
+window.currentGameData = null;
+let gameStatusChartInstance = null; // To hold the chart instance
+let currentUserEmail = null; // Will be set on DOMContentLoaded
+
+// --- UI Update Functions (Define these EARLIER) ---
+
+function populateGameSelector(games) {
+    const gameSelector = document.getElementById('game-selector');
+    if (!gameSelector) return;
+    const currentSelectedGame = gameSelector.value; // Preserve selection if possible
+    gameSelector.innerHTML = '<option value="">-- Select Target Game --</option>'; // Default option
+
+    // Apply sorting based on user preference
+    const sortOrder = userPreferences.sort_order;
+    games.sort((a, b) => {
+        let compareA, compareB;
+        switch (sortOrder) {
+            case 'name_desc':
+                compareA = b.name; compareB = a.name; break;
+            case 'status_asc':
+                compareA = a.status || 'Unknown'; compareB = b.status || 'Unknown'; break;
+            case 'status_desc':
+                compareA = b.status || 'Unknown'; compareB = a.status || 'Unknown'; break;
+            case 'name_asc': // Default
+            default:
+                compareA = a.name; compareB = b.name; break;
+        }
+        // Ensure localeCompare is called on strings
+        return String(compareA).localeCompare(String(compareB));
+    });
+    games.forEach(game => { // Sorting is done above now
+        const option = document.createElement('option');
+        option.value = game.name;
+        option.textContent = `${game.name} (${game.status || 'Unknown'})`;
+        gameSelector.appendChild(option);
+    });
+    // Restore selection if it still exists
+    if (currentSelectedGame && gameSelector.querySelector(`option[value="${currentSelectedGame}"]`)) {
+        gameSelector.value = currentSelectedGame;
+    }
+}
+
+function updateGameStateSidebar(gameState) {
+    const gameStateSidebar = document.getElementById('game-state-sidebar');
+    // Ensure preferences are loaded before using them
+    const visibility = userPreferences?.column_visibility || defaultPreferences.column_visibility;
+    if (!gameStateSidebar) return;
+
+    if (!gameState) {
+        gameStateSidebar.innerHTML = '<p class="text-gray-500 italic">Select a game to view its state.</p>';
+        return;
+    }
+
+    // Format deadline nicely
+    let deadlineStr = 'N/A';
+    if (gameState.nextDeadline) {
+        try {
+            // Attempt to parse common judge formats (e.g., Mon Nov 17 2003 23:31:03 -0600)
+            const date = new Date(gameState.nextDeadline);
+            if (!isNaN(date) && date.getTime() !== 0) {
+                deadlineStr = date.toLocaleString();
+            } else {
+                deadlineStr = gameState.nextDeadline; // Show raw string if parsing failed
+            }
+        } catch (e) {
+            deadlineStr = gameState.nextDeadline; // Show raw string on error
+        }
+    }
+
+    const playersHtml = (gameState.players && gameState.players.length > 0)
+        ? `<ul class="space-y-1 pl-2">
+            ${gameState.players.sort((a, b) => (a.power || '').localeCompare(b.power || '')).map(p => `
+                <li class="${p.email === currentUserEmail ? 'font-semibold text-blue-700' : ''}">
+                    ${p.power || '???'}:
+                    ${p.status && p.status !== 'Playing' && p.status !== 'Waiting'
+                        ? `<span class="${['CD', 'Resigned', 'Abandoned', 'Eliminated'].includes(p.status) ? 'text-red-600' : 'text-gray-600'}">(${p.status})</span>`
+                        : (p.status === 'Waiting' ? '<span class="text-orange-600">(Waiting)</span>' : '')
+                    }
+                    ${p.email && (!gameState.settings || !gameState.settings.gunboat) ? `<span class="text-gray-500 text-xs ml-1">(${p.email})</span>` : ''}
+                </li>
+            `).join('')}
+        </ul>`
+        : 'N/A';
+
+    const settingsHtml = (gameState.settings && Object.keys(gameState.settings).length > 0)
+        ? `<ul class="space-y-1 pl-2 text-xs">
+            ${Object.entries(gameState.settings).sort(([keyA], [keyB]) => keyA.localeCompare(keyB)).map(([key, value]) => {
+                // Simple formatting for boolean/string/number
+                let displayValue = value;
+                if (typeof value === 'boolean') displayValue = value ? 'Yes' : 'No';
+                // Capitalize key
+                const displayKey = key.charAt(0).toUpperCase() + key.slice(1);
+                return `<li>${displayKey}: ${displayValue}</li>`;
+            }).join('')}
+        </ul>`
+        : 'N/A';
+
+    const lastUpdatedStr = gameState.lastUpdated ? new Date(gameState.lastUpdated * 1000).toLocaleString() : 'N/A';
+    const observerLink = `https://www.floc.net/observer.py?partie=${gameState.name}`;
+
+    // Build HTML conditionally based on visibility preferences
+    let sidebarHtml = `<h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Game State: ${gameState.name}</h2><div class="space-y-2 text-sm">`;
+
+    if (visibility.status) sidebarHtml += `<div><strong class="text-primary w-24 inline-block">Status:</strong> ${gameState.status || 'Unknown'}</div>`;
+    if (visibility.phase) sidebarHtml += `<div><strong class="text-primary w-24 inline-block">Phase:</strong> ${gameState.currentPhase || 'Unknown'}</div>`;
+    if (visibility.deadline) sidebarHtml += `<div><strong class="text-primary w-24 inline-block">Deadline:</strong> ${deadlineStr}</div>`;
+    if (visibility.variant) sidebarHtml += `<div><strong class="text-primary w-24 inline-block">Variant:</strong> ${gameState.variant || 'Standard'} ${gameState.options && gameState.options.length > 0 ? `(${gameState.options.join(', ')})` : ''}</div>`;
+    if (visibility.masters) sidebarHtml += `<div><strong class="text-primary w-24 inline-block">Masters:</strong> ${gameState.masters && gameState.masters.length > 0 ? gameState.masters.join(', ') : 'N/A'}</div>`;
+    if (visibility.observers) sidebarHtml += `<div><strong class="text-primary w-24 inline-block">Observers:</strong> ${gameState.observers ? gameState.observers.length : 'N/A'}</div>`;
+
+    if (visibility.players) {
+        if (gameState.players && gameState.players.length > 0) {
+            sidebarHtml += `
+                <div class="pt-2 mt-2 border-t border-gray-200">
+                    <strong class="text-primary block mb-1">Players (${gameState.players.length}):</strong>
+                    ${playersHtml}
+                </div>`;
+        } else {
+            sidebarHtml += '<div><strong class="text-primary w-24 inline-block">Players:</strong> N/A</div>';
+        }
+    }
+
+    if (visibility.settings) {
+         if (gameState.settings && Object.keys(gameState.settings).length > 0) {
+            sidebarHtml += `
+                <div class="pt-2 mt-2 border-t border-gray-200">
+                    <strong class="text-primary block mb-1">Settings:</strong>
+                    ${settingsHtml}
+                </div>`;
+         } else if (gameState.settings) { // Show N/A only if settings object exists but is empty
+             sidebarHtml += '<div><strong class="text-primary w-24 inline-block">Settings:</strong> N/A</div>';
+         }
+    }
+
+    sidebarHtml += `</div>`; // Close space-y-2 div
+
+    if (visibility.lastUpdated) {
+        sidebarHtml += `<p class="text-xs text-gray-500 mt-4">(State last updated: ${lastUpdatedStr})</p>`;
+    }
+
+    gameStateSidebar.innerHTML = sidebarHtml;
+}
+
+// --- Preference Application Logic ---
+function applyPreferences() {
+    console.log("Applying preferences:", userPreferences);
+    // 1. Re-populate game selector based on sort order
+    if (window.allGamesList && window.allGamesList.length > 0) { // Ensure game list is available
+         populateGameSelector(window.allGamesList); // Defined above
+    }
+    // 2. Re-render game state sidebar based on column visibility
+    if (window.currentGameData) { // Ensure current game data is available
+        updateGameStateSidebar(window.currentGameData); // Defined above
+    } else {
+        // If no game is selected, ensure the sidebar reflects this, potentially clearing old state
+         const gameStateSidebar = document.getElementById('game-state-sidebar');
+         if (gameStateSidebar) {
+             updateGameStateSidebar(null); // Call with null to show default message
+         }
+    }
+    // Add other preference applications here if needed
+}
+
+
+// --- Preference Fetch/Save/Reset/Render (Keep these together) ---
 async function fetchUserPreferences() {
     console.log("Fetching user preferences...");
     try {
         const response = await fetch('/api/user/preferences');
         if (!response.ok) {
             if (response.status === 404) { // No preferences saved yet is okay
-                console.log("No existing user preferences found, using defaults.");
+                console.log("No existing user preferences found (404), using defaults. This is expected on first load."); // Clarify log
                 userPreferences = JSON.parse(JSON.stringify(defaultPreferences));
             } else {
                 // Throw error for other non-ok statuses
@@ -88,7 +255,7 @@ async function fetchUserPreferences() {
         userPreferences = JSON.parse(JSON.stringify(defaultPreferences));
     }
     // Apply preferences after fetching (or falling back to defaults)
-    applyPreferences();
+    applyPreferences(); // Moved after potential error handling
     // Render controls after preferences are loaded
     renderPreferenceControls();
 }
@@ -142,25 +309,6 @@ async function resetUserPreferences() {
         console.error('Network or parsing error resetting user preferences:', error);
         alert(`Network error resetting preferences: ${error.message}`);
     }
-}
-
-function applyPreferences() {
-    console.log("Applying preferences:", userPreferences);
-    // 1. Re-populate game selector based on sort order
-    if (window.allGamesList && window.allGamesList.length > 0) { // Ensure game list is available
-         populateGameSelector(window.allGamesList);
-    }
-    // 2. Re-render game state sidebar based on column visibility
-    if (window.currentGameData) { // Ensure current game data is available
-        updateGameStateSidebar(window.currentGameData);
-    } else {
-        // If no game is selected, ensure the sidebar reflects this, potentially clearing old state
-         const gameStateSidebar = document.getElementById('game-state-sidebar');
-         if (gameStateSidebar) {
-             updateGameStateSidebar(null); // Call with null to show default message
-         }
-    }
-    // Add other preference applications here if needed
 }
 
 function renderPreferenceControls() {
@@ -269,12 +417,6 @@ function renderPreferenceControls() {
 
     controlsContainer.appendChild(form);
 }
-
-// --- Make allGamesList and currentGameData globally accessible (or pass them around) ---
-// This is a simplification; better state management might be needed for larger apps.
-window.allGamesList = [];
-window.currentGameData = null;
-let gameStatusChartInstance = null; // To hold the chart instance
 
 
 // --- Map Rendering ---
@@ -550,7 +692,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- State Variables ---
     // window.currentGameData = null; // Defined globally now
     // window.allGamesList = []; // Defined globally now
-    let currentUserEmail = userEmailIndicator ? userEmailIndicator.dataset.email : null; // Store user email
+    currentUserEmail = userEmailIndicator ? userEmailIndicator.dataset.email : null; // Set global variable
     window.currentUserEmail = currentUserEmail; // Also store globally for easy check
     let currentFilters = {}; // Store the currently applied filters
     let savedBookmarks = []; // Store fetched bookmarks
@@ -638,7 +780,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     if (initialGame && gameSelector && gameExistsInList) {
                         gameSelector.value = initialGame;
-                        targetGameInput.value = initialGame;
+                        if (targetGameInput) targetGameInput.value = initialGame;
                         console.log("Restored game selection after filter:", initialGame);
                         // Fetch state only if the game is still selected and visible
                         if (gameSelector.value === initialGame) {
@@ -858,12 +1000,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Game Status Chart Functions ---
     async function fetchAndRenderGameStatusChart() {
+        if (typeof Chart === 'undefined') {
+          console.error('CRITICAL: Chart object is undefined when fetchAndRenderGameStatusChart() is called. Chart.js might not be loaded or initialized yet.');
+          // Optionally, you could try delaying and retrying, but for now, just log and exit.
+          return;
+        }
+
         // Ensure elements exist
         if (!canvasElement) {
             console.warn('Game status chart canvas element not found.');
             return;
         }
         if (chartErrorElement) chartErrorElement.textContent = ''; // Clear previous errors
+
+        // Check if Chart.js library is loaded
+        if (typeof Chart === 'undefined') {
+            const errorMsg = 'Chart.js library not loaded. Cannot render chart.';
+            console.error(errorMsg);
+            if (chartErrorElement) chartErrorElement.textContent = errorMsg;
+            return;
+        }
 
         try {
             console.log('Fetching game status stats...');
@@ -987,7 +1143,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Refresh State Button ---
     if (refreshStateButton) {
         refreshStateButton.addEventListener('click', () => {
-            const selectedGame = targetGameInput.value;
+            const selectedGame = targetGameInput?.value;
             if (selectedGame) {
                 fetchAndDisplayGameState(selectedGame);
                 // Optionally show a small visual confirmation
@@ -1021,43 +1177,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (targetVariantInput) {
         targetVariantInput.addEventListener('input', saveCredentialsForGame); // Save on input
-    }
-
-    // --- Initial Load ---
-    initializeDashboard(); // Fetch initial data (games, state, prefs, bookmarks)
-
-    function populateGameSelector(games) {
-        if (!gameSelector) return;
-        const currentSelectedGame = gameSelector.value; // Preserve selection if possible
-        gameSelector.innerHTML = '<option value="">-- Select Target Game --</option>'; // Default option
-
-        // Apply sorting based on user preference
-        const sortOrder = userPreferences.sort_order;
-        games.sort((a, b) => {
-            let compareA, compareB;
-            switch (sortOrder) {
-                case 'name_desc':
-                    compareA = b.name; compareB = a.name; break;
-                case 'status_asc':
-                    compareA = a.status || 'Unknown'; compareB = b.status || 'Unknown'; break;
-                case 'status_desc':
-                    compareA = b.status || 'Unknown'; compareB = a.status || 'Unknown'; break;
-                case 'name_asc': // Default
-                default:
-                    compareA = a.name; compareB = b.name; break;
-            }
-            return compareA.localeCompare(compareB);
-        });
-        games.forEach(game => { // Sorting is done above now
-            const option = document.createElement('option');
-            option.value = game.name;
-            option.textContent = `${game.name} (${game.status || 'Unknown'})`;
-            gameSelector.appendChild(option);
-        });
-        // Restore selection if it still exists
-        if (currentSelectedGame && gameSelector.querySelector(`option[value="${currentSelectedGame}"]`)) {
-            gameSelector.value = currentSelectedGame;
-        }
     }
 
     // --- Game State Handling ---
@@ -1114,106 +1233,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateCommandGenerator(null);
                 loadCredentialsForGame(gameName);
             });
-    }
-
-    function updateGameStateSidebar(gameState) {
-        // Ensure preferences are loaded before using them
-        const visibility = userPreferences?.column_visibility || defaultPreferences.column_visibility;
-        if (!gameStateSidebar) return;
-
-        if (!gameState) {
-            gameStateSidebar.innerHTML = '<p class="text-gray-500 italic">Select a game to view its state.</p>';
-            return;
-        }
-
-        // Format deadline nicely
-        let deadlineStr = 'N/A';
-        if (gameState.nextDeadline) {
-            try {
-                // Attempt to parse common judge formats (e.g., Mon Nov 17 2003 23:31:03 -0600)
-                const date = new Date(gameState.nextDeadline);
-                if (!isNaN(date) && date.getTime() !== 0) {
-                    deadlineStr = date.toLocaleString();
-                } else {
-                    deadlineStr = gameState.nextDeadline; // Show raw string if parsing failed
-                }
-            } catch (e) {
-                deadlineStr = gameState.nextDeadline; // Show raw string on error
-            }
-        }
-
-        const playersHtml = (gameState.players && gameState.players.length > 0)
-            ? `<ul class="space-y-1 pl-2">
-                ${gameState.players.sort((a, b) => (a.power || '').localeCompare(b.power || '')).map(p => `
-                    <li class="${p.email === currentUserEmail ? 'font-semibold text-blue-700' : ''}">
-                        ${p.power || '???'}:
-                        ${p.status && p.status !== 'Playing' && p.status !== 'Waiting'
-                            ? `<span class="${['CD', 'Resigned', 'Abandoned', 'Eliminated'].includes(p.status) ? 'text-red-600' : 'text-gray-600'}">(${p.status})</span>`
-                            : (p.status === 'Waiting' ? '<span class="text-orange-600">(Waiting)</span>' : '')
-                        }
-                        ${p.email && (!gameState.settings || !gameState.settings.gunboat) ? `<span class="text-gray-500 text-xs ml-1">(${p.email})</span>` : ''}
-                    </li>
-                `).join('')}
-            </ul>`
-            : 'N/A';
-
-        const settingsHtml = (gameState.settings && Object.keys(gameState.settings).length > 0)
-            ? `<ul class="space-y-1 pl-2 text-xs">
-                ${Object.entries(gameState.settings).sort(([keyA], [keyB]) => keyA.localeCompare(keyB)).map(([key, value]) => {
-                    // Simple formatting for boolean/string/number
-                    let displayValue = value;
-                    if (typeof value === 'boolean') displayValue = value ? 'Yes' : 'No';
-                    // Capitalize key
-                    const displayKey = key.charAt(0).toUpperCase() + key.slice(1);
-                    return `<li>${displayKey}: ${displayValue}</li>`;
-                }).join('')}
-            </ul>`
-            : 'N/A';
-
-        const lastUpdatedStr = gameState.lastUpdated ? new Date(gameState.lastUpdated * 1000).toLocaleString() : 'N/A';
-        const observerLink = `https://www.floc.net/observer.py?partie=${gameState.name}`;
-
-        // Build HTML conditionally based on visibility preferences
-        let sidebarHtml = `<h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Game State: ${gameState.name}</h2><div class="space-y-2 text-sm">`;
-
-        if (visibility.status) sidebarHtml += `<div><strong class="text-primary w-24 inline-block">Status:</strong> ${gameState.status || 'Unknown'}</div>`;
-        if (visibility.phase) sidebarHtml += `<div><strong class="text-primary w-24 inline-block">Phase:</strong> ${gameState.currentPhase || 'Unknown'}</div>`;
-        if (visibility.deadline) sidebarHtml += `<div><strong class="text-primary w-24 inline-block">Deadline:</strong> ${deadlineStr}</div>`;
-        if (visibility.variant) sidebarHtml += `<div><strong class="text-primary w-24 inline-block">Variant:</strong> ${gameState.variant || 'Standard'} ${gameState.options && gameState.options.length > 0 ? `(${gameState.options.join(', ')})` : ''}</div>`;
-        if (visibility.masters) sidebarHtml += `<div><strong class="text-primary w-24 inline-block">Masters:</strong> ${gameState.masters && gameState.masters.length > 0 ? gameState.masters.join(', ') : 'N/A'}</div>`;
-        if (visibility.observers) sidebarHtml += `<div><strong class="text-primary w-24 inline-block">Observers:</strong> ${gameState.observers ? gameState.observers.length : 'N/A'}</div>`;
-
-        if (visibility.players) {
-            if (gameState.players && gameState.players.length > 0) {
-                sidebarHtml += `
-                    <div class="pt-2 mt-2 border-t border-gray-200">
-                        <strong class="text-primary block mb-1">Players (${gameState.players.length}):</strong>
-                        ${playersHtml}
-                    </div>`;
-            } else {
-                sidebarHtml += '<div><strong class="text-primary w-24 inline-block">Players:</strong> N/A</div>';
-            }
-        }
-
-        if (visibility.settings) {
-             if (gameState.settings && Object.keys(gameState.settings).length > 0) {
-                sidebarHtml += `
-                    <div class="pt-2 mt-2 border-t border-gray-200">
-                        <strong class="text-primary block mb-1">Settings:</strong>
-                        ${settingsHtml}
-                    </div>`;
-             } else if (gameState.settings) { // Show N/A only if settings object exists but is empty
-                 sidebarHtml += '<div><strong class="text-primary w-24 inline-block">Settings:</strong> N/A</div>';
-             }
-        }
-
-        sidebarHtml += `</div>`; // Close space-y-2 div
-
-        if (visibility.lastUpdated) {
-            sidebarHtml += `<p class="text-xs text-gray-500 mt-4">(State last updated: ${lastUpdatedStr})</p>`;
-        }
-
-        gameStateSidebar.innerHTML = sidebarHtml;
     }
 
     // --- Credential Handling (Password + Variant) ---
@@ -2251,6 +2270,24 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Helper for Game Management Feedback
+    function displayGameManagementFeedback(message, isError = false) {
+        if (!gameManagementFeedbackDiv) return;
+        // Clear previous feedback first
+        gameManagementFeedbackDiv.innerHTML = '';
+
+        const p = document.createElement('p');
+        p.textContent = message;
+        p.className = ` ${isError ? 'text-red-600 font-semibold' : 'text-green-600 font-semibold'}`;
+        gameManagementFeedbackDiv.appendChild(p);
+
+        // Optional: Clear feedback after a few seconds?
+        setTimeout(() => {
+            if (gameManagementFeedbackDiv.contains(p)) {
+                gameManagementFeedbackDiv.removeChild(p);
+            }
+        }, 5000); // Clear after 5 seconds
+    }
 
 
     // --- Text Area Enter Key Listener ---
@@ -2413,7 +2450,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- Initial Load ---
-    initializeDashboard();
+    document.addEventListener('DOMContentLoaded', () => {
+        initializeDashboard();
 
 
-}); // End DOMContentLoaded
+    }); // End DOMContentLoaded wrapper for initialization
+}); // End IIFE (if applicable, or just end of file)

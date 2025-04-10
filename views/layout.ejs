@@ -12,6 +12,9 @@
         /* Ensure optgroup labels are visible */
         optgroup { font-weight: bold; font-style: normal; }
     </style>
+    <!-- Scripts defined in views (like Chart.js) will be injected here -->
+    <%- defineContent('scripts') %>
+    <script src="/js/client.js" defer></script>
 </head>
 <body class="min-h-screen bg-gray-50 flex flex-col">
     <nav class="bg-white shadow-sm">
@@ -47,8 +50,6 @@
         </div>
     </footer>
 
-    <!-- Add client.js script -->
-    <%- defineContent('scripts') %>
-    <script src="/js/client.js"></script>
+    <!-- Main client script included last -->
 </body>
 </html>

@@ -18,6 +18,7 @@ const mapInfoCache = {};
 const dipBinaryPath = process.env.DIP_BINARY_PATH || './dip';
 const dipBinaryArgs = (process.env.DIP_BINARY_ARGS || '').split(' ').filter(arg => arg);
 const dipBinaryRootPath = path.dirname(dipBinaryPath);
+const flocscriptsPath = process.env.FLOCSCRIPTS_PATH || path.join(__dirname, 'scripts'); // Fallback to relative path
 const judgeEmail = process.env.DIP_JUDGE_EMAIL || 'judge@example.com';
 const dipMasterPath = process.env.DIP_MASTER_PATH || path.join(dipBinaryRootPath, 'dip.master'); // Default relative to binary
 
@@ -533,7 +534,7 @@ const parseListOutput = (gameName, output) => {
     let readingSettings = false; // Flag for settings section
 
     // --- Regex Definitions ---
-    const explicitDeadlineRegex = /::\s*Deadline:\s*([SFUW]\d{4}[MRB][X]?)\s+(.*)/i;
+    const explicitDeadlineRegex = /::\s*Deadline:\s*([SFUW]\d{4}[MRBAX]?)\s+(.*)/i; // Allow A for Adjust, optional X
     const activeStatusLineRegex = /Status of the (\w+) phase for (Spring|Summer|Fall|Winter) of (\d{4})\./i;
     const variantRegex = /Variant:\s*(\S+)\s*(.*)/i;
     // Player Regex: Start, Power Name (expanded), whitespace, number, whitespace, capture email, rest of line
@@ -1003,7 +1004,8 @@ const parseMapInfoFile = async (variantName) => {
     }
 
     console.log(`[Map Parse] Parsing info file for variant: ${variantName}`);
-    const filePath = path.join(__dirname, 'scripts', 'mapit', 'maps', `${variantName}.info`);
+    // Use the FLOCSCRIPTS_PATH environment variable
+    const filePath = path.join(flocscriptsPath, 'mapit', 'maps', `${variantName}.info`);
     let fileContent;
 
     try {
@@ -1022,10 +1024,7 @@ const parseMapInfoFile = async (variantName) => {
     };
     let parsingSection = 'powers'; // Start by parsing powers
 
-    // Regex to capture province data: X Y |ABR|---|FullName|...
-    // Handles optional spaces around delimiters and captures relevant parts.
-    // Group 1: X, Group 2: Y, Group 3: ABR, Group 4: FullName
-    // Updated regex to handle optional unit/sc coordinates: X Y [UX UY] [SCX SCY] |ABR|...
+    // Regex to capture province data: X Y [UX UY] [SCX SCY] |ABR|...
     // Group 1: X, Group 2: Y
     // Group 3 (optional): UX, Group 4 (optional): UY
     // Group 5 (optional): SCX, Group 6 (optional): SCY
@@ -1455,50 +1454,51 @@ async function getMapData(gameName, phase) {
 
         // 2. Fetch full game history
         // Use judgeEmail or a system identity for fetching public data
-        const historyResult = await executeDipCommand(judgeEmail, `HISTORY ${gameName}`, gameName);
-        if (!historyResult.success) {
-            console.error(`[Map Data Error] Failed to fetch history for ${gameName}:`, historyResult.output);
+        // Fetch current game state using LIST command
+        const listResult = await executeDipCommand(judgeEmail, `LIST ${gameName}`, gameName);
+        if (!listResult.success) {
+            console.error(`[Map Data Error] Failed to fetch LIST data for ${gameName}:`, listResult.output);
             return null;
         }
+        const listOutput = listResult.stdout;
+        console.log(`[Map Data] Raw LIST output for ${gameName}:\n${listOutput}`); // Roo Debug Log for LIST output
 
         // 3. Parse history
-        const parsedHistory = parseHistoryOutput(gameName, historyResult.stdout);
-        const historyData = parsedHistory; // Use parsedHistory as historyData
-        console.log(`[getMapData] Parsed history output for latest phase:`, historyData ? 'Success' : 'Failure'); // Roo Debug Log
-        if (!historyData || Object.keys(historyData.phases).length === 0) {
-            console.error(`[Map Data Error] Failed to parse history or no phases found for ${gameName}`);
-            console.error(`[getMapData Error] Failed to parse history to find latest phase for game: ${gameName}`); // Roo Debug Log
-            // Return basic info if history parsing fails but we have variant/map info?
-            // For now, let's return null as state is crucial.
-            return null;
-        }
+        // TODO: Implement parseListOutput(gameName, listOutput)
+        // It should return an object like: { phase: 'S1454M', units: [{power: 'FRA', type: 'A', location: 'PAR'}, ...], supplyCenters: [{province: 'PAR', owner: 'FRA'}, ...] }
+        const currentGameState = { units: [], supplyCenters: [], phase: basicGameState.phase }; // Placeholder
+        console.log(`[getMapData] Placeholder for parsed LIST data.`); // Roo Debug Log
+        // const currentGameState = parseListOutput(gameName, listOutput);
+        // if (!currentGameState) {
+        //     console.error(`[Map Data Error] Failed to parse LIST output for ${gameName}`);
+        //     return null;
+        // }
 
         // 4. Determine the target phase code
-        let targetPhaseCode = phase;
-        let targetPhase = targetPhaseCode; // Use targetPhaseCode as targetPhase
-        if (!targetPhase) {
-            console.log(`[getMapData] Phase not provided, determining latest phase...`); // Roo Debug Log
-            // Find the latest phase from parsed history keys
-            const phaseKeys = Object.keys(historyData.phases).sort(); // Simple sort often works for standard phases
-            // TODO: Implement more robust phase sorting if needed (e.g., considering year and season)
-            targetPhase = phaseKeys[phaseKeys.length - 1];
-            if (!targetPhase) {
-                 console.error(`[Map Data Error] Latest phase could not be determined for game: ${gameName}`);
-                 console.error(`[getMapData Error] Latest phase could not be determined for game: ${gameName}`); // Roo Debug Log
-                 return null;
-            }
-            console.log(`[Map Data] No phase specified, using latest: ${targetPhase}`);
-        }
-        console.log(`[getMapData] Target phase determined as: ${targetPhase}`); // Roo Debug Log
+        // Use phase from basicGameState or the parsed LIST output (when implemented)
+        let targetPhase = currentGameState.phase || basicGameState.phase;
+        console.log(`[getMapData] Target phase determined as: ${targetPhase} (from LIST/basic state)`); // Roo Debug Log
 
-        const phaseData = historyData.phases[targetPhase];
+        // Validate if requested phase matches current phase from LIST?
+        if (phase && phase !== targetPhase) {
+             console.warn(`[Map Data Warning] Requested phase ${phase} does not match current game phase ${targetPhase} from LIST output. Returning current state.`);
+             // Decide if we should error out or return current state. Let's return current for now.
+             // Update targetPhase to reflect the actual current phase being returned
+             targetPhase = currentGameState.phase || basicGameState.phase;
+        }
+
+        // Data now comes from currentGameState (parsed from LIST), not historyData.phases[targetPhase]
+        const phaseData = currentGameState; // Use currentGameState as phaseData
         if (!phaseData) {
-            console.error(`[Map Data Error] Target phase ${targetPhase} not found in history for ${gameName}`);
-            return null; // Phase not found
+             console.error(`[Map Data Error] Could not get current game state from LIST output for ${gameName}`);
+             return null;
         }
 
         // 5. Get province metadata from .info file (using cache)
-        const provinceMetadata = await parseMapInfoFile(variant);
+        // Trim trailing dot from variant name if present before passing to parser
+        const cleanVariant = variant.endsWith('.') ? variant.slice(0, -1) : variant;
+        console.log(`[getMapData] Cleaned variant name for map info: ${cleanVariant}`); // Roo Debug Log
+        const provinceMetadata = await parseMapInfoFile(cleanVariant);
         const mapInfo = provinceMetadata; // Use provinceMetadata as mapInfo
         console.log(`[getMapData] Parsed map info file result:`, mapInfo ? 'Success' : 'Failure/Cached'); // Roo Debug Log
         if (!mapInfo) {
@@ -1527,27 +1527,41 @@ async function getMapData(gameName, phase) {
         }
 
         // 7. Combine data
-        // Flatten units from { power: [unit1, unit2] } to [ {power, type, location}, ... ]
+        // 7. Combine data
+        // TODO: Adapt unit flattening based on the structure returned by parseListOutput
+        // Assuming parseListOutput returns units like: [{power: 'FRA', type: 'A', location: 'PAR'}, ...]
         const flatUnits = [];
-        if (phaseData.units) {
-            for (const power in phaseData.units) {
-                phaseData.units[power].forEach(unit => {
-                    flatUnits.push({ ...unit, power: power });
-                });
-            }
+        if (phaseData.units && mapInfo && mapInfo.provinces) {
+             phaseData.units.forEach(unit => {
+                 // LIST output likely already uses abbreviations. If not, lookup needed.
+                 // Assuming unit.location is already an abbreviation from LIST parser
+                 const unitLocationAbbr = unit.location; // Placeholder assumption
+                 if (mapInfo.provinces[unitLocationAbbr]) {
+                     flatUnits.push({ ...unit }); // Assuming unit structure is {power, type, location (abbr)}
+                 } else {
+                      console.warn(`[Map Data] Unit location abbreviation '${unitLocationAbbr}' from LIST output not found in map info.`);
+                 }
+             });
+        } else {
+             console.log("[Map Data] No units found in placeholder LIST data or map info missing.");
         }
 
-        // Format supply centers to [ {province, owner}, ... ]
+        // TODO: Adapt SC formatting based on the structure returned by parseListOutput
+        // Assuming parseListOutput returns SCs like: [{province: 'PAR', owner: 'FRA'}, ...]
         const formattedSCs = [];
-        if (phaseData.supplyCenters) {
-             // Need province metadata to map power names to province abbreviations if SCs are keyed by power
-             // Assuming phaseData.supplyCenters is { power: count } which isn't directly usable for location.
-             // We need the actual SC list from the game state or history results.
-             // Let's assume the LIST output parser populates gameState.supplyCenters correctly
-             // For now, we'll pass an empty array if the history parser doesn't provide it in the right format.
-             // TODO: Enhance history parser or rely on LIST output for SC ownership.
-             console.warn("[Map Data] History parser doesn't provide SC ownership list. SCs might be missing/incorrect on map.");
-        }
+         if (phaseData.supplyCenters && mapInfo && mapInfo.provinces) {
+             phaseData.supplyCenters.forEach(sc => {
+                 // Assuming sc.province is already an abbreviation from LIST parser
+                 const scAbbr = sc.province; // Placeholder assumption
+                 if (mapInfo.provinces[scAbbr]) {
+                     formattedSCs.push({ province: scAbbr, owner: sc.owner });
+                 } else {
+                     console.warn(`[Map Data] Supply center abbreviation '${scAbbr}' from LIST output not found in map info.`);
+                 }
+             });
+         } else {
+              console.log("[Map Data] No supply centers found in placeholder LIST data or map info missing.");
+         }
 
 
         const mapData = {
@@ -1555,12 +1569,12 @@ async function getMapData(gameName, phase) {
             gameName: gameName,
             phase: targetPhase,
             variant: variant,
-            units: flatUnits, // Use flattened list
-            supplyCenters: formattedSCs, // Use formatted list (currently empty)
-            provinces: mapInfo ? mapInfo.provinces : {},
+            units: flatUnits, // Use flattened list with abbreviations
+            supplyCenters: formattedSCs, // Use formatted list (currently likely empty)
+            provinces: mapInfo ? mapInfo.provinces : {}, // Province metadata keyed by abbreviation
             svgContent: svgContent,
             // Include deadline if available in phaseData?
-            deadline: phaseData.deadline || null
+            deadline: basicGameState.deadline || null // Get deadline from basic state (or LIST parser result when implemented)
         };
 
         console.log(`[Map Data] Successfully assembled map data for ${gameName} / ${targetPhase}`);
@@ -1758,22 +1772,27 @@ async function syncDipMaster() {
         // Split by the separator line '-' which must be on its own line
         const gameBlocks = masterContent.split(/^\s*-\s*$/m);
 
-        // Regex to capture game name (alphanumeric, 1-8 chars) and phase/status from the *first* line of a block
-        const gameLineRegex = /^([a-zA-Z0-9]{1,8})\s+\S+\s+([SFUW]\d{4}[MRB][X]?|Forming|Paused|Finished|Terminated)\b/i;
+        // Regex to capture game name (alphanumeric, 1-8), turn indicator, and phase/status from the *first* line of a block
+        const gameLineRegex = /^([a-zA-Z0-9]{1,8})\s+(\S+)\s+([SFUW]\d{4}[MRBAX]|Forming|Paused|Finished|Terminated)/i;
 
-        gameBlocks.forEach((block) => {
-            const blockLines = block.trim().split('\n');
+        gameBlocks.forEach((block, index) => {
+            const blockTrimmed = block.trim();
+            if (!blockTrimmed) return; // Skip empty blocks
+
+            const blockLines = blockTrimmed.split('\n');
             if (blockLines.length > 0) {
                 const firstLine = blockLines[0].trim();
+                console.log(`[Sync Debug] Processing block ${index}, first line: "${firstLine}"`); // Debug log
                 const match = firstLine.match(gameLineRegex);
                 if (match) {
                     const gameName = match[1];
-                    const phaseOrStatus = match[2];
+                    const turnIndicator = match[2]; // e.g., x0, 001, 002
+                    const phaseOrStatus = match[3];
                     if (gameName && gameName !== 'control' && !gamesFromMaster[gameName]) { // Avoid control entry and duplicates
                         gamesFromMaster[gameName] = { name: gameName, status: 'Unknown', currentPhase: 'Unknown' };
                         // Distinguish phase from status
-                        if (/^[SFUW]\d{4}[MRB][X]?$/i.test(phaseOrStatus)) {
-                            gamesFromMaster[gameName].currentPhase = phaseOrStatus;
+                        if (/^[SFUW]\d{4}[MRBAX]$/i.test(phaseOrStatus)) {
+                            gamesFromMaster[gameName].currentPhase = phaseOrStatus.toUpperCase(); // Standardize case
                             gamesFromMaster[gameName].status = 'Active'; // Assume active if phase looks valid
                         } else {
                             // Use Forming, Paused etc. as status, ensure proper casing
@@ -1784,9 +1803,19 @@ async function syncDipMaster() {
                             else if (statusLower === 'terminated') gamesFromMaster[gameName].status = 'Terminated';
                             else gamesFromMaster[gameName].status = 'Unknown'; // Fallback
                         }
-                        console.log(`[Sync] Found game: ${gameName}, Status/Phase: ${phaseOrStatus} in ${dipMasterPath}`);
+                        console.log(`[Sync] Found game: ${gameName}, Status/Phase: ${phaseOrStatus} (Match: Yes)`);
+                    } else if (gameName === 'control') {
+                        console.log(`[Sync Debug] Skipping 'control' entry.`);
+                    } else if (gamesFromMaster[gameName]) {
+                         console.log(`[Sync Debug] Skipping duplicate game entry for '${gameName}'.`);
+                    } else {
+                         console.log(`[Sync Debug] Regex matched but gameName invalid? gameName='${gameName}'`);
                     }
+                } else {
+                     console.log(`[Sync Debug] Regex did NOT match first line: "${firstLine}"`);
                 }
+            } else {
+                 console.log(`[Sync Debug] Skipping empty block ${index}.`);
             }
         });
         console.log(`[Sync] Found ${Object.keys(gamesFromMaster).length} potential games in ${dipMasterPath}`);
@@ -2292,7 +2321,6 @@ app.post('/api/games', requireAuth, async (req, res) => {
         // For now, let's assume password is required by CREATE ? syntax, but maybe not?
         // Let's make password required for CREATE via API for simplicity for now.
         // If password is truly optional, the judge might handle it.
-        // Let's assume password IS required for CREATE ?game password variant
         return res.status(400).json({ success: false, message: 'Password is required for game creation via this API.' });
     }
     commandParts.push(variant); // Add variant/options string
@@ -2423,7 +2451,8 @@ app.get('/api/map/:gameName/:phase?', requireAuth, async (req, res) => { // Roo:
             }
         }
 
-        res.json(mapData); // Removed redundant success: true
+        // Send success: true along with the data
+        res.json({ success: true, ...mapData });
 
     } catch (error) {
         console.error(`[API Error] Failed to get map data for ${gameName} / ${phase || 'latest'}:`, error);
@@ -2442,9 +2471,9 @@ app.get('/api/user/preferences', requireAuth, async (req, res) => {
         const preferences = await getUserPreferences(req.userId);
         // Check if preferences object is empty
         if (Object.keys(preferences).length === 0) {
-            console.log(`[API Info] No preferences found for user ${req.userId}. Returning 404.`);
-            // Return 404 if no preferences exist, but still indicate success=true for client handling
-            res.status(404).json({ success: true, preferences: {} });
+            console.log(`[API Info] No preferences found for user ${req.userId}. Returning 200 with empty object.`);
+            // Return 200 OK with empty object if no preferences exist
+            res.status(200).json({ success: true, preferences: {} });
         } else {
             res.json({ success: true, preferences });
         }
