@@ -1581,6 +1581,9 @@ async function getMapData(gameName, phase) {
              }
         });
 
+        // -- Draw Base Map --
+        dynamicPsCommands.push("DrawMap"); // Execute the base map drawing procedure
+
 
         // -- Draw Supply Centers (Coloring) --
         // Use the top-level supplyCenters array parsed from LIST output
@@ -1611,6 +1614,9 @@ async function getMapData(gameName, phase) {
         // 8. Combine Base PS + Dynamic PS
         const combinedPsContent = basePsContent + "\n" + dynamicPsCommands.join("\n") + "\n";
 
+        // Sanitize phase name for filename *before* use
+        const safePhase = targetPhase.replace(/[^a-zA-Z0-9_-]/g, '_');
+
         // DEBUG: Save combined PostScript for inspection
         const debugPsPath = path.join(staticMapDir, `${gameName}_${safePhase}_debug.ps`);
         try {
@@ -1623,7 +1629,7 @@ async function getMapData(gameName, phase) {
 
         // 9. Define Output Path
         // Sanitize phase name for filename
-        const safePhase = targetPhase.replace(/[^a-zA-Z0-9_-]/g, '_');
+        // safePhase definition moved up
         const outputPngFilename = `${gameName}_${safePhase}.png`;
         const outputPngPath = path.join(staticMapDir, outputPngFilename);
         console.log(`[getMapData PNG] Output path set to: ${outputPngPath}`);
