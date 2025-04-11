@@ -419,7 +419,7 @@ function renderPreferenceControls() {
 }
 
 
-// --- Map Rendering ---
+// --- Map Rendering (Updated for PNG) ---
 async function renderMap(gameName, phase) {
     const mapContainer = document.getElementById('map-container');
     if (!mapContainer) {
@@ -427,18 +427,18 @@ async function renderMap(gameName, phase) {
         return;
     }
 
-    // Clear previous content and show loading state
-    mapContainer.innerHTML = '<p class="text-gray-500 italic p-4">Loading map data...</p>';
+    // Clear previous content and show loading/default state
+    mapContainer.innerHTML = '<p class="text-gray-500 italic p-4">Loading map image...</p>';
 
     if (!gameName) {
-        mapContainer.innerHTML = '<p class="text-gray-500 italic p-4">Select a game to view the map.</p>';
+        mapContainer.innerHTML = '<p class="text-gray-500 italic p-4">Select a game and phase to view the map.</p>';
         return;
     }
 
     // Use phase if provided, otherwise the API defaults to latest
     const phaseParam = phase ? `/${encodeURIComponent(phase)}` : ''; // Ensure phase is encoded
     const apiUrl = `/api/map/${encodeURIComponent(gameName)}${phaseParam}`;
-    console.log(`Fetching map data from: ${apiUrl}`);
+    console.log(`Fetching map URL from: ${apiUrl}`);
 
     try {
         const response = await fetch(apiUrl);
@@ -453,183 +453,31 @@ async function renderMap(gameName, phase) {
             throw new Error(errorData.message || `HTTP error ${response.status}`);
         }
 
-        const mapData = await response.json();
+        const mapResult = await response.json();
 
-        // Check if the backend indicated success and provided SVG content
-        if (mapData.success === false) { // Explicit check for backend failure flag
-             throw new Error(mapData.message || "Backend indicated failure fetching map data.");
-        }
-
-        if (mapData.svgContent) {
-            // Inject base SVG
-            mapContainer.innerHTML = mapData.svgContent;
-            const svgElement = mapContainer.querySelector('svg');
-
-            if (!svgElement) {
-                throw new Error("SVG element not found after injection.");
-            }
-
-            // Ensure SVG has a known size or viewBox for coordinate mapping
-            // If viewBox is present, use it. Otherwise, might need width/height.
-            const viewBox = svgElement.viewBox.baseVal;
-            const svgWidth = viewBox ? viewBox.width : svgElement.width.baseVal.value;
-            const svgHeight = viewBox ? viewBox.height : svgElement.height.baseVal.value;
-
-            if (!svgWidth || !svgHeight) {
-                 console.warn("SVG dimensions or viewBox not found. Positioning might be inaccurate.");
-            }
-
-            // --- Define colors/styles (can be customized) ---
-            const powerColors = {
-                AUS: '#ffcc00', GER: '#4d4d4d', ENG: '#add8e6', FRA: '#0000ff',
-                ITA: '#008000', RUS: '#800080', TUR: '#ff4500',
-                // Add Machiavelli colors if needed
-                MIL: '#e6194b', FLO: '#3cb44b', NAP: '#ffe119', PAP: '#4363d8', VEN: '#f58231',
-                DEFAULT: '#cccccc' // For neutral SCs
+        // Check if the backend indicated success and provided a mapUrl
+        if (mapResult.success && mapResult.mapUrl) {
+            console.log(`Received map URL: ${mapResult.mapUrl}`);
+            // Create and display the image
+            mapContainer.innerHTML = ''; // Clear loading message
+            const img = document.createElement('img');
+            img.src = mapResult.mapUrl;
+            img.alt = `Map for ${gameName} - Phase ${phase || 'Latest'}`;
+            img.className = 'w-full h-auto border border-gray-300'; // Add some basic styling
+            // Optional: Add error handling for the image itself
+            img.onerror = () => {
+                 console.error(`Error loading map image from URL: ${mapResult.mapUrl}`);
+                 mapContainer.innerHTML = `<p class="text-red-600 p-4">Error loading map image. The URL might be invalid or the image generation failed.</p>`;
             };
-            const unitStyles = {
-                A: { shape: 'rect', width: 10, height: 10, text: 'A' }, // Army
-                F: { shape: 'polygon', points: '0,-6 6,6 -6,6', text: 'F' } // Fleet (Triangle)
-                // Add other unit types if needed (e.g., W for Wing)
-            };
-            const scRadius = 8;
-            const unitFontSize = 10;
+            mapContainer.appendChild(img);
 
-            // --- Helper to create SVG elements ---
-            const createSvgElement = (tag, attributes) => {
-                const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
-                for (const key in attributes) {
-                    el.setAttribute(key, attributes[key]);
-                }
-                return el;
-            };
-
-            // --- Render Supply Centers ---
-            if (mapData.supplyCenters && Array.isArray(mapData.supplyCenters) && mapData.provinces) {
-                 const scGroup = createSvgElement('g', { id: 'sc-layer' });
-                 svgElement.appendChild(scGroup);
-
-                mapData.supplyCenters.forEach(sc => {
-                    // Find province data using the abbreviation from the SC object
-                    const provinceAbbr = sc.province; // Assuming sc object has { province: 'ABR', owner: 'POWER' }
-                    const province = mapData.provinces[provinceAbbr];
-
-                    if (province && province.scX !== undefined && province.scY !== undefined) {
-                        const color = powerColors[sc.owner] || powerColors.DEFAULT;
-                        const circle = createSvgElement('circle', {
-                            cx: province.scX,
-                            cy: province.scY,
-                            r: scRadius,
-                            fill: color,
-                            stroke: '#333',
-                            'stroke-width': 1,
-                            'data-province': provinceAbbr,
-                            'data-owner': sc.owner || 'Neutral'
-                        });
-                        // Basic tooltip
-                        circle.innerHTML = `<title>SC: ${province.name} (${sc.owner || 'Neutral'})</title>`;
-                        scGroup.appendChild(circle);
-                    } else {
-                         console.warn(`SC coordinates or province data not found for SC in province: ${provinceAbbr}`);
-                    }
-                });
-            } else {
-                 console.warn("Supply center data or province metadata missing/invalid for rendering.");
-            }
-
-            // --- Render Units ---
-             if (mapData.units && Array.isArray(mapData.units) && mapData.provinces) {
-                 const unitGroup = createSvgElement('g', { id: 'unit-layer' });
-                 svgElement.appendChild(unitGroup);
-
-                 mapData.units.forEach(unit => {
-                     // Find province data using the abbreviation from the unit object
-                     const provinceAbbr = unit.location; // Assuming unit object has { type: 'A', location: 'ABR', power: 'POWER' }
-                     const province = mapData.provinces[provinceAbbr];
-
-                     if (province && province.unitX !== undefined && province.unitY !== undefined) {
-                         const color = powerColors[unit.power] || powerColors.DEFAULT;
-                         const style = unitStyles[unit.type] || unitStyles.A; // Default to Army style if type unknown
-
-                         let unitElement;
-                         if (style.shape === 'rect') {
-                             unitElement = createSvgElement('rect', {
-                                 x: province.unitX - style.width / 2,
-                                 y: province.unitY - style.height / 2,
-                                 width: style.width,
-                                 height: style.height,
-                                 fill: color,
-                                 stroke: '#000',
-                                 'stroke-width': 1
-                             });
-                         } else if (style.shape === 'polygon') {
-                              unitElement = createSvgElement('polygon', {
-                                 points: style.points,
-                                 transform: `translate(${province.unitX}, ${province.unitY})`, // Center the shape
-                                 fill: color,
-                                 stroke: '#000',
-                                 'stroke-width': 1
-                             });
-                         } else { // Fallback to text if shape unknown
-                              unitElement = createSvgElement('text', {
-                                 x: province.unitX,
-                                 y: province.unitY,
-                                 'font-size': unitFontSize,
-                                 fill: '#000', // Use black for text for contrast
-                                 'text-anchor': 'middle',
-                                 'dominant-baseline': 'middle',
-                             });
-                             unitElement.textContent = style.text || '?';
-                         }
-
-                         unitElement.setAttribute('data-unit-type', unit.type);
-                         unitElement.setAttribute('data-unit-power', unit.power);
-                         unitElement.setAttribute('data-unit-province', provinceAbbr);
-                         // Basic tooltip
-                         unitElement.innerHTML = `<title>Unit: ${unit.power} ${unit.type} ${province.name}</title>`;
-                         unitGroup.appendChild(unitElement);
-
-                     } else {
-                          console.warn(`Unit coordinates or province data not found for unit in province: ${provinceAbbr}`);
-                     }
-                 });
-             } else {
-                  console.warn("Unit data or province metadata missing/invalid for rendering.");
-             }
-
-             // --- (Optional) Render Province Names/Labels ---
-             if (mapData.provinces) {
-                 const labelGroup = createSvgElement('g', { id: 'label-layer', 'pointer-events': 'none' }); // Disable pointer events for labels
-                 svgElement.appendChild(labelGroup);
-                 Object.values(mapData.provinces).forEach(province => {
-                     // Use label coordinates if available, otherwise fallback (or skip)
-                     const x = province.labelX !== undefined ? province.labelX : province.x; // Use original x/y as label pos?
-                     const y = province.labelY !== undefined ? province.labelY : province.y;
-                     if (x !== undefined && y !== undefined && province.abbr) { // Only render if coords and abbr exist
-                         const label = createSvgElement('text', {
-                             x: x,
-                             y: y, // Adjust offset as needed
-                             'font-size': 9,
-                             fill: '#555',
-                             'text-anchor': 'middle',
-                             'dominant-baseline': 'middle',
-                         });
-                         label.textContent = province.abbr;
-                         labelGroup.appendChild(label);
-                     }
-                 });
-             }
-
-
-        } else if (mapData.success && !mapData.svgContent) {
-            mapContainer.innerHTML = '<p class="text-gray-500 italic p-4">Map SVG not available for this variant.</p>';
         } else {
-             // This case should ideally be caught by the !response.ok check earlier
-             throw new Error(mapData.message || "Failed to load map data (unknown reason).");
+             // Handle cases where success might be false or mapUrl is missing
+             throw new Error(mapResult.message || "Backend failed to provide a valid map URL.");
         }
 
     } catch (error) {
-        console.error('Error rendering map:', error);
+        console.error('Error fetching or displaying map image:', error);
         mapContainer.innerHTML = `<p class="text-red-600 p-4">Error loading map: ${error.message}</p>`;
     }
 }
@@ -745,6 +593,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (newsSectionContainer) {
             fetchAndDisplayNews();
         }
+
+        // Initial map state (placeholder)
+        renderMap(null);
     }
 
     // --- New Function: Fetch Games with Filters ---
@@ -799,6 +650,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         updateGameStateSidebar(null); // Show empty state
                         updateCommandGenerator(null); // Show default recommendations
                         loadCredentialsForGame(null); // Ensure clear if no initial game
+                        renderMap(null); // Clear map
                         console.log("No games found matching filters.");
                         if (gameSelector) gameSelector.innerHTML = '<option value="">No games match filters</option>';
                     }
@@ -808,6 +660,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     console.error("Failed to fetch filtered game list:", errorMsg);
                     updateGameStateSidebar(null); // Show empty state on error
                     updateCommandGenerator(null);
+                    renderMap(null); // Clear map
                     if (gameSelector) gameSelector.innerHTML = '<option value="">Error loading games</option>';
                 }
             })
@@ -815,6 +668,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.error('Error fetching filtered game list:', error);
                 updateGameStateSidebar(null);
                 updateCommandGenerator(null);
+                renderMap(null); // Clear map
                 if (gameSelector) gameSelector.innerHTML = '<option value="">Error loading games</option>';
             });
     }
@@ -1223,6 +1077,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (gameStateSidebar) gameStateSidebar.innerHTML = `<p class="text-red-600">Error loading state for ${gameName}: ${errorMsg}</p>`;
                     window.currentGameData = null; // Store globally
                     updateCommandGenerator(null); // Reset recommendations
+                    renderMap(null); // Clear map
                     loadCredentialsForGame(gameName); // Still try to load credentials
                 }
             })
@@ -1231,6 +1086,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (gameStateSidebar) gameStateSidebar.innerHTML = `<p class="text-red-600">Network or server error loading state for ${gameName}: ${error.message}</p>`;
                 window.currentGameData = null; // Store globally
                 updateCommandGenerator(null);
+                renderMap(null); // Clear map
                 loadCredentialsForGame(gameName);
             });
     }
@@ -1443,7 +1299,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 content += createCheckbox('whogame-full', 'Include Observers (FULL)?', false);
                 break;
             case 'MAP': // Deprecated but included
-                content += createWarning('MAP command is deprecated. Use Floc.net link in sidebar.');
+                content += createWarning('MAP command is deprecated. Use the map display below.');
                 content += createInput('map-game-name', 'text', 'Game Name or *', 'Game Name or *', true, targetGame !== '<game>' ? targetGame : '');
                 content += createCheckbox('map-n', 'Plain Postscript (N)?', false);
                 break;
@@ -2095,11 +1951,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
 
-                // If we have a refreshed state, update the sidebar
+                // If we have a refreshed state, update the sidebar and map
                 if (stateToUpdateUI) {
                     console.log("[sendCommand] Updating UI sidebar with state:", stateToUpdateUI);
                     window.currentGameData = stateToUpdateUI; // Update global state variable
                     updateGameStateSidebar(currentGameData);
+                    renderMap(stateToUpdateUI.name, stateToUpdateUI.currentPhase); // Update map
                 }
 
                 // If we have new recommendations (either from refresh or signon), update dropdown
@@ -2256,6 +2113,7 @@ document.addEventListener('DOMContentLoaded', () => {
                          console.log(`Clearing state as removed game (${gameName}) was selected.`);
                          updateGameStateSidebar(null); // Clear sidebar
                          updateCommandGenerator(null); // Clear command generator recommendations
+                         renderMap(null); // Clear map
                          if (targetGameInput) targetGameInput.value = ''; // Clear hidden input
                          // Optionally clear password/variant fields too? Handled by clear credentials button usually.
                     }
@@ -2450,9 +2308,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- Initial Load ---
-    document.addEventListener('DOMContentLoaded', () => {
-        initializeDashboard();
+    initializeDashboard();
 
-
-    }); // End DOMContentLoaded wrapper for initialization
-}); // End IIFE (if applicable, or just end of file)
+}); // End DOMContentLoaded wrapper

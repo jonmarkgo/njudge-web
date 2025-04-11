@@ -1,14 +1,14 @@
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
-const { spawn } = require('child_process');
+const { execFile, spawn } = require('child_process'); // Ensure spawn is imported
 const session = require('express-session');
 const fs = require('fs');
-const fsPromises = require('fs').promises;
+const fsPromises = require('fs').promises; // Use promises version
 const sqlite3 = require('sqlite3').verbose();
 const expressLayouts = require('express-ejs-layouts');
 const SQLiteStore = require('connect-sqlite3')(session);
-const cookieParser = require('cookie-parser'); // Added
+const cookieParser = require('cookie-parser');
 
 
 // --- Map Info Parsing Cache ---
@@ -21,6 +21,10 @@ const dipBinaryRootPath = path.dirname(dipBinaryPath);
 const flocscriptsPath = process.env.FLOCSCRIPTS_PATH || path.join(__dirname, 'scripts'); // Fallback to relative path
 const judgeEmail = process.env.DIP_JUDGE_EMAIL || 'judge@example.com';
 const dipMasterPath = process.env.DIP_MASTER_PATH || path.join(dipBinaryRootPath, 'dip.master'); // Default relative to binary
+// Base directory for map files (within flocscripts)
+const mapBaseDir = path.join(flocscriptsPath, 'mapit');
+// Directory to store generated PNG maps
+const staticMapDir = path.join(__dirname, 'public', 'generated_maps'); // Store in public/generated_maps
 
 // --- Database Setup ---
 const db = new sqlite3.Database('./game_states.db'); // Game state database
@@ -37,7 +41,7 @@ db.serialize(() => {
         currentPhase TEXT DEFAULT 'Unknown',
         nextDeadline TEXT,
         masters TEXT DEFAULT '[]', -- JSON array of master emails
-        players TEXT DEFAULT '[]', -- JSON array of player objects {power, email, status, name}
+        players TEXT DEFAULT '[]', -- JSON array of player objects {power, email, status, name, units, supplyCenters}
         observers TEXT DEFAULT '[]', -- JSON array of observer emails
         settings TEXT DEFAULT '{}', -- JSON object of game settings {press, dias, nmr, etc.}
         lastUpdated INTEGER,
@@ -171,7 +175,9 @@ const saveGameState = (gameName, gameState) => {
              power: p.power,
              email: p.email || null,
              status: p.status || 'Unknown',
-             name: p.name || null // Add name if parsed
+             name: p.name || null, // Add name if parsed
+             units: p.units || [], // Include units
+             supplyCenters: p.supplyCenters || [] // Include SCs
         }));
         const playersStr = JSON.stringify(validPlayers);
         const observersStr = JSON.stringify(gameState.observers || []);
@@ -273,9 +279,11 @@ const getFilteredGameStates = (filters = {}) => {
         }
         if (filters.player) {
             // Check if the player's email exists within the 'players' JSON array
-            // Requires SQLite 3.9.0+ for JSON functions
-            whereClauses.push("EXISTS (SELECT 1 FROM json_each(players) WHERE json_extract(value, '$.email') = ?)");
-            params.push(filters.player);
+            // Requires SQLite 3.38.0+ for JSON functions (check your version)
+            // Use LIKE as a fallback if JSON functions aren't available/reliable
+            // whereClauses.push("EXISTS (SELECT 1 FROM json_each(players) WHERE json_extract(value, '$.email') = ?)");
+            whereClauses.push("players LIKE ?");
+            params.push(`%${filters.player}%`); // Less precise but more compatible
         }
         // Add more filters here if needed (e.g., master, observer)
 
@@ -527,11 +535,17 @@ const parseListOutput = (gameName, output) => {
         name: gameName, status: 'Unknown', variant: 'Standard', options: [],
         currentPhase: 'Unknown', nextDeadline: null, players: [], masters: [],
         observers: [], settings: {}, rawListOutput: output,
-        lastUpdated: Math.floor(Date.now() / 1000)
+        lastUpdated: Math.floor(Date.now() / 1000),
+        units: [], // Add top-level units array
+        supplyCenters: [] // Add top-level supply centers array
     };
     const lines = output.split('\n');
     let readingPlayers = false; // Flag to indicate if we are in the player/master list section
     let readingSettings = false; // Flag for settings section
+    let readingUnits = false; // Flag for unit section
+    let readingSCs = false; // Flag for supply center section
+    let currentPowerForUnits = null; // Track power for unit lines
+    let currentPowerForSCs = null; // Track power for SC lines
 
     // --- Regex Definitions ---
     const explicitDeadlineRegex = /::\s*Deadline:\s*([SFUW]\d{4}[MRBAX]?)\s+(.*)/i; // Allow A for Adjust, optional X
@@ -551,15 +565,35 @@ const parseListOutput = (gameName, output) => {
     const concessionSettingRegex = /\b(Concessions|No Concessions)\b/i;
     const emailRegex = /[\w.-]+@[\w.-]+\.\w+/; // General email regex for observer line if needed
 
+    // Regex for Units section
+    const unitHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice):\s*$/i; // Power name followed by colon
+    const unitLineRegex = /^\s+(A|F|W|R)\s+([A-Z]{3}(?:\/[NESW]C)?)\s*(?:\(([^)]+)\))?/i; // Indented: Type Abbr(/Coast) (Status)
+
+    // Regex for Supply Centers section
+    const scHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice)\s+\(\d+\):\s*$/i; // Power (Count):
+    const scLineRegex = /^\s+([A-Z]{3})\s*/i; // Indented: Abbr
+
     // --- Parsing Loop ---
     lines.forEach(line => {
         const trimmedLine = line.trim();
         let match;
 
+        // Stop reading units/SCs if we hit a new section header or known boundary
+        if (readingUnits || readingSCs) {
+            if (settingsHeaderRegex.test(trimmedLine) || trimmedLine.startsWith("The following players are signed up for game") || activeStatusLineRegex.test(line) || explicitDeadlineRegex.test(line)) {
+                if (readingUnits) console.log(`[Parser LIST ${gameName}] Stopped reading units on line: "${line}"`);
+                if (readingSCs) console.log(`[Parser LIST ${gameName}] Stopped reading SCs on line: "${line}"`);
+                readingUnits = false;
+                readingSCs = false;
+                currentPowerForUnits = null;
+                currentPowerForSCs = null;
+            }
+        }
+
         // 1. Check for Explicit Deadline Line
         match = line.match(explicitDeadlineRegex);
         if (match) {
-            gameState.currentPhase = match[1].trim();
+            gameState.currentPhase = match[1].trim().toUpperCase(); // Standardize case
             gameState.nextDeadline = match[2].trim();
             if (gameState.status === 'Unknown' || gameState.status === 'Forming') {
                  gameState.status = 'Active';
@@ -613,6 +647,7 @@ const parseListOutput = (gameName, output) => {
         if (trimmedLine.startsWith("The following players are signed up for game")) {
             readingPlayers = true;
             readingSettings = false; // Ensure we stop reading settings if we hit this header again
+            readingUnits = false; readingSCs = false; // Stop reading units/SCs
             console.log(`[Parser LIST ${gameName}] Started reading player/master/observer block.`);
             return; // Move to the next line
         }
@@ -626,8 +661,12 @@ const parseListOutput = (gameName, output) => {
             if (playerMatch) {
                 const power = playerMatch[1];
                 const email = playerMatch[2];
-                gameState.players.push({ power: power, email: email || null, status: 'Playing', name: null });
-                console.log(`[Parser LIST ${gameName}] Parsed Player: ${power} - ${email}`);
+                // Extract status if present (e.g., (CD), (Resigned))
+                let playerStatus = 'Playing';
+                const statusMatch = line.match(/\(([^)]+)\)/);
+                if (statusMatch) playerStatus = statusMatch[1];
+                gameState.players.push({ power: power, email: email || null, status: playerStatus, name: null, units: [], supplyCenters: [] });
+                console.log(`[Parser LIST ${gameName}] Parsed Player: ${power} - ${email} (${playerStatus})`);
             } else if (masterMatch) {
                 const email = masterMatch[1];
                 if (email && !gameState.masters.includes(email)) {
@@ -641,8 +680,8 @@ const parseListOutput = (gameName, output) => {
                     gameState.observers.push(email);
                     console.log(`[Parser LIST ${gameName}] Parsed Observer: ${email}`);
                 }
-            } else if (!trimmedLine || settingsHeaderRegex.test(line) || activeStatusLineRegex.test(line) || explicitDeadlineRegex.test(line) || line.startsWith("Status of the")) {
-                // Stop reading players if we hit settings, status, deadline, blank line, or the "Status of the..." line
+            } else if (!trimmedLine || settingsHeaderRegex.test(line) || activeStatusLineRegex.test(line) || explicitDeadlineRegex.test(line) || line.startsWith("Status of the") || unitHeaderRegex.test(trimmedLine) || scHeaderRegex.test(trimmedLine)) {
+                // Stop reading players if we hit settings, status, deadline, blank line, or the start of units/SCs
                 if (readingPlayers) console.log(`[Parser LIST ${gameName}] Stopped reading player/master/observer block on line: "${line}"`);
                 readingPlayers = false;
             }
@@ -653,13 +692,14 @@ const parseListOutput = (gameName, output) => {
         if (!readingSettings && settingsHeaderRegex.test(trimmedLine)) {
             readingSettings = true;
             readingPlayers = false; // Ensure player reading stops
+            readingUnits = false; readingSCs = false; // Stop reading units/SCs
             console.log(`[Parser LIST ${gameName}] Started reading settings block.`);
             return; // Move to the next line after the header
         }
 
         if (readingSettings) {
-            // Stop reading settings if we encounter a blank line or a line indicating the start of the player list or status
-            if (!trimmedLine || trimmedLine.startsWith("The following players are signed up for game") || activeStatusLineRegex.test(line)) {
+            // Stop reading settings if we encounter a blank line or a line indicating the start of the player list or status or units/SCs
+            if (!trimmedLine || trimmedLine.startsWith("The following players are signed up for game") || activeStatusLineRegex.test(line) || unitHeaderRegex.test(trimmedLine) || scHeaderRegex.test(trimmedLine)) {
                  if (readingSettings) console.log(`[Parser LIST ${gameName}] Stopped reading settings block on line: "${line}"`);
                  readingSettings = false;
             } else {
@@ -682,6 +722,68 @@ const parseListOutput = (gameName, output) => {
                 // Add more settings parsing here
             }
         }
+
+        // 8. Parse Units Section
+        match = trimmedLine.match(unitHeaderRegex);
+        if (match) {
+            readingUnits = true;
+            readingSCs = false; // Stop reading SCs if we hit a unit header
+            currentPowerForUnits = match[1];
+            console.log(`[Parser LIST ${gameName}] Started reading units for ${currentPowerForUnits}.`);
+            return; // Move to next line
+        }
+        if (readingUnits && currentPowerForUnits) {
+            match = line.match(unitLineRegex); // Use non-trimmed line for indentation check
+            if (match) {
+                const unitType = match[1].toUpperCase();
+                const location = match[2].toUpperCase(); // Includes coast if present
+                const unitStatus = match[3] ? match[3].trim() : null; // Status like (dislodged)
+                // Add to top-level list
+                gameState.units.push({ power: currentPowerForUnits, type: unitType, location: location, status: unitStatus });
+                // Also add to the specific player's list if they exist
+                const player = gameState.players.find(p => p.power === currentPowerForUnits);
+                if (player) {
+                    player.units.push({ type: unitType, location: location, status: unitStatus });
+                }
+                return;
+            } else if (trimmedLine) {
+                // If line is not empty and not a unit, stop reading units for this power
+                console.log(`[Parser LIST ${gameName}] Stopped reading units for ${currentPowerForUnits} on line: "${line}"`);
+                readingUnits = false;
+                currentPowerForUnits = null;
+            }
+        }
+
+        // 9. Parse Supply Centers Section
+        match = trimmedLine.match(scHeaderRegex);
+        if (match) {
+            readingSCs = true;
+            readingUnits = false; // Stop reading units if we hit an SC header
+            currentPowerForSCs = match[1];
+            console.log(`[Parser LIST ${gameName}] Started reading SCs for ${currentPowerForSCs}.`);
+            return; // Move to next line
+        }
+        if (readingSCs && currentPowerForSCs) {
+            match = line.match(scLineRegex); // Use non-trimmed line for indentation check
+            if (match) {
+                const location = match[1].toUpperCase();
+                // Add to top-level list
+                gameState.supplyCenters.push({ owner: currentPowerForSCs, location: location });
+                // Also add to the specific player's list if they exist
+                const player = gameState.players.find(p => p.power === currentPowerForSCs);
+                if (player) {
+                    player.supplyCenters.push(location);
+                }
+                return;
+            } else if (trimmedLine) {
+                // If line is not empty and not an SC, stop reading SCs for this power
+                console.log(`[Parser LIST ${gameName}] Stopped reading SCs for ${currentPowerForSCs} on line: "${line}"`);
+                readingSCs = false;
+                currentPowerForSCs = null;
+            }
+        }
+
+
     }); // End lines.forEach
 
     // --- Final Status Check & Defaults ---
@@ -703,7 +805,7 @@ const parseListOutput = (gameName, output) => {
     if (gameState.settings.partialPress === undefined) gameState.settings.partialPress = true;
     if (gameState.settings.observerPress === undefined) gameState.settings.observerPress = 'any';
 
-    console.log(`[Parser LIST ${gameName}] Final Parsed State: Status=${gameState.status}, Phase=${gameState.currentPhase}, Variant=${gameState.variant}, Masters=${JSON.stringify(gameState.masters)}, Players=${gameState.players.length}, Settings=`, gameState.settings);
+    console.log(`[Parser LIST ${gameName}] Final Parsed State: Status=${gameState.status}, Phase=${gameState.currentPhase}, Variant=${gameState.variant}, Masters=${JSON.stringify(gameState.masters)}, Players=${gameState.players.length}, Units=${gameState.units.length}, SCs=${gameState.supplyCenters.length}, Settings=`, gameState.settings);
     return gameState;
 };
 
@@ -736,7 +838,6 @@ const parseWhogameOutput = (gameName, output) => {
 };
 
 
-// NEW FUNCTION START
 // Helper to convert phase string like "Spring 1901 Movement" to "S1901M"
 function getPhaseCode(phaseStr, year) {
     if (!phaseStr || !year) return 'Unknown';
@@ -784,21 +885,21 @@ const parseHistoryOutput = (gameName, output) => {
     const deadlineRegex = /^Deadline for (.*), (\d{4}) is (.*)$/; // 1: phaseStr, 2: year, 3: deadlineStr
     const supplyCenterRegex = /^([A-Z][a-z]+): +(\d+) supply centers/; // 1: power, 2: count
     const eliminationRegex = /^([A-Z][a-z]+) has been eliminated\.$/; // 1: power
-    const unitRegex = /^([A-Z][a-z]+): +(A|F) +([A-Z][a-z ]+)$/; // 1: power, 2: unitType, 3: location
+    const unitRegex = /^([A-Z][a-z]+): +(A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?)$/; // 1: power, 2: unitType, 3: location (abbr/coast)
     const orderResultRegex = /^\*+(.*)\*+$/; // 1: result description
     const pressHeaderRegex = /^Press from (.*) to (.*):$/; // 1: fromPower, 2: toPowerOrAll
 
     // Order Regex (simplified examples, more robust parsing might be needed)
-    const holdOrderRegex = /^([A-Z][a-z]+): +(A|F) +([A-Z][a-z ]+) H(?:old)?$/i; // 1: power, 2: unitType, 3: unitLocation
-    const moveOrderRegex = /^([A-Z][a-z]+): +(A|F) +([A-Z][a-z ]+) - ([A-Z][a-z ]+)$/i; // 1: power, 2: unitType, 3: unitLocation, 4: destination
-    const supportHoldOrderRegex = /^([A-Z][a-z]+): +(A|F) +([A-Z][a-z ]+) S +(?:A|F) +([A-Z][a-z ]+)$/i; // 1: power, 2: unitType, 3: unitLocation, 4: supportedUnitLocation
-    const supportMoveOrderRegex = /^([A-Z][a-z]+): +(A|F) +([A-Z][a-z ]+) S +(?:A|F) +([A-Z][a-z ]+) - ([A-Z][a-z ]+)$/i; // 1: power, 2: unitType, 3: unitLocation, 4: supportedUnitLocation, 5: supportedUnitDestination
-    const convoyOrderRegex = /^([A-Z][a-z]+): +(F) +([A-Z][a-z ]+) C +(A) +([A-Z][a-z ]+) - ([A-Z][a-z ]+)$/i; // 1: power, 2: unitType(F), 3: unitLocation, 4: convoyedUnitType(A), 5: convoyedUnitLocation, 6: convoyedUnitDestination
-    const retreatOrderRegex = /^([A-Z][a-z]+): +(A|F) +([A-Z][a-z ]+) R +([A-Z][a-z ]+)$/i; // 1: power, 2: unitType, 3: unitLocation, 4: destination
-    const disbandOrderRegex = /^([A-Z][a-z]+): +(A|F) +([A-Z][a-z ]+) D(?:isband)?$/i; // 1: power, 2: unitType, 3: unitLocation
-    const buildOrderRegex = /^([A-Z][a-z]+): +Build (A|F) +([A-Z][a-z ]+)$/i; // 1: power, 2: unitType, 3: location
+    const holdOrderRegex = /^([A-Z][a-z]+): +(A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?) H(?:old)?$/i; // 1: power, 2: unitType, 3: unitLocation
+    const moveOrderRegex = /^([A-Z][a-z]+): +(A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?) - ([A-Z]{3}(?:\/[NESW]C)?)$/i; // 1: power, 2: unitType, 3: unitLocation, 4: destination
+    const supportHoldOrderRegex = /^([A-Z][a-z]+): +(A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?) S +(?:A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?)$/i; // 1: power, 2: unitType, 3: unitLocation, 4: supportedUnitLocation
+    const supportMoveOrderRegex = /^([A-Z][a-z]+): +(A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?) S +(?:A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?) - ([A-Z]{3}(?:\/[NESW]C)?)$/i; // 1: power, 2: unitType, 3: unitLocation, 4: supportedUnitLocation, 5: supportedUnitDestination
+    const convoyOrderRegex = /^([A-Z][a-z]+): +(F) +([A-Z]{3}(?:\/[NESW]C)?) C +(A) +([A-Z]{3}(?:\/[NESW]C)?) - ([A-Z]{3}(?:\/[NESW]C)?)$/i; // 1: power, 2: unitType(F), 3: unitLocation, 4: convoyedUnitType(A), 5: convoyedUnitLocation, 6: convoyedUnitDestination
+    const retreatOrderRegex = /^([A-Z][a-z]+): +(A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?) R +([A-Z]{3}(?:\/[NESW]C)?)$/i; // 1: power, 2: unitType, 3: unitLocation, 4: destination
+    const disbandOrderRegex = /^([A-Z][a-z]+): +(A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?) D(?:isband)?$/i; // 1: power, 2: unitType, 3: unitLocation
+    const buildOrderRegex = /^([A-Z][a-z]+): +Build (A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?)$/i; // 1: power, 2: unitType, 3: location
     const waiveBuildOrderRegex = /^([A-Z][a-z]+): +Waive Build$/i; // 1: power
-    const removeOrderRegex = /^([A-Z][a-z]+): +Remove (A|F) +([A-Z][a-z ]+)$/i; // 1: power, 2: unitType, 3: location
+    const removeOrderRegex = /^([A-Z][a-z]+): +Remove (A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?)$/i; // 1: power, 2: unitType, 3: location
     const waiveRemovalOrderRegex = /^([A-Z][a-z]+): +Waive Removal$/i; // 1: power
 
     // Function to initialize a phase data object
@@ -896,7 +997,7 @@ const parseHistoryOutput = (gameName, output) => {
         if (match) {
             const power = match[1];
             const unitType = match[2].toUpperCase();
-            const location = match[3].trim();
+            const location = match[3].trim().toUpperCase(); // Standardize case
             if (!currentPhaseData.units[power]) {
                 currentPhaseData.units[power] = [];
             }
@@ -1005,11 +1106,11 @@ const parseMapInfoFile = async (variantName) => {
 
     console.log(`[Map Parse] Parsing info file for variant: ${variantName}`);
     // Use the FLOCSCRIPTS_PATH environment variable
-    const filePath = path.join(flocscriptsPath, 'mapit', 'maps', `${variantName}.info`);
+    const filePath = path.join(mapBaseDir, 'maps', `${variantName}.info`); // Use mapBaseDir
     let fileContent;
 
     try {
-        fileContent = await fs.promises.readFile(filePath, 'utf-8');
+        fileContent = await fsPromises.readFile(filePath, 'utf-8');
     } catch (error) {
         console.error(`[Map Parse Error] Could not read file ${filePath}:`, error);
         // Decide how to handle: throw error, return null, return default structure?
@@ -1086,7 +1187,7 @@ const parseMapInfoFile = async (variantName) => {
     console.log(`[Map Parse Success] Parsed and cached info for variant: ${variantName}`);
     return mapData;
 };
-// NEW FUNCTION END
+
 
 // --- Command Recommendation Logic ---
 const getRecommendedCommands = (gameState, userEmail) => {
@@ -1429,162 +1530,165 @@ const executeDipCommand = (email, command, targetGame = null, targetPassword = n
 
 
 // --- Map Data Helper ---
-
 /**
- * Fetches and combines map data (geometry, metadata, game state) for a specific game phase.
+ * Generates a map PNG for a specific game phase by creating PostScript and converting it using Ghostscript.
  * @param {string} gameName - The name of the game.
  * @param {string} [phase] - The specific phase (e.g., 'S1901M'). If omitted, fetches the latest phase.
- * @returns {Promise<object|null>} - Combined map data or null if essential data is missing.
+ * @returns {Promise<object|null>} - An object with { success: true, mapUrl: '/path/to/map.png' } or null on failure.
  */
 async function getMapData(gameName, phase) {
-    console.log(`[getMapData] Entering with gameName: ${gameName}, phase: ${phase}`); // Roo Debug Log
-    console.log(`[Map Data] Fetching map data for game: ${gameName}, phase: ${phase || 'latest'}`);
+    console.log(`[getMapData PNG] Entering with gameName: ${gameName}, phase: ${phase}`);
     try {
-        // 1. Get basic game info (like variant) and potentially latest phase if needed
+        // 1. Get basic game info (variant)
         const basicGameState = await getGameState(gameName);
         if (!basicGameState) {
-            console.error(`[Map Data Error] Game not found: ${gameName}`);
-            console.error(`[getMapData Error] Game not found: ${gameName}`); // Roo Debug Log
-            return null;
+            console.error(`[getMapData PNG Error] Game not found in DB: ${gameName}`);
+            return null; // Game doesn't exist
         }
-        const variantName = basicGameState.variant || 'Standard'; // Default to Standard if not set
-        const variant = variantName; // Use variantName as variant for clarity below
-        console.log(`[getMapData] Fetched gameState:`, basicGameState ? basicGameState.name : 'Not Found'); // Roo Debug Log
-        console.log(`[getMapData] Determined variant: ${variant}`); // Roo Debug Log
+        const variantName = basicGameState.variant || 'Standard';
+        const cleanVariant = variantName.endsWith('.') ? variantName.slice(0, -1) : variantName;
+        console.log(`[getMapData PNG] Determined variant: ${cleanVariant}`);
 
-        // 2. Fetch full game history
+        // 2. Fetch current game state using LIST command
         // Use judgeEmail or a system identity for fetching public data
-        // Fetch current game state using LIST command
         const listResult = await executeDipCommand(judgeEmail, `LIST ${gameName}`, gameName);
         if (!listResult.success) {
-            console.error(`[Map Data Error] Failed to fetch LIST data for ${gameName}:`, listResult.output);
-            return null;
+            console.error(`[getMapData PNG Error] Failed to fetch LIST data for ${gameName}:`, listResult.output);
+            // Consider returning an error object instead of null?
+            return null; // Cannot proceed without LIST data
         }
         const listOutput = listResult.stdout;
-        console.log(`[Map Data] Raw LIST output for ${gameName}:\n${listOutput}`); // Roo Debug Log for LIST output
 
-        // 3. Parse history
-        // TODO: Implement parseListOutput(gameName, listOutput)
-        // It should return an object like: { phase: 'S1454M', units: [{power: 'FRA', type: 'A', location: 'PAR'}, ...], supplyCenters: [{province: 'PAR', owner: 'FRA'}, ...] }
-        const currentGameState = { units: [], supplyCenters: [], phase: basicGameState.phase }; // Placeholder
-        console.log(`[getMapData] Placeholder for parsed LIST data.`); // Roo Debug Log
-        // const currentGameState = parseListOutput(gameName, listOutput);
-        // if (!currentGameState) {
-        //     console.error(`[Map Data Error] Failed to parse LIST output for ${gameName}`);
-        //     return null;
-        // }
+        // 3. Parse LIST output to get current game state details
+        const currentGameState = parseListOutput(gameName, listOutput);
+        if (!currentGameState) {
+            console.error(`[getMapData PNG Error] Failed to parse LIST output for ${gameName}`);
+            return null;
+        }
+        console.log(`[getMapData PNG] Parsed LIST. Status: ${currentGameState.status}, Phase: ${currentGameState.currentPhase}, Units: ${currentGameState.units?.length}, SCs: ${currentGameState.supplyCenters?.length}`);
 
         // 4. Determine the target phase code
-        // Use phase from basicGameState or the parsed LIST output (when implemented)
-        let targetPhase = currentGameState.phase || basicGameState.phase;
-        console.log(`[getMapData] Target phase determined as: ${targetPhase} (from LIST/basic state)`); // Roo Debug Log
-
-        // Validate if requested phase matches current phase from LIST?
-        if (phase && phase !== targetPhase) {
-             console.warn(`[Map Data Warning] Requested phase ${phase} does not match current game phase ${targetPhase} from LIST output. Returning current state.`);
-             // Decide if we should error out or return current state. Let's return current for now.
-             // Update targetPhase to reflect the actual current phase being returned
-             targetPhase = currentGameState.phase || basicGameState.phase;
-        }
-
-        // Data now comes from currentGameState (parsed from LIST), not historyData.phases[targetPhase]
-        const phaseData = currentGameState; // Use currentGameState as phaseData
-        if (!phaseData) {
-             console.error(`[Map Data Error] Could not get current game state from LIST output for ${gameName}`);
-             return null;
-        }
+        let targetPhase = phase || currentGameState.currentPhase || 'UnknownPhase';
+        if (targetPhase === 'Unknown') targetPhase = 'UnknownPhase'; // Avoid 'Unknown' as filename part
+        console.log(`[getMapData PNG] Target phase for PNG: ${targetPhase}`);
 
         // 5. Get province metadata from .info file (using cache)
-        // Trim trailing dot from variant name if present before passing to parser
-        const cleanVariant = variant.endsWith('.') ? variant.slice(0, -1) : variant;
-        console.log(`[getMapData] Cleaned variant name for map info: ${cleanVariant}`); // Roo Debug Log
-        const provinceMetadata = await parseMapInfoFile(cleanVariant);
-        const mapInfo = provinceMetadata; // Use provinceMetadata as mapInfo
-        console.log(`[getMapData] Parsed map info file result:`, mapInfo ? 'Success' : 'Failure/Cached'); // Roo Debug Log
-        if (!mapInfo) {
-            console.error(`[Map Data Error] Failed to parse map info file for variant: ${variant}`);
-            console.error(`[getMapData Error] Failed to parse map info file for variant: ${variant}`); // Roo Debug Log
-            // Proceed without province metadata? Or fail? Let's proceed for now.
+        const mapInfo = await parseMapInfoFile(cleanVariant);
+        if (!mapInfo || !mapInfo.provinces || Object.keys(mapInfo.provinces).length === 0) {
+            console.error(`[getMapData PNG Error] Failed to parse or get cached map info file for variant: ${cleanVariant}`);
+            return null; // Cannot proceed without province info
         }
+        const provinceLookup = mapInfo.provinces; // Abbr -> { name, x, y, unitX, unitY, ... }
 
-        // 6. Construct SVG path and read SVG file content
-        const svgPath = path.join(__dirname, 'scripts', 'mapit', 'maps', `${variant}.svg`);
-        console.log(`[getMapData] Constructed SVG path: ${svgPath}`); // Roo Debug Log
-        let svgContent = null;
+        // 6. Read Base PostScript Template
+        const cmapPath = path.join(mapBaseDir, 'maps', `${cleanVariant}.cmap.ps`);
+        const mapPath = path.join(mapBaseDir, 'maps', `${cleanVariant}.map.ps`);
+        let basePsContent = '';
+        let isColored = false;
         try {
-            console.log(`[getMapData] Attempting to read SVG file...`); // Roo Debug Log
-            svgContent = await fsPromises.readFile(svgPath, 'utf-8');
-            console.log(`[Map Data] Successfully read SVG file: ${svgPath}`);
-            console.log(`[getMapData] SVG file read successfully.`); // Roo Debug Log
+            basePsContent = await fsPromises.readFile(cmapPath, 'utf-8');
+            isColored = true;
+            console.log(`[getMapData PNG] Read colored map template: ${cmapPath}`);
         } catch (err) {
             if (err.code === 'ENOENT') {
-                console.warn(`[Map Data] SVG file not found, expected at: ${svgPath}. Proceeding without SVG content.`);
-                console.warn(`[getMapData Warn] SVG file not found at path: ${svgPath}`); // Roo Debug Log
+                try {
+                    basePsContent = await fsPromises.readFile(mapPath, 'utf-8');
+                    isColored = false;
+                    console.log(`[getMapData PNG] Read non-colored map template: ${mapPath}`);
+                } catch (err2) {
+                     console.error(`[getMapData PNG Error] Could not read map template (.cmap.ps or .map.ps) for variant ${cleanVariant}:`, err2);
+                     return null; // Cannot proceed without template
+                }
             } else {
-                console.error(`[Map Data Error] Error reading SVG file ${svgPath}:`, err);
+                 console.error(`[getMapData PNG Error] Error reading map template ${cmapPath}:`, err);
+                 return null;
             }
-            // Proceed without SVG content if not found or error reading
         }
 
-        // 7. Combine data
-        // 7. Combine data
-        // TODO: Adapt unit flattening based on the structure returned by parseListOutput
-        // Assuming parseListOutput returns units like: [{power: 'FRA', type: 'A', location: 'PAR'}, ...]
-        const flatUnits = [];
-        if (phaseData.units && mapInfo && mapInfo.provinces) {
-             phaseData.units.forEach(unit => {
-                 // LIST output likely already uses abbreviations. If not, lookup needed.
-                 // Assuming unit.location is already an abbreviation from LIST parser
-                 const unitLocationAbbr = unit.location; // Placeholder assumption
-                 if (mapInfo.provinces[unitLocationAbbr]) {
-                     flatUnits.push({ ...unit }); // Assuming unit structure is {power, type, location (abbr)}
-                 } else {
-                      console.warn(`[Map Data] Unit location abbreviation '${unitLocationAbbr}' from LIST output not found in map info.`);
-                 }
-             });
-        } else {
-             console.log("[Map Data] No units found in placeholder LIST data or map info missing.");
+        // 7. Generate Dynamic PostScript Commands
+        let dynamicPsCommands = [];
+        const psDrawFunctions = { "A": "DrawArmy", "F": "DrawFleet", "W": "DrawWing", "R": "DrawArtillery" }; // Add others if needed
+
+        // -- Start Page & Title --
+        const title = `${gameName}, ${targetPhase}`; // Simple title for now
+        dynamicPsCommands.push(`(${title}) DrawTitle`);
+
+        // -- Draw Nicknames (Optional but good for consistency) --
+        // This part is complex in Python, let's simplify or omit for now if DrawNickNames isn't essential
+        // dynamicPsCommands.push(`DrawNickNames`);
+
+        // -- Draw Units --
+        // Use the top-level units array parsed from LIST output
+        const allUnits = currentGameState.units || [];
+        console.log(`[getMapData PNG] Found ${allUnits.length} units to draw.`);
+
+        allUnits.forEach(unit => {
+             // Location might include coast like 'STP/SC', need to extract base abbr 'STP'
+             const locationParts = unit.location.split('/');
+             const provinceAbbr = locationParts[0];
+             const provinceData = provinceLookup[provinceAbbr];
+             if (provinceData) {
+                 const drawFunc = psDrawFunctions[unit.type] || 'DrawArmy'; // Default to Army
+                 // Use unit coordinates if available, otherwise province label coords
+                 const x = provinceData.unitX ?? provinceData.labelX;
+                 const y = provinceData.unitY ?? provinceData.labelY;
+                 // Add the power prefix for colored units
+                 dynamicPsCommands.push(`${unit.power}`); // Set current power context
+                 dynamicPsCommands.push(`${x} ${y} ${drawFunc}`);
+                 console.log(`[getMapData PNG] PS: ${unit.power} ${x} ${y} ${drawFunc}`);
+             } else {
+                 console.warn(`[getMapData PNG] Province abbreviation '${provinceAbbr}' for unit not found in map info.`);
+             }
+        });
+
+
+        // -- Draw Supply Centers (Coloring) --
+        // Use the top-level supplyCenters array parsed from LIST output
+        const supplyCenters = currentGameState.supplyCenters || [];
+        console.log(`[getMapData PNG] Found ${supplyCenters.length} owned SCs to color.`);
+
+        if (isColored) {
+            supplyCenters.forEach(sc => {
+                const provinceAbbr = sc.location; // Location is the abbreviation
+                const owner = sc.owner;
+                if (provinceLookup[provinceAbbr] && owner && owner !== 'UNOWNED') {
+                    // PS command: ProvinceNick supply \n Power CENTER
+                    dynamicPsCommands.push(`${provinceAbbr} supply`);
+                    dynamicPsCommands.push(`${owner}CENTER`); // Assumes PS functions like FranceCENTER exist
+                    console.log(`[getMapData PNG] PS: ${provinceAbbr} supply ${owner}CENTER`);
+                } else if (!provinceLookup[provinceAbbr]) {
+                     console.warn(`[getMapData PNG] Province abbreviation '${provinceAbbr}' for SC not found in map info.`);
+                }
+            });
+            // Add final commands for SC drawing
+            dynamicPsCommands.push("closepath newpath");
+            dynamicPsCommands.push("Black"); // Reset color
         }
 
-        // TODO: Adapt SC formatting based on the structure returned by parseListOutput
-        // Assuming parseListOutput returns SCs like: [{province: 'PAR', owner: 'FRA'}, ...]
-        const formattedSCs = [];
-         if (phaseData.supplyCenters && mapInfo && mapInfo.provinces) {
-             phaseData.supplyCenters.forEach(sc => {
-                 // Assuming sc.province is already an abbreviation from LIST parser
-                 const scAbbr = sc.province; // Placeholder assumption
-                 if (mapInfo.provinces[scAbbr]) {
-                     formattedSCs.push({ province: scAbbr, owner: sc.owner });
-                 } else {
-                     console.warn(`[Map Data] Supply center abbreviation '${scAbbr}' from LIST output not found in map info.`);
-                 }
-             });
-         } else {
-              console.log("[Map Data] No supply centers found in placeholder LIST data or map info missing.");
-         }
+        // -- End Page --
+        dynamicPsCommands.push("ShowPage");
 
+        // 8. Combine Base PS + Dynamic PS
+        const combinedPsContent = basePsContent + "\n" + dynamicPsCommands.join("\n") + "\n";
 
-        const mapData = {
-            success: true, // Indicate success
-            gameName: gameName,
-            phase: targetPhase,
-            variant: variant,
-            units: flatUnits, // Use flattened list with abbreviations
-            supplyCenters: formattedSCs, // Use formatted list (currently likely empty)
-            provinces: mapInfo ? mapInfo.provinces : {}, // Province metadata keyed by abbreviation
-            svgContent: svgContent,
-            // Include deadline if available in phaseData?
-            deadline: basicGameState.deadline || null // Get deadline from basic state (or LIST parser result when implemented)
-        };
+        // 9. Define Output Path
+        // Sanitize phase name for filename
+        const safePhase = targetPhase.replace(/[^a-zA-Z0-9_-]/g, '_');
+        const outputPngFilename = `${gameName}_${safePhase}.png`;
+        const outputPngPath = path.join(staticMapDir, outputPngFilename);
+        console.log(`[getMapData PNG] Output path set to: ${outputPngPath}`);
 
-        console.log(`[Map Data] Successfully assembled map data for ${gameName} / ${targetPhase}`);
-        console.log(`[getMapData] Returning success with SVG content.`); // Roo Debug Log
-        return mapData;
+        // 10. Generate PNG using Ghostscript
+        await generateMapPng(combinedPsContent, outputPngPath);
+
+        // 11. Return URL
+        const mapUrl = `/generated_maps/${outputPngFilename}`;
+        console.log(`[getMapData PNG] Successfully generated map. URL: ${mapUrl}`);
+        return { success: true, mapUrl: mapUrl };
 
     } catch (error) {
-        console.error(`[Map Data Fatal Error] Unexpected error fetching map data for ${gameName} / ${phase || 'latest'}:`, error);
-        console.error(`[getMapData Error] Unexpected error in getMapData for ${gameName}, phase ${phase}:`, error); // Roo Debug Log
-        return null;
+        console.error(`[getMapData PNG Fatal Error] Unexpected error for ${gameName} / ${phase || 'latest'}:`, error);
+        return null; // Indicate failure
     }
 }
 
@@ -1661,6 +1765,91 @@ function requireAuth(req, res, next) {
 }
 
 // --- Routes ---
+
+// Ensure the static map directory exists
+try {
+    if (!fs.existsSync(staticMapDir)) {
+        fs.mkdirSync(staticMapDir, { recursive: true });
+        console.log(`Created static map directory: ${staticMapDir}`);
+    }
+} catch (err) {
+    console.error(`Error creating static map directory ${staticMapDir}:`, err);
+    // Decide if this is fatal; for now, log and continue
+}
+
+// Serve generated map images (place before other routes, after session/auth middleware perhaps?)
+app.use('/generated_maps', express.static(staticMapDir));
+console.log(`Serving static maps from ${staticMapDir} at /generated_maps`);
+
+// --- PNG Generation Function (using Ghostscript) ---
+async function generateMapPng(postscriptContent, outputPngPath) {
+    return new Promise((resolve, reject) => {
+        const gsPath = process.env.GHOSTSCRIPT_PATH || 'gs'; // Allow overriding GS path
+        const gsArgs = [
+            '-dNOPAUSE',
+            '-dBATCH',
+            '-sDEVICE=png16m',      // Output device: 24-bit PNG
+            '-r150',               // Resolution DPI
+            '-dTextAlphaBits=4',   // Text anti-aliasing
+            '-dGraphicsAlphaBits=4',// Graphics anti-aliasing
+            `-sOutputFile=${outputPngPath}`, // Output file path
+            '-'                    // Read PS from stdin
+        ];
+
+        console.log(`[generateMapPng] Running ${gsPath} with args: ${gsArgs.slice(0, -1).join(' ')} -sOutputFile=${outputPngPath} -`);
+        const gsProcess = spawn(gsPath, gsArgs);
+
+        let stdoutData = '';
+        let stderrData = '';
+        let processError = null;
+
+        gsProcess.stdout.on('data', (data) => { stdoutData += data.toString(); });
+        gsProcess.stderr.on('data', (data) => { stderrData += data.toString(); });
+        gsProcess.on('error', (err) => {
+            console.error(`[generateMapPng] Spawn Error: ${err.message}`);
+            // Provide specific error if gs command not found
+            if (err.code === 'ENOENT') {
+                 processError = new Error(`Ghostscript command ('${gsPath}') not found. Ensure Ghostscript is installed and in the system PATH, or set GHOSTSCRIPT_PATH in your .env file.`);
+            } else {
+                 processError = err;
+            }
+            if (!gsProcess.killed) gsProcess.kill();
+        });
+
+        gsProcess.on('close', (code, signal) => {
+            console.log(`[generateMapPng] Ghostscript process closed with code ${code}, signal ${signal}`);
+            if (processError) {
+                return reject(new Error(`Ghostscript spawn failed: ${processError.message}\nStderr: ${stderrData}`));
+            }
+            if (code !== 0) {
+                 console.error(`[generateMapPng] Ghostscript failed: Exit code ${code}, Signal ${signal}`);
+                 console.error(`[generateMapPng] Stderr:\n${stderrData}`);
+                 console.error(`[generateMapPng] Stdout:\n${stdoutData}`);
+                return reject(new Error(`Ghostscript execution failed with code ${code}.\nStderr: ${stderrData}`));
+            }
+            // Check if the output file actually exists
+            fs.access(outputPngPath, fs.constants.F_OK, (err) => {
+                if (err) {
+                     console.error(`[generateMapPng] Output file ${outputPngPath} not found after gs success.`);
+                     return reject(new Error(`Ghostscript finished successfully but output file ${outputPngPath} was not created.`));
+                }
+                console.log(`[generateMapPng] Successfully generated ${outputPngPath}`);
+                resolve();
+            });
+        });
+
+        // Write the PostScript content to stdin
+        try {
+            gsProcess.stdin.write(postscriptContent);
+            gsProcess.stdin.end();
+        } catch (stdinError) {
+            console.error(`[generateMapPng] Error writing to gs process stdin: ${stdinError.message}`);
+            if (!gsProcess.killed) gsProcess.kill();
+            reject(new Error(`Error communicating with Ghostscript process: ${stdinError.message}`));
+        }
+    });
+}
+
 
 app.get('/', (req, res) => {
     if (req.session.email) {
@@ -2425,38 +2614,39 @@ app.delete('/api/games/:gameName', requireAuth, async (req, res) => {
 // --- Map Data API Endpoint ---
 
 // GET /api/map/:gameName/:phase?
-// Provides combined map data (geometry, metadata, game state) for rendering.
+// Provides the URL to the generated map PNG.
 console.log(`[Route Definition Check] Defining GET /api/map/:gameName/:phase?`); // Roo Debug Log
 app.get('/api/map/:gameName/:phase?', requireAuth, async (req, res) => { // Roo: Added requireAuth
     const { gameName, phase } = req.params;
-    console.log(`[Map API Request] Handler Reached. gameName: ${gameName}, phase: ${phase}, user: ${req.userId}`); // Roo Debug Log
+    console.log(`[Map API Request PNG] Handler Reached. gameName: ${gameName}, phase: ${phase}, user: ${req.userId}`); // Roo Debug Log
 
     if (!gameName) {
         return res.status(400).json({ success: false, message: 'Game name is required.' });
     }
 
     try {
-        const mapData = await getMapData(gameName, phase);
+        // Call the updated getMapData which now returns { success: true, mapUrl: '...' } or null
+        const mapResult = await getMapData(gameName, phase);
 
-        if (!mapData) {
-            // Distinguish between 'game not found' and 'error fetching data'?
-            // For now, use 404 if the core data couldn't be assembled.
-            // Check if game exists first?
+        if (mapResult && mapResult.success) {
+            // Send the URL to the generated PNG
+            res.json({ success: true, mapUrl: mapResult.mapUrl });
+        } else {
+            // getMapData failed or returned null
+            console.error(`[Map API Request PNG Error] getMapData failed for ${gameName} / ${phase || 'latest'}`);
+            // Check if game exists to return 404 vs 500
             const gameExists = await getGameState(gameName);
             if (!gameExists) {
                  return res.status(404).json({ success: false, message: `Game '${gameName}' not found.` });
             } else {
-                 // Game exists, but data couldn't be fully assembled (e.g., history error, phase error)
-                 return res.status(500).json({ success: false, message: `Could not retrieve complete map data for game '${gameName}' phase '${phase || 'latest'}'. Check server logs.` });
+                 // Game exists, but map generation failed
+                 return res.status(500).json({ success: false, message: `Could not generate map image for game '${gameName}' phase '${phase || 'latest'}'. Check server logs.` });
             }
         }
 
-        // Send success: true along with the data
-        res.json({ success: true, ...mapData });
-
     } catch (error) {
-        console.error(`[API Error] Failed to get map data for ${gameName} / ${phase || 'latest'}:`, error);
-        res.status(500).json({ success: false, message: 'An internal server error occurred while fetching map data.' });
+        console.error(`[Map API Request PNG Fatal Error] Failed to get map URL for ${gameName} / ${phase || 'latest'}:`, error);
+        res.status(500).json({ success: false, message: 'An internal server error occurred while generating the map image.' });
     }
 });
 
@@ -2555,7 +2745,7 @@ app.get('/api/stats/game-status', async (req, res) => {
 });
 
 
-// NEW ENDPOINT START
+// GET /api/game/:gameName/history - Get parsed history for a game
 app.get('/api/game/:gameName/history', requireEmail, async (req, res) => {
     const gameName = req.params.gameName;
     const userEmail = req.session.email; // Assuming requireEmail middleware sets this
@@ -2590,18 +2780,18 @@ app.get('/api/game/:gameName/history', requireEmail, async (req, res) => {
         res.status(statusCode).json({ success: false, message: errorMessage, details: error.output || null });
     }
 });
-// NEW ENDPOINT END
 
 
 // --- Start Server ---
-// ... (Keep server start and graceful shutdown as is) ...
-app.use(express.static(path.join(__dirname, 'public'))); // Roo: Moved static middleware here
+app.use(express.static(path.join(__dirname, 'public'))); // Serve static files from public
 app.listen(port, () => {
     console.log(`Dip Web App listening at http://localhost:${port}`);
     console.log(`Using dip binary: ${dipBinaryPath}`);
     if (dipBinaryArgs.length > 0) console.log(`Using dip binary args: ${dipBinaryArgs.join(' ')}`);
     console.log(`Using dip binary root path: ${dipBinaryRootPath}`);
     console.log(`Expecting dip.master at: ${dipMasterPath}`);
+    console.log(`Expecting map files in: ${mapBaseDir}/maps`); // Log map path
+    console.log(`Storing generated maps in: ${staticMapDir}`); // Log output path
 
     const resolvedDipCommand = path.resolve(dipBinaryRootPath, path.basename(dipBinaryPath));
     if (!fs.existsSync(resolvedDipCommand)) {
