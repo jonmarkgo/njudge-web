@@ -540,10 +540,7 @@ const parseListOutput = (gameName, output) => {
         supplyCenters: [] // Add top-level supply centers array
     };
     const lines = output.split('\n');
-    let readingPlayers = false; // Flag to indicate if we are in the player/master list section
-    let readingSettings = false; // Flag for settings section
-    let readingUnits = false; // Flag for unit section
-    let readingSCs = false; // Flag for supply center section
+    let currentSection = 'header'; // header, players, settings, units, scs, unknown
     let currentPowerForUnits = null; // Track power for unit lines
     let currentPowerForSCs = null; // Track power for SC lines
 
@@ -573,142 +570,116 @@ const parseListOutput = (gameName, output) => {
     const scHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice)\s+\(\d+\):\s*$/i; // Power (Count):
     const scLineRegex = /^\s+([A-Z]{3})\s*/i; // Indented: Abbr
 
+    // --- Section Headers ---
+    const playerListHeader = "The following players are signed up for game";
+
     // --- Parsing Loop ---
     lines.forEach(line => {
         const trimmedLine = line.trim();
         let match;
 
-        // Stop reading units/SCs if we hit a new section header or known boundary
-        if (readingUnits || readingSCs) {
-            if (settingsHeaderRegex.test(trimmedLine) || trimmedLine.startsWith("The following players are signed up for game") || activeStatusLineRegex.test(line) || explicitDeadlineRegex.test(line)) {
-                if (readingUnits) console.log(`[Parser LIST ${gameName}] Stopped reading units on line: "${line}"`);
-                if (readingSCs) console.log(`[Parser LIST ${gameName}] Stopped reading SCs on line: "${line}"`);
-                readingUnits = false;
-                readingSCs = false;
-                currentPowerForUnits = null;
-                currentPowerForSCs = null;
-            }
+        // --- Section Detection ---
+        if (trimmedLine.startsWith(playerListHeader)) {
+            currentSection = 'players';
+            console.log(`[Parser LIST ${gameName}] Switched section to: ${currentSection}`);
+            return;
         }
-
-        // 1. Check for Explicit Deadline Line
-        match = line.match(explicitDeadlineRegex);
+        if (settingsHeaderRegex.test(trimmedLine)) {
+            currentSection = 'settings';
+            console.log(`[Parser LIST ${gameName}] Switched section to: ${currentSection}`);
+            return;
+        }
+        match = trimmedLine.match(unitHeaderRegex);
         if (match) {
-            gameState.currentPhase = match[1].trim().toUpperCase(); // Standardize case
-            gameState.nextDeadline = match[2].trim();
-            if (gameState.status === 'Unknown' || gameState.status === 'Forming') {
-                 gameState.status = 'Active';
-                 console.log(`[Parser LIST ${gameName}] Set status to Active based on explicit deadline line.`);
-            }
-            // Continue parsing other lines
+            currentSection = 'units';
+            currentPowerForUnits = match[1];
+            console.log(`[Parser LIST ${gameName}] Switched section to: ${currentSection} for ${currentPowerForUnits}`);
+            return;
         }
-
-        // 2. Check for Active Status Line
-        match = line.match(activeStatusLineRegex);
+        match = trimmedLine.match(scHeaderRegex);
         if (match) {
-            const phaseTypeStr = match[1].toLowerCase();
-            const seasonStr = match[2].toLowerCase();
-            const year = match[3];
-            let seasonCode = 'S';
-            if (seasonStr === 'fall') seasonCode = 'F';
-            else if (seasonStr === 'winter') seasonCode = 'W';
-            else if (seasonStr === 'summer') seasonCode = 'U';
-            let phaseCode = 'M';
-            if (phaseTypeStr === 'retreat') phaseCode = 'R';
-            else if (phaseTypeStr === 'adjustment' || phaseTypeStr === 'builds') phaseCode = 'A'; // Changed B to A
-            gameState.currentPhase = `${seasonCode}${year}${phaseCode}`;
-            gameState.status = 'Active';
-            console.log(`[Parser LIST ${gameName}] Parsed active phase info: ${gameState.currentPhase} from line: ${trimmedLine}`);
-            // Continue parsing other lines
+            currentSection = 'scs';
+            currentPowerForSCs = match[1];
+            console.log(`[Parser LIST ${gameName}] Switched section to: ${currentSection} for ${currentPowerForSCs}`);
+            return;
+        }
+        // If we encounter a blank line, reset the sub-section context
+        if (!trimmedLine) {
+            if (currentSection === 'units') currentPowerForUnits = null;
+            if (currentSection === 'scs') currentPowerForSCs = null;
+            // Don't necessarily change the main section on a blank line
+            // currentSection = 'unknown';
         }
 
-        // 3. Check for Explicit Status Line
-        match = line.match(statusRegex);
-        if (match) {
-            const explicitStatus = match[1].trim();
-            if (explicitStatus !== 'Active' || gameState.status === 'Unknown') {
-                 gameState.status = explicitStatus;
-                 console.log(`[Parser LIST ${gameName}] Parsed explicit status: ${gameState.status}`);
-            }
-        }
-
-        // 4. Parse Variant Line
-        match = line.match(variantRegex);
-        if (match) {
-            gameState.variant = match[1].trim();
-            const optionsStr = match[2].replace(/,/g, ' ').trim();
-            gameState.options = optionsStr.split(/\s+/).filter(opt => opt && opt !== 'Variant:');
-            if (gameState.options.includes('Gunboat')) gameState.settings.gunboat = true;
-            if (gameState.options.includes('NMR')) gameState.settings.nmr = true; else gameState.settings.nmr = false;
-            if (gameState.options.includes('Chaos')) gameState.settings.chaos = true;
-            console.log(`[Parser LIST ${gameName}] Parsed variant: ${gameState.variant}, Options: ${gameState.options.join(', ')}`);
-        }
-
-        // 5. Check for Player/Master/Observer List Header
-        if (trimmedLine.startsWith("The following players are signed up for game")) {
-            readingPlayers = true;
-            readingSettings = false; // Ensure we stop reading settings if we hit this header again
-            readingUnits = false; readingSCs = false; // Stop reading units/SCs
-            console.log(`[Parser LIST ${gameName}] Started reading player/master/observer block.`);
-            return; // Move to the next line
-        }
-
-        // 6. Parse Player/Master/Observer Lines (only if flag is set)
-        if (readingPlayers) {
-            const playerMatch = line.match(playerLineRegex);
-            const masterMatch = line.match(masterLineRegex);
-            const observerMatch = line.match(observerLineRegex);
-
-            if (playerMatch) {
-                const power = playerMatch[1];
-                const email = playerMatch[2];
-                // Extract status if present (e.g., (CD), (Resigned))
-                let playerStatus = 'Playing';
-                const statusMatch = line.match(/\(([^)]+)\)/);
-                if (statusMatch) playerStatus = statusMatch[1];
-                gameState.players.push({ power: power, email: email || null, status: playerStatus, name: null, units: [], supplyCenters: [] });
-                console.log(`[Parser LIST ${gameName}] Parsed Player: ${power} - ${email} (${playerStatus})`);
-            } else if (masterMatch) {
-                const email = masterMatch[1];
-                if (email && !gameState.masters.includes(email)) {
-                    gameState.masters.push(email);
-                    console.log(`[Parser LIST ${gameName}] Parsed Master: ${email}`);
+        // --- Parse based on current section ---
+        switch (currentSection) {
+            case 'header':
+            case 'unknown': // Parse global info regardless of section if missed
+                match = line.match(explicitDeadlineRegex);
+                if (match) {
+                    gameState.currentPhase = match[1].trim().toUpperCase();
+                    gameState.nextDeadline = match[2].trim();
+                    if (gameState.status === 'Unknown' || gameState.status === 'Forming') gameState.status = 'Active';
+                    break; // Found deadline, stop checking other header items for this line
                 }
-            } else if (observerMatch) {
-                // Observer regex might need adjustment based on actual output format
-                const email = observerMatch[1].trim().match(emailRegex)?.[0];
-                if (email && !gameState.observers.includes(email)) {
-                    gameState.observers.push(email);
-                    console.log(`[Parser LIST ${gameName}] Parsed Observer: ${email}`);
+                match = line.match(activeStatusLineRegex);
+                if (match) {
+                    const phaseTypeStr = match[1].toLowerCase();
+                    const seasonStr = match[2].toLowerCase();
+                    const year = match[3];
+                    let seasonCode = 'S'; if (seasonStr === 'fall') seasonCode = 'F'; else if (seasonStr === 'winter') seasonCode = 'W'; else if (seasonStr === 'summer') seasonCode = 'U';
+                    let phaseCode = 'M'; if (phaseTypeStr === 'retreat') phaseCode = 'R'; else if (phaseTypeStr === 'adjustment' || phaseTypeStr === 'builds') phaseCode = 'A';
+                    gameState.currentPhase = `${seasonCode}${year}${phaseCode}`;
+                    gameState.status = 'Active';
+                    console.log(`[Parser LIST ${gameName}] Parsed active phase info: ${gameState.currentPhase}`);
+                    break;
                 }
-            } else if (!trimmedLine || settingsHeaderRegex.test(line) || activeStatusLineRegex.test(line) || explicitDeadlineRegex.test(line) || line.startsWith("Status of the") || unitHeaderRegex.test(trimmedLine) || scHeaderRegex.test(trimmedLine)) {
-                // Stop reading players if we hit settings, status, deadline, blank line, or the start of units/SCs
-                if (readingPlayers) console.log(`[Parser LIST ${gameName}] Stopped reading player/master/observer block on line: "${line}"`);
-                readingPlayers = false;
-            }
-            // If it's none of the above but readingPlayers is true, just ignore the line (could be spacing or sub-headers)
-        }
+                match = line.match(statusRegex);
+                if (match) {
+                    const explicitStatus = match[1].trim();
+                    if (explicitStatus !== 'Active' || gameState.status === 'Unknown') gameState.status = explicitStatus;
+                    console.log(`[Parser LIST ${gameName}] Parsed explicit status: ${gameState.status}`);
+                    break;
+                }
+                match = line.match(variantRegex);
+                if (match) {
+                    gameState.variant = match[1].trim();
+                    const optionsStr = match[2].replace(/,/g, ' ').trim();
+                    gameState.options = optionsStr.split(/\s+/).filter(opt => opt && opt !== 'Variant:');
+                    if (gameState.options.includes('Gunboat')) gameState.settings.gunboat = true;
+                    if (gameState.options.includes('NMR')) gameState.settings.nmr = true; else gameState.settings.nmr = false;
+                    if (gameState.options.includes('Chaos')) gameState.settings.chaos = true;
+                    console.log(`[Parser LIST ${gameName}] Parsed variant: ${gameState.variant}, Options: ${gameState.options.join(', ')}`);
+                    break;
+                }
+                break;
 
-        // 7. Parse Settings Lines
-        if (!readingSettings && settingsHeaderRegex.test(trimmedLine)) {
-            readingSettings = true;
-            readingPlayers = false; // Ensure player reading stops
-            readingUnits = false; readingSCs = false; // Stop reading units/SCs
-            console.log(`[Parser LIST ${gameName}] Started reading settings block.`);
-            return; // Move to the next line after the header
-        }
+            case 'players':
+                const playerMatch = line.match(playerLineRegex);
+                const masterMatch = line.match(masterLineRegex);
+                const observerMatch = line.match(observerLineRegex);
+                if (playerMatch) {
+                    const power = playerMatch[1];
+                    const email = playerMatch[2];
+                    let playerStatus = 'Playing';
+                    const statusMatch = line.match(/\(([^)]+)\)/);
+                    if (statusMatch) playerStatus = statusMatch[1];
+                    gameState.players.push({ power: power, email: email || null, status: playerStatus, name: null, units: [], supplyCenters: [] });
+                    console.log(`[Parser LIST ${gameName}] Parsed Player: ${power} - ${email} (${playerStatus})`);
+                } else if (masterMatch) {
+                    const email = masterMatch[1];
+                    if (email && !gameState.masters.includes(email)) gameState.masters.push(email);
+                } else if (observerMatch) {
+                    const email = observerMatch[1].trim().match(emailRegex)?.[0];
+                    if (email && !gameState.observers.includes(email)) gameState.observers.push(email);
+                }
+                break;
 
-        if (readingSettings) {
-            // Stop reading settings if we encounter a blank line or a line indicating the start of the player list or status or units/SCs
-            if (!trimmedLine || trimmedLine.startsWith("The following players are signed up for game") || activeStatusLineRegex.test(line) || unitHeaderRegex.test(trimmedLine) || scHeaderRegex.test(trimmedLine)) {
-                 if (readingSettings) console.log(`[Parser LIST ${gameName}] Stopped reading settings block on line: "${line}"`);
-                 readingSettings = false;
-            } else {
-                // Parse specific settings within the block
+            case 'settings':
                 match = line.match(pressSettingRegex); if (match) gameState.settings.press = match[1].trim();
                 match = line.match(diasSettingRegex); if (match) gameState.settings.dias = (match[1].toUpperCase() === 'DIAS');
                 match = line.match(nmrSettingRegex); if (match) gameState.settings.nmr = (match[1].toUpperCase() === 'NMR');
                 match = line.match(concessionSettingRegex); if (match) gameState.settings.concessions = (match[1].toLowerCase() === 'concessions');
-                // Use includes for flags that might be part of a larger line (like Flags: NoNMR, NoList...)
                 if (line.toLowerCase().includes('gunboat')) gameState.settings.gunboat = true;
                 if (line.toLowerCase().includes('chaos')) gameState.settings.chaos = true;
                 if (line.toLowerCase().includes('partial allowed')) gameState.settings.partialPress = true;
@@ -720,80 +691,49 @@ const parseListOutput = (gameName, output) => {
                 if (line.toLowerCase().includes('strict wait')) gameState.settings.strictWait = true;
                 if (line.toLowerCase().includes('strict grace')) gameState.settings.strictGrace = true;
                 // Add more settings parsing here
-            }
-        }
+                break;
 
-        // 8. Parse Units Section
-        match = trimmedLine.match(unitHeaderRegex);
-        if (match) {
-            readingUnits = true;
-            readingSCs = false; // Stop reading SCs if we hit a unit header
-            currentPowerForUnits = match[1];
-            console.log(`[Parser LIST ${gameName}] Started reading units for ${currentPowerForUnits}.`);
-            return; // Move to next line
-        }
-        if (readingUnits && currentPowerForUnits) {
-            match = line.match(unitLineRegex); // Use non-trimmed line for indentation check
-            if (match) {
-                const unitType = match[1].toUpperCase();
-                const location = match[2].toUpperCase(); // Includes coast if present
-                const unitStatus = match[3] ? match[3].trim() : null; // Status like (dislodged)
-                // Add to top-level list
-                gameState.units.push({ power: currentPowerForUnits, type: unitType, location: location, status: unitStatus });
-                // Also add to the specific player's list if they exist
-                const player = gameState.players.find(p => p.power === currentPowerForUnits);
-                if (player) {
-                    player.units.push({ type: unitType, location: location, status: unitStatus });
+            case 'units':
+                if (!currentPowerForUnits) break; // Should have power context
+                match = line.match(unitLineRegex); // Use non-trimmed line for indentation check
+                if (match) {
+                    const unitType = match[1].toUpperCase();
+                    const location = match[2].toUpperCase(); // Includes coast if present
+                    const unitStatus = match[3] ? match[3].trim() : null; // Status like (dislodged)
+                    gameState.units.push({ power: currentPowerForUnits, type: unitType, location: location, status: unitStatus });
+                    const player = gameState.players.find(p => p.power === currentPowerForUnits);
+                    if (player) player.units.push({ type: unitType, location: location, status: unitStatus });
+                    console.log(`[Parser LIST ${gameName}] Parsed Unit: ${currentPowerForUnits} ${unitType} ${location} ${unitStatus || ''}`);
+                } else if (trimmedLine && !trimmedLine.startsWith('-')) { // Stop if non-empty, non-unit, non-separator line
+                    console.log(`[Parser LIST ${gameName}] Stopped reading units for ${currentPowerForUnits} on line: "${line}"`);
+                    currentPowerForUnits = null;
+                    currentSection = 'unknown'; // Revert section state
                 }
-                return;
-            } else if (trimmedLine) {
-                // If line is not empty and not a unit, stop reading units for this power
-                console.log(`[Parser LIST ${gameName}] Stopped reading units for ${currentPowerForUnits} on line: "${line}"`);
-                readingUnits = false;
-                currentPowerForUnits = null;
-            }
-        }
+                break;
 
-        // 9. Parse Supply Centers Section
-        match = trimmedLine.match(scHeaderRegex);
-        if (match) {
-            readingSCs = true;
-            readingUnits = false; // Stop reading units if we hit an SC header
-            currentPowerForSCs = match[1];
-            console.log(`[Parser LIST ${gameName}] Started reading SCs for ${currentPowerForSCs}.`);
-            return; // Move to next line
-        }
-        if (readingSCs && currentPowerForSCs) {
-            match = line.match(scLineRegex); // Use non-trimmed line for indentation check
-            if (match) {
-                const location = match[1].toUpperCase();
-                // Add to top-level list
-                gameState.supplyCenters.push({ owner: currentPowerForSCs, location: location });
-                // Also add to the specific player's list if they exist
-                const player = gameState.players.find(p => p.power === currentPowerForSCs);
-                if (player) {
-                    player.supplyCenters.push(location);
+            case 'scs':
+                if (!currentPowerForSCs) break; // Should have power context
+                match = line.match(scLineRegex); // Use non-trimmed line for indentation check
+                if (match) {
+                    const location = match[1].toUpperCase();
+                    gameState.supplyCenters.push({ owner: currentPowerForSCs, location: location });
+                    const player = gameState.players.find(p => p.power === currentPowerForSCs);
+                    if (player) player.supplyCenters.push(location);
+                    console.log(`[Parser LIST ${gameName}] Parsed SC: ${currentPowerForSCs} owns ${location}`);
+                } else if (trimmedLine && !trimmedLine.startsWith('-')) { // Stop if non-empty, non-SC, non-separator line
+                    console.log(`[Parser LIST ${gameName}] Stopped reading SCs for ${currentPowerForSCs} on line: "${line}"`);
+                    currentPowerForSCs = null;
+                    currentSection = 'unknown'; // Revert section state
                 }
-                return;
-            } else if (trimmedLine) {
-                // If line is not empty and not an SC, stop reading SCs for this power
-                console.log(`[Parser LIST ${gameName}] Stopped reading SCs for ${currentPowerForSCs} on line: "${line}"`);
-                readingSCs = false;
-                currentPowerForSCs = null;
-            }
+                break;
         }
-
-
     }); // End lines.forEach
 
     // --- Final Status Check & Defaults ---
     if (gameState.status === 'Unknown' && gameState.currentPhase && gameState.currentPhase !== 'Unknown') {
-        if (gameState.currentPhase.toUpperCase() === 'FORMING') {
-            gameState.status = 'Forming';
-        } else {
-            gameState.status = 'Active';
-        }
-         console.log(`[Parser LIST ${gameName}] Inferred status '${gameState.status}' from phase '${gameState.currentPhase}'.`);
+        if (gameState.currentPhase.toUpperCase() === 'FORMING') gameState.status = 'Forming';
+        else gameState.status = 'Active';
+        console.log(`[Parser LIST ${gameName}] Inferred status '${gameState.status}' from phase '${gameState.currentPhase}'.`);
     }
 
     // Set defaults for settings if not found
@@ -1671,6 +1611,16 @@ async function getMapData(gameName, phase) {
         // 8. Combine Base PS + Dynamic PS
         const combinedPsContent = basePsContent + "\n" + dynamicPsCommands.join("\n") + "\n";
 
+        // DEBUG: Save combined PostScript for inspection
+        const debugPsPath = path.join(staticMapDir, `${gameName}_${safePhase}_debug.ps`);
+        try {
+            await fsPromises.writeFile(debugPsPath, combinedPsContent);
+            console.log(`[getMapData PNG Debug] Saved combined PostScript to ${debugPsPath}`);
+        } catch (writeErr) {
+            console.error(`[getMapData PNG Debug] Failed to write debug PS file:`, writeErr);
+        }
+        // END DEBUG
+
         // 9. Define Output Path
         // Sanitize phase name for filename
         const safePhase = targetPhase.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -1971,7 +1921,7 @@ async function syncDipMaster() {
             const blockLines = blockTrimmed.split('\n');
             if (blockLines.length > 0) {
                 const firstLine = blockLines[0].trim();
-                console.log(`[Sync Debug] Processing block ${index}, first line: "${firstLine}"`); // Debug log
+                // console.log(`[Sync Debug] Processing block ${index}, first line: "${firstLine}"`); // Debug log (reduce noise)
                 const match = firstLine.match(gameLineRegex);
                 if (match) {
                     const gameName = match[1];
@@ -1992,19 +1942,19 @@ async function syncDipMaster() {
                             else if (statusLower === 'terminated') gamesFromMaster[gameName].status = 'Terminated';
                             else gamesFromMaster[gameName].status = 'Unknown'; // Fallback
                         }
-                        console.log(`[Sync] Found game: ${gameName}, Status/Phase: ${phaseOrStatus} (Match: Yes)`);
+                        // console.log(`[Sync] Found game: ${gameName}, Status/Phase: ${phaseOrStatus} (Match: Yes)`); // Debug log (reduce noise)
                     } else if (gameName === 'control') {
-                        console.log(`[Sync Debug] Skipping 'control' entry.`);
+                        // console.log(`[Sync Debug] Skipping 'control' entry.`); // Debug log (reduce noise)
                     } else if (gamesFromMaster[gameName]) {
-                         console.log(`[Sync Debug] Skipping duplicate game entry for '${gameName}'.`);
+                         // console.log(`[Sync Debug] Skipping duplicate game entry for '${gameName}'.`); // Debug log (reduce noise)
                     } else {
-                         console.log(`[Sync Debug] Regex matched but gameName invalid? gameName='${gameName}'`);
+                         // console.log(`[Sync Debug] Regex matched but gameName invalid? gameName='${gameName}'`); // Debug log (reduce noise)
                     }
                 } else {
-                     console.log(`[Sync Debug] Regex did NOT match first line: "${firstLine}"`);
+                     // console.log(`[Sync Debug] Regex did NOT match first line: "${firstLine}"`); // Debug log (reduce noise)
                 }
             } else {
-                 console.log(`[Sync Debug] Skipping empty block ${index}.`);
+                 // console.log(`[Sync Debug] Skipping empty block ${index}.`); // Debug log (reduce noise)
             }
         });
         console.log(`[Sync] Found ${Object.keys(gamesFromMaster).length} potential games in ${dipMasterPath}`);

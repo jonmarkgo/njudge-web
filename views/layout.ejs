@@ -13,7 +13,8 @@
         optgroup { font-weight: bold; font-style: normal; }
     </style>
     <!-- Scripts defined in views (like Chart.js) will be injected here -->
-    <%- defineContent('scripts') %>
+    <%# Chart.js library needed for dashboard stats %>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="/js/client.js" defer></script>
 </head>
 <body class="min-h-screen bg-gray-50 flex flex-col">
