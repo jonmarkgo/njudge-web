@@ -10,21 +10,25 @@ const expressLayouts = require('express-ejs-layouts');
 const SQLiteStore = require('connect-sqlite3')(session);
 const cookieParser = require('cookie-parser');
 
-
 // --- Map Info Parsing Cache ---
 const mapInfoCache = {};
+// Cache for dynamically generated name->abbr maps per variant
+const nameToAbbrCache = {};
 
 // --- Environment Setup ---
 const dipBinaryPath = process.env.DIP_BINARY_PATH || './dip';
 const dipBinaryArgs = (process.env.DIP_BINARY_ARGS || '').split(' ').filter(arg => arg);
 const dipBinaryRootPath = path.dirname(dipBinaryPath);
-const flocscriptsPath = process.env.FLOCSCRIPTS_PATH || path.join(__dirname, 'scripts'); // Fallback to relative path
 const judgeEmail = process.env.DIP_JUDGE_EMAIL || 'judge@example.com';
 const dipMasterPath = process.env.DIP_MASTER_PATH || path.join(dipBinaryRootPath, 'dip.master'); // Default relative to binary
-// Base directory for map files (within flocscripts)
-const mapBaseDir = path.join(flocscriptsPath, 'mapit');
+
+// *** CORRECTED: Path to map data (.info) AND templates (.ps) ***
+// Use a single variable pointing to the directory containing both .info and .ps files
+const mapDataPath = process.env.MAP_DATA_PATH || '/home/judge/flocscripts/mapit/maps'; // Default to the flocscripts path
+
 // Directory to store generated PNG maps
 const staticMapDir = path.join(__dirname, 'public', 'generated_maps'); // Store in public/generated_maps
+const ghostscriptPath = process.env.GHOSTSCRIPT_PATH || 'gs'; // Allow overriding GS path
 
 // --- Database Setup ---
 const db = new sqlite3.Database('./game_states.db'); // Game state database
@@ -83,7 +87,6 @@ db.serialize(() => {
         if (err) console.error("Error creating user_preferences table:", err);
         else console.log("User preferences table ensured.");
     });
-// }); // Removed closing parenthesis here
 
     // Create saved_searches table
     db.run(`CREATE TABLE IF NOT EXISTS saved_searches (
@@ -106,7 +109,7 @@ db.serialize(() => {
         if (err) console.error("Error creating news_items table:", err);
         else console.log("News items table ensured.");
     });
-}); // Added closing parenthesis here
+});
 
 
 // Initialize User Tracking DB
@@ -564,12 +567,17 @@ const parseListOutput = (gameName, output) => {
 
     // Regex for Units section
     const unitHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice):\s*$/i; // Power name followed by colon
-    const unitLineRegex = /^\s+(A|F|W|R)\s+([A-Z]{3}(?:\/[NESW]C)?)\s*(?:\(([^)]+)\))?/i; // Indented: Type Abbr(/Coast) (Status)
+    const unitLineRegex = /^\s+(A|F|W|R|G)\s+([A-Z]{3}(?:\/[NESW]C)?)\s*(?:\(([^)]+)\))?/i; // Indented: Type Abbr(/Coast) (Status) - Added G for Garrison
 
     // Regex for Supply Centers section
     const scHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice)\s+\(\d+\):\s*$/i; // Power (Count):
     const scLineRegex = /^\s+([A-Z]{3})\s*/i; // Indented: Abbr
 
+    // *** CORRECTED Regex to capture province name/abbr after unit type ***
+    // Group 1: Power, Group 2: Unit Type (word), Group 3: Location (rest of line until '.')
+    const directUnitLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s+(Army|Fleet|Garrison)\s+(.+)\.\s*$/i;
+
+    const citiesControlledHeaderRegex = /^Cities Controlled:/i;
     // --- Section Headers ---
     const playerListHeader = "The following players are signed up for game";
 
@@ -604,11 +612,34 @@ const parseListOutput = (gameName, output) => {
             return;
         }
         // If we encounter a blank line, reset the sub-section context
+        if (citiesControlledHeaderRegex.test(trimmedLine)) {
+            currentSection = 'cities_controlled'; // New section name
+            console.log(`[Parser LIST ${gameName}] Switched section to: ${currentSection}`);
+            return;
+        }
         if (!trimmedLine) {
             if (currentSection === 'units') currentPowerForUnits = null;
             if (currentSection === 'scs') currentPowerForSCs = null;
             // Don't necessarily change the main section on a blank line
             // currentSection = 'unknown';
+        }
+
+        // --- Check for Direct Unit Lines (e.g., Machiavelli format) ---
+        match = trimmedLine.match(directUnitLineRegex);
+        if (match) {
+            const power = match[1];
+            const unitType = match[2].charAt(0).toUpperCase(); // A, F, or G (from Army/Fleet/Garrison)
+            // *** CORRECTED: Capture location correctly ***
+            const location = match[3].trim(); // Store the name/abbr as provided by the judge
+            gameState.units.push({ power: power, type: unitType, location: location, status: null });
+            const player = gameState.players.find(p => p.power === power);
+            // Ensure player exists and has units array before pushing
+            if (player) {
+                if (!player.units) player.units = []; // Initialize if missing
+                player.units.push({ type: unitType, location: location, status: null });
+            }
+            console.log(`[Parser LIST ${gameName}] Parsed Direct Unit: ${power} ${unitType} ${location}`);
+            return; // Use return instead of continue inside forEach
         }
 
         // --- Parse based on current section ---
@@ -698,7 +729,7 @@ const parseListOutput = (gameName, output) => {
                 match = line.match(unitLineRegex); // Use non-trimmed line for indentation check
                 if (match) {
                     const unitType = match[1].toUpperCase();
-                    const location = match[2].toUpperCase(); // Includes coast if present
+                    const location = match[2].toUpperCase(); // *** Store the abbreviation as provided ***
                     const unitStatus = match[3] ? match[3].trim() : null; // Status like (dislodged)
                     gameState.units.push({ power: currentPowerForUnits, type: unitType, location: location, status: unitStatus });
                     const player = gameState.players.find(p => p.power === currentPowerForUnits);
@@ -711,11 +742,50 @@ const parseListOutput = (gameName, output) => {
                 }
                 break;
 
+
+            case 'cities_controlled':
+                // Regex to capture Power: City*(X), City*(Y), ...
+                const cityLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice):\s+(.*)\.?\s*$/i;
+                match = trimmedLine.match(cityLineRegex);
+                if (match) {
+                    const power = match[1];
+                    const citiesStr = match[2];
+                    console.log(`[Parser LIST Debug] Cities string for ${power}: "${citiesStr}"`); // Debug log
+                    // *** CORRECTED Regex to handle potential spaces before/after abbr ***
+                    // Use a simpler regex to find all 3-letter uppercase words
+                    const cityMatches = citiesStr.match(/[A-Z]{3}/g); // Find all 3-letter uppercase sequences
+
+                    if (cityMatches) {
+                        cityMatches.forEach(location => {
+                            // Add to gameState.supplyCenters
+                            gameState.supplyCenters.push({ owner: power, location: location });
+                            // Add to player.supplyCenters
+                            const player = gameState.players.find(p => p.power === power);
+                            if (player) {
+                                 if (!player.supplyCenters) player.supplyCenters = []; // Initialize if missing
+                                 // Avoid adding duplicates if LIST output is weird
+                                 if (!player.supplyCenters.includes(location)) {
+                                     player.supplyCenters.push(location);
+                                 }
+                            }
+                            console.log(`[Parser LIST ${gameName}] Parsed Controlled City (SC): ${power} owns ${location}`);
+                        });
+                    } else {
+                        console.log(`[Parser LIST Debug] No 3-letter abbreviations found in cities string for ${power}: "${citiesStr}"`);
+                    }
+                } else if (trimmedLine === 'Unowned:') {
+                    // Ignore the 'Unowned:' line for now
+                } else if (trimmedLine && !trimmedLine.startsWith(' ') && !trimmedLine.startsWith('Unowned:') && !trimmedLine.startsWith('*')) {
+                    // If we hit a non-indented line that isn't a power line or 'Unowned:' or the '* = Home' line, stop this section
+                    console.log(`[Parser LIST ${gameName}] Stopped reading controlled cities on line: "${line}"`);
+                    currentSection = 'unknown'; // Revert section state
+                }
+                break;
             case 'scs':
                 if (!currentPowerForSCs) break; // Should have power context
                 match = line.match(scLineRegex); // Use non-trimmed line for indentation check
                 if (match) {
-                    const location = match[1].toUpperCase();
+                    const location = match[1].toUpperCase(); // *** Store the abbreviation ***
                     gameState.supplyCenters.push({ owner: currentPowerForSCs, location: location });
                     const player = gameState.players.find(p => p.power === currentPowerForSCs);
                     if (player) player.supplyCenters.push(location);
@@ -1032,30 +1102,56 @@ const parseHistoryOutput = (gameName, output) => {
 
 
 // --- Map Info Parsing Function ---
+/**
+ * Parses a .info file for a given variant, extracting province abbreviations,
+ * full names, and coordinates. Caches results.
+ * @param {string} variantName - The name of the variant (e.g., 'standard', 'machiavelli').
+ * @returns {Promise<object|null>} - An object containing parsed map data { powers: [], provinces: { ABR: { name, abbr, x, y, ... } } } or null on failure.
+ */
 const parseMapInfoFile = async (variantName) => {
     if (!variantName || typeof variantName !== 'string') {
         console.error('[Map Parse Error] Invalid variant name provided:', variantName);
         throw new Error('Invalid variant name provided.');
     }
+    const lowerVariant = variantName.toLowerCase().replace(/[^a-z0-9_-]/g, ''); // Basic sanitization for cache key
 
-    // Check cache first
-    if (mapInfoCache[variantName]) {
-        console.log(`[Map Parse Cache] Returning cached info for variant: ${variantName}`);
-        return mapInfoCache[variantName];
+    // Check cache first (using lowercase key)
+    if (mapInfoCache[lowerVariant]) {
+        console.log(`[Map Parse Cache] Returning cached info for variant: ${lowerVariant}`);
+        return mapInfoCache[lowerVariant];
     }
 
-    console.log(`[Map Parse] Parsing info file for variant: ${variantName}`);
-    // Use the FLOCSCRIPTS_PATH environment variable
-    const filePath = path.join(mapBaseDir, 'maps', `${variantName}.info`); // Use mapBaseDir
+    console.log(`[Map Parse] Parsing info file for variant: ${variantName} (checking casings)`);
+
+    // Construct potential file paths
+    const filePathOriginal = path.join(mapDataPath, `${variantName}.info`);
+    const filePathLower = path.join(mapDataPath, `${lowerVariant}.info`);
     let fileContent;
+    let usedPath = '';
 
     try {
-        fileContent = await fsPromises.readFile(filePath, 'utf-8');
-    } catch (error) {
-        console.error(`[Map Parse Error] Could not read file ${filePath}:`, error);
-        // Decide how to handle: throw error, return null, return default structure?
-        // For now, let's throw, as the caller likely needs this data.
-        throw new Error(`Failed to read map info file for variant ${variantName}.`);
+        // Try reading the original case first
+        console.log(`[Map Parse] Attempting to read: ${filePathOriginal}`);
+        fileContent = await fsPromises.readFile(filePathOriginal, 'utf-8');
+        usedPath = filePathOriginal;
+        console.log(`[Map Parse] Successfully read original case: ${usedPath}`);
+    } catch (errorOriginal) {
+        if (errorOriginal.code === 'ENOENT') {
+            // If original case not found, try lowercase
+            console.log(`[Map Parse] Original case not found (${filePathOriginal}), trying lowercase: ${filePathLower}`);
+            try {
+                fileContent = await fsPromises.readFile(filePathLower, 'utf-8');
+                usedPath = filePathLower;
+                console.log(`[Map Parse] Successfully read lowercase: ${usedPath}`);
+            } catch (errorLower) {
+                console.error(`[Map Parse Error] Could not read file (both cases) - Original (${filePathOriginal}): ${errorOriginal.message}, Lowercase (${filePathLower}): ${errorLower.message}`);
+                throw new Error(`Failed to read map info file for variant ${variantName}. Tried paths: ${filePathOriginal}, ${filePathLower}`);
+            }
+        } else {
+            // Error other than ENOENT for the original path
+            console.error(`[Map Parse Error] Could not read file ${filePathOriginal}:`, errorOriginal);
+            throw new Error(`Failed to read map info file for variant ${variantName}. Path: ${filePathOriginal}`);
+        }
     }
 
     const lines = fileContent.split(/\r?\n/);
@@ -1065,12 +1161,14 @@ const parseMapInfoFile = async (variantName) => {
     };
     let parsingSection = 'powers'; // Start by parsing powers
 
-    // Regex to capture province data: X Y [UX UY] [SCX SCY] |ABR|...
+    // Regex to capture province data: X Y [UX UY] [SCX SCY] |ABR|...|FullName|...
     // Group 1: X, Group 2: Y
     // Group 3 (optional): UX, Group 4 (optional): UY
     // Group 5 (optional): SCX, Group 6 (optional): SCY
-    // Group 7: ABR, Group 8: FullName
-    const provinceRegex = /^\s*(\d+)\s+(\d+)(?:\s+(\d+)\s+(\d+))?(?:\s+(\d+)\s+(\d+))?\s*\|([A-Z]{3})\|(?:[^|]*?\|){1}([^|]+)\|/;
+    // Group 1: X, Group 2: Y
+    // Group 3 (optional): SCX, Group 4 (optional): SCY
+    // Group 5: ABR, Group 6: FullName
+    const provinceRegex = /^\s*(\d+)\s+(\d+)\s*\|([A-Z]{3})\|(?:[^|]*?\|){1}([^|]+)\|(?:\s*(\d+)\s+(\d+))?/;
 
 
     for (const line of lines) {
@@ -1091,41 +1189,81 @@ const parseMapInfoFile = async (variantName) => {
         } else if (parsingSection === 'provinces') {
             const match = trimmedLine.match(provinceRegex);
             if (match) {
-                const [, x, y, ux, uy, scx, scy, abbr, name] = match;
+                // Correctly capture groups based on the updated regex
+                const [, x, y, abbr, name, scx, scy] = match;
                 const provinceName = name.trim(); // Trim whitespace from name
-                if (abbr && provinceName) {
-                     mapData.provinces[abbr] = {
+                const upperAbbr = abbr.toUpperCase(); // Standardize abbr to uppercase
+
+                if (upperAbbr && provinceName && x !== undefined && y !== undefined) {
+                     const primaryX = parseInt(x, 10);
+                     const primaryY = parseInt(y, 10);
+                     mapData.provinces[upperAbbr] = {
                          name: provinceName,
-                         abbr: abbr,
-                         x: parseInt(x, 10), // Original coords (maybe label?)
-                         y: parseInt(y, 10),
-                         unitX: ux ? parseInt(ux, 10) : undefined, // Unit coords
-                         unitY: uy ? parseInt(uy, 10) : undefined,
-                         scX: scx ? parseInt(scx, 10) : undefined, // SC coords
+                         abbr: upperAbbr,
+                         x: primaryX, // Primary coordinate pair
+                         y: primaryY,
+                         unitX: primaryX, // Use primary for unit as no specific unit coords exist
+                         unitY: primaryY,
+                         scX: scx ? parseInt(scx, 10) : undefined, // Optional SC coordinate pair
                          scY: scy ? parseInt(scy, 10) : undefined,
-                         // Add label coords if needed, maybe use x,y as default label?
-                         labelX: parseInt(x, 10),
-                         labelY: parseInt(y, 10)
+                         labelX: primaryX, // Use primary for label
+                         labelY: primaryY
                      };
+                     // console.log(`[Map Parse Debug] Parsed: ${upperAbbr} -> ${provinceName} (Coords: ${primaryX},${primaryY}, SC Coords: ${scx},${scy})`);
                 } else {
                     console.warn(`[Map Parse Warn] Skipping province line with missing data in ${variantName}: ${line}`);
                 }
             } else {
-                // Log lines that don't match the expected province format (and aren't comments/empty)
+                // Log lines that don't match the expected province format
                 console.warn(`[Map Parse Warn] Unrecognized line format in province section of ${variantName}: ${line}`);
             }
         }
-    }
+    } // End loop through lines
 
-     if (mapData.powers.length === 0 && Object.keys(mapData.provinces).length === 0) {
-         console.warn(`[Map Parse Warn] No powers or provinces found for variant ${variantName}. Check file format.`);
-         // Optionally throw an error or return a specific indicator of failure/empty data
+     if (Object.keys(mapData.provinces).length === 0) {
+         console.warn(`[Map Parse Warn] No provinces parsed for variant ${variantName}. Check file format or path: ${usedPath}`);
+         // Return null or throw error if no provinces found, as map generation is impossible.
+         return null;
      }
 
-    // Cache the result before returning
-    mapInfoCache[variantName] = mapData;
-    console.log(`[Map Parse Success] Parsed and cached info for variant: ${variantName}`);
+    // Cache the result before returning (using lowercase key)
+    mapInfoCache[lowerVariant] = mapData;
+    console.log(`[Map Parse Success] Parsed and cached info for variant: ${variantName} (cached as ${lowerVariant}) from ${usedPath}. Found ${Object.keys(mapData.provinces).length} provinces.`);
     return mapData;
+};
+
+
+// Helper to get or generate name->abbr mapping for a variant
+const getNameToAbbrMap = async (variantName) => {
+    const lowerVariant = variantName.toLowerCase().replace(/[^a-z0-9_-]/g, ''); // Use consistent key
+    if (nameToAbbrCache[lowerVariant]) {
+        return nameToAbbrCache[lowerVariant];
+    }
+
+    try {
+        const mapInfo = await parseMapInfoFile(variantName); // Use original case for file reading
+        if (!mapInfo || !mapInfo.provinces) {
+            throw new Error(`Could not get map info for ${variantName}`);
+        }
+        const nameToAbbr = {};
+        for (const abbr in mapInfo.provinces) {
+            const province = mapInfo.provinces[abbr];
+            const normalizedName = province.name.toLowerCase().trim();
+            if (!nameToAbbr[normalizedName]) {
+                nameToAbbr[normalizedName] = abbr;
+            }
+            // Add alias for abbreviation itself (lowercase)
+            if (!nameToAbbr[abbr.toLowerCase()]) {
+                 nameToAbbr[abbr.toLowerCase()] = abbr;
+            }
+        }
+        nameToAbbrCache[lowerVariant] = nameToAbbr; // Cache using lowercase key
+        console.log(`[Map Utils] Generated nameToAbbr map for variant: ${variantName} (cached as ${lowerVariant})`);
+        return nameToAbbr;
+    } catch (error) {
+        console.error(`[Map Utils Error] Failed to generate nameToAbbr map for ${variantName}:`, error);
+        return {}; // Return empty map on error
+    }
 };
 
 
@@ -1485,16 +1623,15 @@ async function getMapData(gameName, phase) {
             console.error(`[getMapData PNG Error] Game not found in DB: ${gameName}`);
             return null; // Game doesn't exist
         }
-        const variantName = basicGameState.variant || 'Standard';
-        const cleanVariant = variantName.endsWith('.') ? variantName.slice(0, -1) : variantName;
-        console.log(`[getMapData PNG] Determined variant: ${cleanVariant}`);
+        const variantName = basicGameState.variant || 'Standard'; // Keep original case
+        const lowerVariant = variantName.toLowerCase().replace(/[^a-z0-9_-]/g, ''); // For lookups if needed
+        console.log(`[getMapData PNG] Determined variant: ${variantName} (checking casings)`);
 
         // 2. Fetch current game state using LIST command
         // Use judgeEmail or a system identity for fetching public data
         const listResult = await executeDipCommand(judgeEmail, `LIST ${gameName}`, gameName);
         if (!listResult.success) {
             console.error(`[getMapData PNG Error] Failed to fetch LIST data for ${gameName}:`, listResult.output);
-            // Consider returning an error object instead of null?
             return null; // Cannot proceed without LIST data
         }
         const listOutput = listResult.stdout;
@@ -1513,106 +1650,235 @@ async function getMapData(gameName, phase) {
         console.log(`[getMapData PNG] Target phase for PNG: ${targetPhase}`);
 
         // 5. Get province metadata from .info file (using cache)
-        const mapInfo = await parseMapInfoFile(cleanVariant);
+        // *** This now reads the .info file with coordinates (and handles casing) ***
+        const mapInfo = await parseMapInfoFile(variantName); // Pass original variant name
         if (!mapInfo || !mapInfo.provinces || Object.keys(mapInfo.provinces).length === 0) {
-            console.error(`[getMapData PNG Error] Failed to parse or get cached map info file for variant: ${cleanVariant}`);
-            return null; // Cannot proceed without province info
+            console.error(`[getMapData PNG Error] Failed to parse or get cached map info file for variant: ${variantName}`);
+            throw new Error(`Map data (province names/abbreviations/coordinates) could not be loaded for variant ${variantName}. Cannot generate map.`);
         }
-        const provinceLookup = mapInfo.provinces; // Abbr -> { name, x, y, unitX, unitY, ... }
+        const provinceLookup = mapInfo.provinces; // Abbr -> { name, abbr, x, y, unitX, unitY, ... }
+        // Generate name->abbr map for this variant if needed (e.g., if LIST output gives full names)
+        const nameToAbbr = await getNameToAbbrMap(variantName); // Pass original variant name
 
-        // 6. Read Base PostScript Template
-        const cmapPath = path.join(mapBaseDir, 'maps', `${cleanVariant}.cmap.ps`);
-        const mapPath = path.join(mapBaseDir, 'maps', `${cleanVariant}.map.ps`);
+        // 6. Read Base PostScript Template (checking casings)
+        // *** Use mapDataPath for .ps files ***
+        const cmapPathOriginal = path.join(mapDataPath, `${variantName}.cmap.ps`);
+        const cmapPathLower = path.join(mapDataPath, `${lowerVariant}.cmap.ps`);
+        const mapPathOriginal = path.join(mapDataPath, `${variantName}.map.ps`);
+        const mapPathLower = path.join(mapDataPath, `${lowerVariant}.map.ps`);
         let basePsContent = '';
         let isColored = false;
+        let usedTemplatePath = '';
+
         try {
-            basePsContent = await fsPromises.readFile(cmapPath, 'utf-8');
+            console.log(`[getMapData PNG] Attempting to read template: ${cmapPathOriginal}`);
+            basePsContent = await fsPromises.readFile(cmapPathOriginal, 'utf-8');
             isColored = true;
-            console.log(`[getMapData PNG] Read colored map template: ${cmapPath}`);
-        } catch (err) {
-            if (err.code === 'ENOENT') {
+            usedTemplatePath = cmapPathOriginal;
+            console.log(`[getMapData PNG] Read colored map template (original case): ${usedTemplatePath}`);
+        } catch (errCmapOrig) {
+            if (errCmapOrig.code === 'ENOENT') {
+                console.log(`[getMapData PNG] Template not found (${cmapPathOriginal}), trying lowercase: ${cmapPathLower}`);
                 try {
-                    basePsContent = await fsPromises.readFile(mapPath, 'utf-8');
-                    isColored = false;
-                    console.log(`[getMapData PNG] Read non-colored map template: ${mapPath}`);
-                } catch (err2) {
-                     console.error(`[getMapData PNG Error] Could not read map template (.cmap.ps or .map.ps) for variant ${cleanVariant}:`, err2);
-                     return null; // Cannot proceed without template
+                    basePsContent = await fsPromises.readFile(cmapPathLower, 'utf-8');
+                    isColored = true;
+                    usedTemplatePath = cmapPathLower;
+                    console.log(`[getMapData PNG] Read colored map template (lowercase): ${usedTemplatePath}`);
+                } catch (errCmapLower) {
+                    if (errCmapLower.code === 'ENOENT') {
+                        console.log(`[getMapData PNG] Colored template not found (both cases), trying non-colored: ${mapPathOriginal}`);
+                        try {
+                            basePsContent = await fsPromises.readFile(mapPathOriginal, 'utf-8');
+                            isColored = false;
+                            usedTemplatePath = mapPathOriginal;
+                            console.log(`[getMapData PNG] Read non-colored map template (original case): ${usedTemplatePath}`);
+                        } catch (errMapOrig) {
+                            if (errMapOrig.code === 'ENOENT') {
+                                console.log(`[getMapData PNG] Non-colored template not found (${mapPathOriginal}), trying lowercase: ${mapPathLower}`);
+                                try {
+                                    basePsContent = await fsPromises.readFile(mapPathLower, 'utf-8');
+                                    isColored = false;
+                                    usedTemplatePath = mapPathLower;
+                                    console.log(`[getMapData PNG] Read non-colored map template (lowercase): ${usedTemplatePath}`);
+                                } catch (errMapLower) {
+                                    console.error(`[getMapData PNG Error] Could not read any map template for variant ${variantName}. Paths tried: ${cmapPathOriginal}, ${cmapPathLower}, ${mapPathOriginal}, ${mapPathLower}`);
+                                    return null; // Cannot proceed without template
+                                }
+                            } else {
+                                console.error(`[getMapData PNG Error] Error reading map template ${mapPathOriginal}:`, errMapOrig);
+                                return null;
+                            }
+                        }
+                    } else {
+                        console.error(`[getMapData PNG Error] Error reading map template ${cmapPathLower}:`, errCmapLower);
+                        return null;
+                    }
                 }
             } else {
-                 console.error(`[getMapData PNG Error] Error reading map template ${cmapPath}:`, err);
+                 console.error(`[getMapData PNG Error] Error reading map template ${cmapPathOriginal}:`, errCmapOrig);
                  return null;
             }
         }
 
-        // 7. Generate Dynamic PostScript Commands
-        let dynamicPsCommands = [];
-        const psDrawFunctions = { "A": "DrawArmy", "F": "DrawFleet", "W": "DrawWing", "R": "DrawArtillery" }; // Add others if needed
+        // 7. Generate Dynamic PostScript Commands (Units & SCs)
+        let unitPsCommands = [];
+        let scPsCommands = [];
+        // *** Renamed functions to reflect they draw at origin ***
+        const psDrawFunctions = { "A": "DrawArmySymbol", "F": "DrawFleetSymbol", "W": "DrawWingSymbol", "R": "DrawArtillerySymbol", "G": "DrawGarrisonSymbol" };
+
+        // Mapping from power name (uppercase) to the numeric index defined in the .cmap.ps file
+        const POWER_TO_INDEX = {
+            'AUSTRIA': 1,
+            'FRANCE': 2,
+            'MILAN': 3,
+            'FLORENCE': 4,
+            'NAPLES': 5,
+            'PAPACY': 6,
+            'TURKEY': 7,
+            'VENICE': 8,
+            'AUTONOMOUS': 9
+            // Add other powers if needed for different variants
+        };
+
 
         // -- Start Page & Title --
-        const title = `${gameName}, ${targetPhase}`; // Simple title for now
-        dynamicPsCommands.push(`(${title}) DrawTitle`);
+        // Title drawing will be handled separately before calling DrawMap
 
-        // -- Draw Nicknames (Optional but good for consistency) --
-        // This part is complex in Python, let's simplify or omit for now if DrawNickNames isn't essential
-        // dynamicPsCommands.push(`DrawNickNames`);
-
-        // -- Draw Units --
-        // Use the top-level units array parsed from LIST output
+        // -- Generate Unit Commands --
         const allUnits = currentGameState.units || [];
         console.log(`[getMapData PNG] Found ${allUnits.length} units to draw.`);
+        let coordinateError = false; // Flag if we encounter missing coords
 
         allUnits.forEach(unit => {
-             // Location might include coast like 'STP/SC', need to extract base abbr 'STP'
-             const locationParts = unit.location.split('/');
-             const provinceAbbr = locationParts[0];
-             const provinceData = provinceLookup[provinceAbbr];
-             if (provinceData) {
-                 const drawFunc = psDrawFunctions[unit.type] || 'DrawArmy'; // Default to Army
-                 // Use unit coordinates if available, otherwise province label coords
-                 const x = provinceData.unitX ?? provinceData.labelX;
-                 const y = provinceData.unitY ?? provinceData.labelY;
-                 // Add the power prefix for colored units
-                 dynamicPsCommands.push(`${unit.power}`); // Set current power context
-                 dynamicPsCommands.push(`${x} ${y} ${drawFunc}`);
-                 console.log(`[getMapData PNG] PS: ${unit.power} ${x} ${y} ${drawFunc}`);
-             } else {
-                 console.warn(`[getMapData PNG] Province abbreviation '${provinceAbbr}' for unit not found in map info.`);
-             }
+            let unitLocation = unit.location;
+            let provinceAbbr = null;
+
+            // Check if location is already a valid abbreviation
+            if (unitLocation && provinceLookup[unitLocation.toUpperCase()]) {
+                provinceAbbr = unitLocation.toUpperCase();
+                 console.log(`[getMapData PNG Debug] Unit Loop: Location '${unitLocation}' is already a valid abbr.`);
+            } else if (unitLocation) {
+                // If not, try translating from name using the dynamic map
+                const normalizedLocation = unitLocation.toLowerCase().trim();
+                provinceAbbr = nameToAbbr[normalizedLocation];
+                if (provinceAbbr) {
+                    console.log(`[getMapData PNG] Translated unit location name '${unit.location}' to abbr '${provinceAbbr}'`);
+                } else {
+                    console.warn(`[getMapData PNG] Could not find abbreviation for unit location '${unit.location}'`);
+                }
+            }
+
+            if (!provinceAbbr) {
+                console.warn(`[getMapData PNG Debug] Unit Loop: Skipping unit with unresolvable location:`, unit);
+                return; // Skip this unit if location couldn't be resolved to an abbreviation
+            }
+
+            // Location might still include coast like 'STP/SC', need to extract base abbr 'STP'
+            const locationParts = provinceAbbr.split('/');
+            const baseAbbr = locationParts[0];
+            const provinceData = provinceLookup[baseAbbr];
+
+            if (provinceData) {
+                // *** Check if coordinates were parsed correctly ***
+                if (provinceData.x === undefined || provinceData.y === undefined) {
+                    console.error(`[getMapData PNG Error] Coordinate data missing for province '${baseAbbr}' in variant '${variantName}' after parsing. Cannot place unit.`);
+                    coordinateError = true; // Set flag
+                    return; // Skip drawing this unit
+                }
+
+                const drawFunc = psDrawFunctions[unit.type] || 'DrawArmy'; // Default to Army
+                // Use unit coordinates if available, otherwise province label coords
+                const x = provinceData.unitX ?? provinceData.labelX ?? provinceData.x; // Fallback chain
+                const y = provinceData.unitY ?? provinceData.labelY ?? provinceData.y; // Fallback chain
+
+                // *** CORRECTED: Push numeric index instead of power name ***
+                const powerIndex = POWER_TO_INDEX[unit.power.toUpperCase()];
+                if (powerIndex === undefined) {
+                    console.warn(`[getMapData PNG] Unknown power '${unit.power}' encountered for unit. Cannot determine PS index. Skipping unit.`);
+                    return; // Skip this unit
+                }
+                // PS expects: X Y Index DrawFunction
+                unitPsCommands.push(`${x} ${y} ${powerIndex} ${drawFunc}`);
+                // console.log(`[getMapData PNG] Unit PS: ${x} ${y} ${powerIndex} ${drawFunc} (Power: ${unit.power}, Loc: ${provinceAbbr})`); // Reduce log noise
+            } else {
+                console.warn(`[getMapData PNG] Province abbreviation '${baseAbbr}' (from unit location '${unit.location}') not found in map info.`);
+            }
         });
 
-        // -- Draw Base Map --
-        dynamicPsCommands.push("DrawMap"); // Execute the base map drawing procedure
-
-
-        // -- Draw Supply Centers (Coloring) --
-        // Use the top-level supplyCenters array parsed from LIST output
+        // -- Generate Supply Center Commands --
         const supplyCenters = currentGameState.supplyCenters || [];
         console.log(`[getMapData PNG] Found ${supplyCenters.length} owned SCs to color.`);
 
         if (isColored) {
             supplyCenters.forEach(sc => {
-                const provinceAbbr = sc.location; // Location is the abbreviation
+                const scAbbr = sc.location?.toUpperCase(); // Abbreviation from LIST output
                 const owner = sc.owner;
-                if (provinceLookup[provinceAbbr] && owner && owner !== 'UNOWNED') {
-                    // PS command: ProvinceNick supply \n Power CENTER
-                    dynamicPsCommands.push(`${provinceAbbr} supply`);
-                    dynamicPsCommands.push(`${owner}CENTER`); // Assumes PS functions like FranceCENTER exist
-                    console.log(`[getMapData PNG] PS: ${provinceAbbr} supply ${owner}CENTER`);
-                } else if (!provinceLookup[provinceAbbr]) {
-                     console.warn(`[getMapData PNG] Province abbreviation '${provinceAbbr}' for SC not found in map info.`);
+
+                if (!scAbbr) {
+                     console.warn(`[getMapData PNG Debug] SC Loop: Skipping SC with undefined location:`, sc);
+                     return; // Skip SC if location is missing
+                }
+
+                // Use the abbreviation directly to find province data
+                const provinceData = provinceLookup[scAbbr];
+
+                if (provinceData && owner && owner !== 'UNOWNED') {
+                     // Check if coordinates exist for SC placement (needed for some PS templates)
+                     if (provinceData.scX === undefined || provinceData.scY === undefined) {
+                         // Fallback to label or main coords if SC coords missing
+                         const scX = provinceData.labelX ?? provinceData.x;
+                         const scY = provinceData.labelY ?? provinceData.y;
+                         if (scX === undefined || scY === undefined) {
+                             console.error(`[getMapData PNG Error] SC Coordinate data missing for province '${scAbbr}' in variant '${variantName}'. Cannot color SC.`);
+                             coordinateError = true; // Set flag
+                             return; // Skip coloring this SC
+                         }
+                         // If fallback coords exist, proceed, but log a warning
+                         console.warn(`[getMapData PNG Warn] SC coordinates missing for '${scAbbr}', using fallback coordinates.`);
+                     }
+                    // PS command: Set Color, Call Province Proc (which includes coords and draws symbol)
+                    scPsCommands.push(`${owner}CENTER`); // Set color context
+                    scPsCommands.push(`${scAbbr}`); // Call province procedure (e.g., /AUS { coords Symbol } def)
+                    // console.log(`[getMapData PNG] SC PS: ${owner}CENTER ${scAbbr}`); // Reduce log noise
+                } else if (!provinceData) {
+                     console.warn(`[getMapData PNG] Map abbreviation '${scAbbr}' for SC not found in map info.`);
                 }
             });
-            // Add final commands for SC drawing
-            dynamicPsCommands.push("closepath newpath");
-            dynamicPsCommands.push("Black"); // Reset color
+            // Add final commands for SC drawing within the dynamic block
+            scPsCommands.push("closepath newpath");
+            scPsCommands.push("Black"); // Reset color
         }
 
-        // -- End Page --
-        dynamicPsCommands.push("ShowPage");
+        // -- Combine into Dynamic Procedure Definitions --
+        let dynamicPsDefs = [
+            "/DrawDynamicUnits {",
+            ...unitPsCommands,
+            "} def",
+            "/DrawDynamicSCs {",
+            ...scPsCommands,
+            "} def"
+        ];
 
-        // 8. Combine Base PS + Dynamic PS
-        const combinedPsContent = basePsContent + "\n" + dynamicPsCommands.join("\n") + "\n";
+        // -- Setup Commands (Title) --
+        let setupPsCommands = [];
+        const title = `${gameName}, ${targetPhase}`;
+        setupPsCommands.push(`(${title}) DrawTitle`);
+
+
+        // *** Check if coordinate errors occurred before proceeding ***
+        if (coordinateError) {
+            throw new Error(`Map generation failed for ${gameName} (${variantName}): Coordinate data missing in parsed map file.`);
+        }
+
+        // 8. Combine Base PS + Dynamic Definitions + Setup + Call DrawMap + ShowPage
+        // Note: DrawMap call happens here, *after* dynamic defs are loaded.
+        // The basePsContent itself needs modification to call the dynamic procedures.
+        const combinedPsContent = basePsContent + "\n" +
+                                  dynamicPsDefs.join("\n") + "\n" +
+                                  setupPsCommands.join("\n") + "\n" +
+                                  "DrawMap\n" + // Call DrawMap *after* dynamic defs are loaded
+                                  "ShowPage\n";
+
 
         // Sanitize phase name for filename *before* use
         const safePhase = targetPhase.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -1644,7 +1910,11 @@ async function getMapData(gameName, phase) {
 
     } catch (error) {
         console.error(`[getMapData PNG Fatal Error] Unexpected error for ${gameName} / ${phase || 'latest'}:`, error);
-        return null; // Indicate failure
+        // Return a more specific error if it's the coordinate issue
+        if (error.message.includes("Coordinate data missing")) {
+             throw error; // Re-throw the specific error
+        }
+        return null; // Indicate general failure
     }
 }
 
@@ -1740,7 +2010,7 @@ console.log(`Serving static maps from ${staticMapDir} at /generated_maps`);
 // --- PNG Generation Function (using Ghostscript) ---
 async function generateMapPng(postscriptContent, outputPngPath) {
     return new Promise((resolve, reject) => {
-        const gsPath = process.env.GHOSTSCRIPT_PATH || 'gs'; // Allow overriding GS path
+        // *** Use ghostscriptPath from env vars ***
         const gsArgs = [
             '-dNOPAUSE',
             '-dBATCH',
@@ -1752,8 +2022,8 @@ async function generateMapPng(postscriptContent, outputPngPath) {
             '-'                    // Read PS from stdin
         ];
 
-        console.log(`[generateMapPng] Running ${gsPath} with args: ${gsArgs.slice(0, -1).join(' ')} -sOutputFile=${outputPngPath} -`);
-        const gsProcess = spawn(gsPath, gsArgs);
+        console.log(`[generateMapPng] Running ${ghostscriptPath} with args: ${gsArgs.slice(0, -1).join(' ')} -sOutputFile=${outputPngPath} -`);
+        const gsProcess = spawn(ghostscriptPath, gsArgs);
 
         let stdoutData = '';
         let stderrData = '';
@@ -1765,7 +2035,7 @@ async function generateMapPng(postscriptContent, outputPngPath) {
             console.error(`[generateMapPng] Spawn Error: ${err.message}`);
             // Provide specific error if gs command not found
             if (err.code === 'ENOENT') {
-                 processError = new Error(`Ghostscript command ('${gsPath}') not found. Ensure Ghostscript is installed and in the system PATH, or set GHOSTSCRIPT_PATH in your .env file.`);
+                 processError = new Error(`Ghostscript command ('${ghostscriptPath}') not found. Ensure Ghostscript is installed and in the system PATH, or set GHOSTSCRIPT_PATH in your .env file.`);
             } else {
                  processError = err;
             }
@@ -2602,7 +2872,17 @@ app.get('/api/map/:gameName/:phase?', requireAuth, async (req, res) => { // Roo:
 
     } catch (error) {
         console.error(`[Map API Request PNG Fatal Error] Failed to get map URL for ${gameName} / ${phase || 'latest'}:`, error);
-        res.status(500).json({ success: false, message: 'An internal server error occurred while generating the map image.' });
+        // Check if the error is the specific coordinate missing error
+        if (error.message.includes("Coordinate data missing")) {
+             res.status(500).json({ success: false, message: `Map generation failed: ${error.message}. The map data file (.info) for this variant seems incomplete or incorrectly parsed.` });
+        } else if (error.message.includes("Failed to read map info file")) {
+             // Extract variant name from the error message if possible
+             const variantMatch = error.message.match(/variant ([^.]+)/);
+             const variantName = variantMatch ? variantMatch[1] : req.params.variant || 'unknown'; // Fallback
+             res.status(500).json({ success: false, message: `Map generation failed: ${error.message}. Check if the .info file exists for variant '${variantName}' (or its lowercase version) in '${mapDataPath}'.` });
+        } else {
+             res.status(500).json({ success: false, message: 'An internal server error occurred while generating the map image.' });
+        }
     }
 });
 
@@ -2746,7 +3026,9 @@ app.listen(port, () => {
     if (dipBinaryArgs.length > 0) console.log(`Using dip binary args: ${dipBinaryArgs.join(' ')}`);
     console.log(`Using dip binary root path: ${dipBinaryRootPath}`);
     console.log(`Expecting dip.master at: ${dipMasterPath}`);
-    console.log(`Expecting map files in: ${mapBaseDir}/maps`); // Log map path
+    // *** UPDATED: Log paths for map info and templates ***
+    console.log(`Expecting map data files (.info) and templates (.ps) in: ${mapDataPath}`);
+    // console.log(`Expecting map template files (.ps) in: ${mapTemplateBasePath}`); // Removed, using mapDataPath
     console.log(`Storing generated maps in: ${staticMapDir}`); // Log output path
 
     const resolvedDipCommand = path.resolve(dipBinaryRootPath, path.basename(dipBinaryPath));
