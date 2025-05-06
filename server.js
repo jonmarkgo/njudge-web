@@ -1,59 +1,45 @@
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
-const { execFile, spawn } = require('child_process'); // Ensure spawn is imported
+const { execFile, spawn } = require('child_process');
 const session = require('express-session');
 const fs = require('fs');
-const fsPromises = require('fs').promises; // Use promises version
+const fsPromises = require('fs').promises;
 const sqlite3 = require('sqlite3').verbose();
 const expressLayouts = require('express-ejs-layouts');
 const SQLiteStore = require('connect-sqlite3')(session);
 const cookieParser = require('cookie-parser');
 
 // --- Map Info Parsing Cache ---
-const mapInfoCache = {};
-// Cache for dynamically generated name->abbr maps per variant
-const nameToAbbrCache = {};
+const provinceDataCache = {}; // Key: lowerVariant, Value: { 'CANONICAL_ABR': { name, abbr, x (labelX), y (labelY), scX, scY, unitX, unitY, labelX, labelY } }
+const nameToAbbrCache = {};   // Key: lowerVariant, Value: { 'some_name_lc': 'CANONICAL_ABR' }
 
 // --- Environment Setup ---
-const dipBinaryPath = process.env.DIP_BINARY_PATH || './dip';
-const dipBinaryArgs = (process.env.DIP_BINARY_ARGS || '').split(' ').filter(arg => arg);
+const dipBinaryPath = process.env.DIP_BINARY_PATH || '/home/judge/dip';
+const dipBinaryArgs = (process.env.DIP_BINARY_ARGS || '-C /home/judge -w').split(' ').filter(arg => arg);
 const dipBinaryRootPath = path.dirname(dipBinaryPath);
 const judgeEmail = process.env.DIP_JUDGE_EMAIL || 'judge@example.com';
-const dipMasterPath = process.env.DIP_MASTER_PATH || path.join(dipBinaryRootPath, 'dip.master'); // Default relative to binary
+const dipMasterPath = process.env.DIP_MASTER_PATH || path.join(dipBinaryRootPath, 'dip.master');
 
-// *** CORRECTED: Path to map data (.info) AND templates (.ps) ***
-// Use a single variable pointing to the directory containing both .info and .ps files
-const mapDataPath = process.env.MAP_DATA_PATH || '/home/judge/flocscripts/mapit/maps'; // Default to the flocscripts path
-
-// Directory to store generated PNG maps
-const staticMapDir = path.join(__dirname, 'public', 'generated_maps'); // Store in public/generated_maps
-const ghostscriptPath = process.env.GHOSTSCRIPT_PATH || 'gs'; // Allow overriding GS path
+const mapDataDir = process.env.MAP_DATA_PATH || '/home/judge/flocscripts/mapit/maps';
+const gameDataDir = process.env.GAME_DATA_PATH || '/home/judge/data';
+const staticMapDir = path.join(__dirname, 'public', 'generated_maps');
+const ghostscriptPath = process.env.GHOSTSCRIPT_PATH || 'gs';
 
 // --- Database Setup ---
-const db = new sqlite3.Database('./game_states.db'); // Game state database
-const sessionDb = new sqlite3.Database('./sessions.db'); // Session database
-const userDb = new sqlite3.Database('./users.db'); // User registration tracking DB
+const db = new sqlite3.Database('./game_states.db');
+const sessionDb = new sqlite3.Database('./sessions.db');
+const userDb = new sqlite3.Database('./users.db');
 
-// Initialize Game States DB
 db.serialize(() => {
     db.run(`CREATE TABLE IF NOT EXISTS game_states (
-        name TEXT PRIMARY KEY,
-        status TEXT DEFAULT 'Unknown',
-        variant TEXT DEFAULT 'Standard',
-        options TEXT DEFAULT '[]', -- JSON array of variant options like 'Gunboat', 'Chaos'
-        currentPhase TEXT DEFAULT 'Unknown',
-        nextDeadline TEXT,
-        masters TEXT DEFAULT '[]', -- JSON array of master emails
-        players TEXT DEFAULT '[]', -- JSON array of player objects {power, email, status, name, units, supplyCenters}
-        observers TEXT DEFAULT '[]', -- JSON array of observer emails
-        settings TEXT DEFAULT '{}', -- JSON object of game settings {press, dias, nmr, etc.}
-        lastUpdated INTEGER,
-        rawListOutput TEXT
+        name TEXT PRIMARY KEY, status TEXT DEFAULT 'Unknown', variant TEXT DEFAULT 'Standard',
+        options TEXT DEFAULT '[]', currentPhase TEXT DEFAULT 'Unknown', nextDeadline TEXT,
+        masters TEXT DEFAULT '[]', players TEXT DEFAULT '[]', observers TEXT DEFAULT '[]',
+        settings TEXT DEFAULT '{}', lastUpdated INTEGER, rawListOutput TEXT
     )`, (err) => {
         if (err) console.error("Error creating game_states table:", err);
         else {
-            // Add columns if they don't exist (for upgrades) - Check if all needed columns exist
              const columnsToAdd = [
                 { name: 'status', type: 'TEXT DEFAULT \'Unknown\'' }, { name: 'variant', type: 'TEXT DEFAULT \'Standard\'' },
                 { name: 'options', type: 'TEXT DEFAULT \'[]\'' }, { name: 'currentPhase', type: 'TEXT DEFAULT \'Unknown\'' },
@@ -76,75 +62,41 @@ db.serialize(() => {
              });
         }
     });
-
-    // Create user_preferences table
     db.run(`CREATE TABLE IF NOT EXISTS user_preferences (
-        user_id TEXT NOT NULL,      -- User's email address
-        preference_key TEXT NOT NULL, -- e.g., 'column_visibility', 'sort_order'
-        preference_value TEXT,      -- JSON string or simple value
+        user_id TEXT NOT NULL, preference_key TEXT NOT NULL, preference_value TEXT,
         PRIMARY KEY (user_id, preference_key)
-    )`, (err) => {
-        if (err) console.error("Error creating user_preferences table:", err);
-        else console.log("User preferences table ensured.");
-    });
-
-    // Create saved_searches table
+    )`, (err) => { if (err) console.error("Error creating user_preferences table:", err); else console.log("User preferences table ensured."); });
     db.run(`CREATE TABLE IF NOT EXISTS saved_searches (
-        user_id TEXT NOT NULL,      -- User's email address
-        bookmark_name TEXT NOT NULL, -- User-defined name for the search
-        search_params TEXT,         -- JSON string containing filter criteria
+        user_id TEXT NOT NULL, bookmark_name TEXT NOT NULL, search_params TEXT,
         PRIMARY KEY (user_id, bookmark_name)
-    )`, (err) => {
-        if (err) console.error("Error creating saved_searches table:", err);
-        else console.log("Saved searches table ensured.");
-    });
-
-
-    // Create news_items table
+    )`, (err) => { if (err) console.error("Error creating saved_searches table:", err); else console.log("Saved searches table ensured."); });
     db.run(`CREATE TABLE IF NOT EXISTS news_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-        content TEXT NOT NULL
-    )`, (err) => {
-        if (err) console.error("Error creating news_items table:", err);
-        else console.log("News items table ensured.");
-    });
+        id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, content TEXT NOT NULL
+    )`, (err) => { if (err) console.error("Error creating news_items table:", err); else console.log("News items table ensured."); });
 });
-
-
-// Initialize User Tracking DB
 userDb.serialize(() => {
     userDb.run(`CREATE TABLE IF NOT EXISTS users (
-        email TEXT PRIMARY KEY,
-        is_judge_registered INTEGER DEFAULT 0, -- 0 = no, 1 = yes
-        last_login INTEGER
-    )`, (err) => {
-        if (err) console.error("Error creating users table:", err);
-    });
+        email TEXT PRIMARY KEY, is_judge_registered INTEGER DEFAULT 0, last_login INTEGER
+    )`, (err) => { if (err) console.error("Error creating users table:", err); });
 });
 
-
 // --- Database Helper Functions ---
-
-// User DB Helpers
 const getUserRegistrationStatus = (email) => {
     return new Promise((resolve, reject) => {
         userDb.get("SELECT is_judge_registered FROM users WHERE email = ?", [email], (err, row) => {
             if (err) reject(err);
-            else resolve(row ? row.is_judge_registered : null); // null if user not found
+            else resolve(row ? row.is_judge_registered : null);
         });
     });
 };
-
 const setUserRegistered = (email) => {
     return new Promise((resolve, reject) => {
         userDb.run("UPDATE users SET is_judge_registered = 1 WHERE email = ?", [email], function(err) {
             if (err) reject(err);
-            else resolve(this.changes > 0); // True if updated, false if not found
+            else resolve(this.changes > 0);
         });
     });
 };
-
 const ensureUserExists = (email) => {
      return new Promise((resolve, reject) => {
          const now = Math.floor(Date.now() / 1000);
@@ -153,7 +105,6 @@ const ensureUserExists = (email) => {
              [email, now],
              (err) => {
                  if (err) return reject(err);
-                 // Update last_login even if user already exists
                  userDb.run("UPDATE users SET last_login = ? WHERE email = ?", [now, email], (updateErr) => {
                      if (updateErr) reject(updateErr);
                      else resolve();
@@ -162,9 +113,6 @@ const ensureUserExists = (email) => {
          );
      });
 };
-
-
-// Game State DB Helpers
 const saveGameState = (gameName, gameState) => {
     return new Promise((resolve, reject) => {
         if (!gameName || typeof gameName !== 'string' || gameName.length === 0) {
@@ -173,20 +121,14 @@ const saveGameState = (gameName, gameState) => {
         }
         const now = Math.floor(Date.now() / 1000);
         const mastersStr = JSON.stringify(gameState.masters || []);
-        // Ensure player objects are valid and contain expected fields
         const validPlayers = (gameState.players || []).filter(p => p && typeof p === 'object' && p.power).map(p => ({
-             power: p.power,
-             email: p.email || null,
-             status: p.status || 'Unknown',
-             name: p.name || null, // Add name if parsed
-             units: p.units || [], // Include units
-             supplyCenters: p.supplyCenters || [] // Include SCs
+             power: p.power, email: p.email || null, status: p.status || 'Unknown',
+             name: p.name || null, units: p.units || [], supplyCenters: p.supplyCenters || []
         }));
         const playersStr = JSON.stringify(validPlayers);
         const observersStr = JSON.stringify(gameState.observers || []);
         const optionsStr = JSON.stringify(gameState.options || []);
         const settingsStr = JSON.stringify(gameState.settings || {});
-
         db.run(
             `INSERT OR REPLACE INTO game_states
              (name, status, variant, options, currentPhase, nextDeadline, masters, players, observers, settings, lastUpdated, rawListOutput)
@@ -198,20 +140,18 @@ const saveGameState = (gameName, gameState) => {
             ],
             (err) => {
                 if (err) { console.error(`[DB Error] Failed to save state for game ${gameName}:`, err); reject(err); }
-                else { console.log(`[DB Success] Saved state for game ${gameName}`); resolve(); }
+                else { /* console.log(`[DB Success] Saved state for game ${gameName}`); */ resolve(); }
             }
         );
     });
 };
-
 const getGameState = (gameName) => {
     return new Promise((resolve, reject) => {
-        if (!gameName) return resolve(null); // Handle null/undefined gameName gracefully
+        if (!gameName) return resolve(null);
         db.get("SELECT * FROM game_states WHERE name = ?", [gameName], (err, row) => {
             if (err) { console.error(`[DB Error] Failed to read state for game ${gameName}:`, err); reject(err); }
             else if (row) {
                 try {
-                    // Safely parse JSON fields, providing defaults on error
                     row.masters = JSON.parse(row.masters || '[]');
                     row.players = JSON.parse(row.players || '[]');
                     row.observers = JSON.parse(row.observers || '[]');
@@ -220,19 +160,13 @@ const getGameState = (gameName) => {
                     resolve(row);
                 } catch (parseError) {
                     console.error(`[DB Error] Failed to parse JSON state for game ${gameName}:`, parseError, 'Raw data:', row);
-                    // Attempt to recover with defaults
-                    row.masters = row.masters && typeof row.masters === 'string' ? JSON.parse(row.masters || '[]') : [];
-                    row.players = row.players && typeof row.players === 'string' ? JSON.parse(row.players || '[]') : [];
-                    row.observers = row.observers && typeof row.observers === 'string' ? JSON.parse(row.observers || '[]') : [];
-                    row.options = row.options && typeof row.options === 'string' ? JSON.parse(row.options || '[]') : [];
-                    row.settings = row.settings && typeof row.settings === 'string' ? JSON.parse(row.settings || '{}') : {};
-                    resolve(row); // Return row with potentially unparsed fields or default empty arrays/objects
+                    row.masters = []; row.players = []; row.observers = []; row.options = []; row.settings = {}; // Defaults
+                    resolve(row);
                 }
             } else { resolve(null); }
         });
     });
 };
-
 const getAllGameStates = () => {
     return new Promise((resolve, reject) => {
         db.all("SELECT * FROM game_states ORDER BY name ASC", [], (err, rows) => {
@@ -241,16 +175,12 @@ const getAllGameStates = () => {
                 const states = {};
                 rows.forEach(row => {
                     try {
-                        // Safely parse JSON fields
-                        row.masters = JSON.parse(row.masters || '[]');
-                        row.players = JSON.parse(row.players || '[]');
-                        row.observers = JSON.parse(row.observers || '[]');
-                        row.options = JSON.parse(row.options || '[]');
+                        row.masters = JSON.parse(row.masters || '[]'); row.players = JSON.parse(row.players || '[]');
+                        row.observers = JSON.parse(row.observers || '[]'); row.options = JSON.parse(row.options || '[]');
                         row.settings = JSON.parse(row.settings || '{}');
                         states[row.name] = row;
                     } catch (parseError) {
                         console.error(`[DB Error] Failed to parse JSON state for game ${row.name} in getAllGameStates:`, parseError);
-                        // Assign defaults on parse error
                         row.masters = []; row.players = []; row.observers = []; row.options = []; row.settings = {};
                         states[row.name] = row;
                     }
@@ -259,554 +189,486 @@ const getAllGameStates = () => {
         });
     });
 };
-
-
-// Get filtered game states based on criteria
 const getFilteredGameStates = (filters = {}) => {
     return new Promise((resolve, reject) => {
         let query = "SELECT * FROM game_states";
-        const whereClauses = [];
-        const params = [];
-
-        if (filters.status) {
-            whereClauses.push("status = ?");
-            params.push(filters.status);
-        }
-        if (filters.variant) {
-            whereClauses.push("variant = ?");
-            params.push(filters.variant);
-        }
-        if (filters.phase) {
-            whereClauses.push("currentPhase = ?");
-            params.push(filters.phase);
-        }
-        if (filters.player) {
-            // Check if the player's email exists within the 'players' JSON array
-            // Requires SQLite 3.38.0+ for JSON functions (check your version)
-            // Use LIKE as a fallback if JSON functions aren't available/reliable
-            // whereClauses.push("EXISTS (SELECT 1 FROM json_each(players) WHERE json_extract(value, '$.email') = ?)");
-            whereClauses.push("players LIKE ?");
-            params.push(`%${filters.player}%`); // Less precise but more compatible
-        }
-        // Add more filters here if needed (e.g., master, observer)
-
-        if (whereClauses.length > 0) {
-            query += " WHERE " + whereClauses.join(" AND ");
-        }
-
+        const whereClauses = []; const params = [];
+        if (filters.status) { whereClauses.push("status = ?"); params.push(filters.status); }
+        if (filters.variant) { whereClauses.push("variant = ?"); params.push(filters.variant); }
+        if (filters.phase) { whereClauses.push("currentPhase = ?"); params.push(filters.phase); }
+        if (filters.player) { whereClauses.push("players LIKE ?"); params.push(`%${filters.player}%`); }
+        if (whereClauses.length > 0) query += " WHERE " + whereClauses.join(" AND ");
         query += " ORDER BY name ASC";
-
         db.all(query, params, (err, rows) => {
-            if (err) {
-                console.error("[DB Error] Failed to read filtered game states:", err, "Query:", query, "Params:", params);
-                reject(err);
-            } else {
+            if (err) { console.error("[DB Error] Failed to read filtered game states:", err, "Query:", query, "Params:", params); reject(err); }
+            else {
                 const states = {};
                 rows.forEach(row => {
                     try {
-                        // Safely parse JSON fields
-                        row.masters = JSON.parse(row.masters || '[]');
-                        row.players = JSON.parse(row.players || '[]');
-                        row.observers = JSON.parse(row.observers || '[]');
-                        row.options = JSON.parse(row.options || '[]');
+                        row.masters = JSON.parse(row.masters || '[]'); row.players = JSON.parse(row.players || '[]');
+                        row.observers = JSON.parse(row.observers || '[]'); row.options = JSON.parse(row.options || '[]');
                         row.settings = JSON.parse(row.settings || '{}');
                         states[row.name] = row;
                     } catch (parseError) {
                         console.error(`[DB Error] Failed to parse JSON state for game ${row.name} in getFilteredGameStates:`, parseError);
-                        // Assign defaults on parse error
                         row.masters = []; row.players = []; row.observers = []; row.options = []; row.settings = {};
                         states[row.name] = row;
                     }
-                });
-                resolve(states);
+                }); resolve(states);
             }
         });
     });
 };
-
-
-// Get game counts grouped by status
 const getGameCountsByStatus = () => {
     return new Promise((resolve, reject) => {
         db.all("SELECT status, COUNT(*) as count FROM game_states GROUP BY status ORDER BY status", [], (err, rows) => {
-            if (err) {
-                console.error("[DB Error] Failed to get game counts by status:", err);
-                reject(err);
-            } else {
-                // Ensure 'count' is a number
-                const results = rows.map(row => ({ status: row.status, count: Number(row.count) }));
-                resolve(results);
-            }
+            if (err) { console.error("[DB Error] Failed to get game counts by status:", err); reject(err); }
+            else { resolve(rows.map(row => ({ status: row.status, count: Number(row.count) }))); }
         });
     });
 };
-
-
-// --- User Preference DB Helpers ---
-
-// Get all preferences for a user
 const getUserPreferences = (userId) => {
     return new Promise((resolve, reject) => {
         db.all("SELECT preference_key, preference_value FROM user_preferences WHERE user_id = ?", [userId], (err, rows) => {
-            if (err) {
-                console.error(`[DB Error] Failed to get preferences for user ${userId}:`, err);
-                reject(err);
-            } else {
+            if (err) { console.error(`[DB Error] Failed to get preferences for user ${userId}:`, err); reject(err); }
+            else {
                 const preferences = {};
                 rows.forEach(row => {
                     try {
-                        // Attempt to parse if it looks like JSON, otherwise return as string
                         if ((row.preference_value?.startsWith('{') && row.preference_value?.endsWith('}')) || (row.preference_value?.startsWith('[') && row.preference_value?.endsWith(']'))) {
                             preferences[row.preference_key] = JSON.parse(row.preference_value);
-                        } else {
-                            preferences[row.preference_key] = row.preference_value;
-                        }
+                        } else { preferences[row.preference_key] = row.preference_value; }
                     } catch (parseError) {
                         console.warn(`[DB Warn] Failed to parse preference '${row.preference_key}' for user ${userId}. Returning raw value. Error:`, parseError);
-                        preferences[row.preference_key] = row.preference_value; // Return raw value on parse error
+                        preferences[row.preference_key] = row.preference_value;
                     }
-                });
-                resolve(preferences);
+                }); resolve(preferences);
             }
         });
     });
 };
-
-// Set or update a specific preference for a user
 const setUserPreference = (userId, key, value) => {
     return new Promise((resolve, reject) => {
-        // Convert non-string values (like objects/arrays) to JSON strings for storage
         const valueToStore = (typeof value === 'string' || value === null || value === undefined) ? value : JSON.stringify(value);
         db.run("INSERT OR REPLACE INTO user_preferences (user_id, preference_key, preference_value) VALUES (?, ?, ?)",
-            [userId, key, valueToStore],
-            (err) => {
-                if (err) {
-                    console.error(`[DB Error] Failed to set preference '${key}' for user ${userId}:`, err);
-                    reject(err);
-                } else {
-                    resolve();
-                }
-            }
-        );
+            [userId, key, valueToStore], (err) => {
+                if (err) { console.error(`[DB Error] Failed to set preference '${key}' for user ${userId}:`, err); reject(err); }
+                else { resolve(); }
+            });
     });
 };
-
-// Delete a specific preference for a user
 const deleteUserPreference = (userId, key) => {
     return new Promise((resolve, reject) => {
         db.run("DELETE FROM user_preferences WHERE user_id = ? AND preference_key = ?", [userId, key], function(err) {
-            if (err) {
-                console.error(`[DB Error] Failed to delete preference '${key}' for user ${userId}:`, err);
-                reject(err);
-            } else {
-                resolve(this.changes > 0); // Returns true if a row was deleted
-            }
+            if (err) { console.error(`[DB Error] Failed to delete preference '${key}' for user ${userId}:`, err); reject(err); }
+            else { resolve(this.changes > 0); }
         });
     });
 };
-
-// Delete all preferences for a user
 const deleteAllUserPreferences = (userId) => {
     return new Promise((resolve, reject) => {
         db.run("DELETE FROM user_preferences WHERE user_id = ?", [userId], function(err) {
-            if (err) {
-                console.error(`[DB Error] Failed to delete all preferences for user ${userId}:`, err);
-                reject(err);
-            } else {
-                resolve(this.changes); // Returns the number of rows deleted
-            }
+            if (err) { console.error(`[DB Error] Failed to delete all preferences for user ${userId}:`, err); reject(err); }
+            else { resolve(this.changes); }
         });
     });
 };
-
-
-// --- Saved Search Bookmark DB Helpers ---
-
-// Get all saved searches for a user
 const getSavedSearches = (userId) => {
     return new Promise((resolve, reject) => {
         db.all("SELECT bookmark_name, search_params FROM saved_searches WHERE user_id = ? ORDER BY bookmark_name ASC", [userId], (err, rows) => {
-            if (err) {
-                console.error(`[DB Error] Failed to get saved searches for user ${userId}:`, err);
-                reject(err);
-            } else {
-                const bookmarks = rows.map(row => ({
-                    name: row.bookmark_name,
-                    params: JSON.parse(row.search_params || '{}') // Parse JSON params
-                }));
-                resolve(bookmarks);
-            }
+            if (err) { console.error(`[DB Error] Failed to get saved searches for user ${userId}:`, err); reject(err); }
+            else { resolve(rows.map(row => ({ name: row.bookmark_name, params: JSON.parse(row.search_params || '{}') }))); }
         });
     });
 };
-
-// Save or update a specific saved search for a user
 const saveSavedSearch = (userId, bookmarkName, searchParams) => {
     return new Promise((resolve, reject) => {
         const paramsString = JSON.stringify(searchParams || {});
         db.run("INSERT OR REPLACE INTO saved_searches (user_id, bookmark_name, search_params) VALUES (?, ?, ?)",
-            [userId, bookmarkName, paramsString],
-            (err) => {
-                if (err) {
-                    console.error(`[DB Error] Failed to save search bookmark '${bookmarkName}' for user ${userId}:`, err);
-                    reject(err);
-                } else {
-                    console.log(`[DB Success] Saved search bookmark '${bookmarkName}' for user ${userId}`);
-                    resolve();
-                }
-            }
-        );
+            [userId, bookmarkName, paramsString], (err) => {
+                if (err) { console.error(`[DB Error] Failed to save search bookmark '${bookmarkName}' for user ${userId}:`, err); reject(err); }
+                else { console.log(`[DB Success] Saved search bookmark '${bookmarkName}' for user ${userId}`); resolve(); }
+            });
     });
 };
-
-// Delete a specific saved search for a user
 const deleteSavedSearch = (userId, bookmarkName) => {
     return new Promise((resolve, reject) => {
         db.run("DELETE FROM saved_searches WHERE user_id = ? AND bookmark_name = ?", [userId, bookmarkName], function(err) {
-            if (err) {
-                console.error(`[DB Error] Failed to delete search bookmark '${bookmarkName}' for user ${userId}:`, err);
-                reject(err);
-            } else {
-                console.log(`[DB Success] Deleted search bookmark '${bookmarkName}' for user ${userId} (if existed)`);
-                resolve(this.changes > 0); // Returns true if a row was deleted
-            }
+            if (err) { console.error(`[DB Error] Failed to delete search bookmark '${bookmarkName}' for user ${userId}:`, err); reject(err); }
+            else { console.log(`[DB Success] Deleted search bookmark '${bookmarkName}' for user ${userId} (if existed)`); resolve(this.changes > 0); }
         });
     });
 };
-
-
-// --- News DB Helpers ---
-
-// Get all news items, ordered by timestamp descending
 const getAllNewsItems = () => {
     return new Promise((resolve, reject) => {
         db.all("SELECT id, timestamp, content FROM news_items ORDER BY timestamp DESC", [], (err, rows) => {
-            if (err) {
-                console.error("[DB Error] Failed to get news items:", err);
-                reject(err);
-            } else {
-                // Map id to _id for consistency if frontend expects _id
-                const mappedRows = rows.map(row => ({ ...row, _id: row.id }));
-                resolve(mappedRows);
-            }
+            if (err) { console.error("[DB Error] Failed to get news items:", err); reject(err); }
+            else { resolve(rows.map(row => ({ ...row, _id: row.id }))); }
         });
     });
 };
-
-// Add a new news item
 const addNewsItem = (content) => {
     return new Promise((resolve, reject) => {
-        if (!content || typeof content !== 'string' || content.trim().length === 0) {
-            return reject(new Error('News content cannot be empty.'));
-        }
+        if (!content || typeof content !== 'string' || content.trim().length === 0) return reject(new Error('News content cannot be empty.'));
         db.run("INSERT INTO news_items (content) VALUES (?)", [content.trim()], function(err) {
-            if (err) {
-                console.error("[DB Error] Failed to add news item:", err);
-                reject(err);
-            } else {
-                console.log(`[DB Success] Added news item with ID: ${this.lastID}`);
-                resolve(this.lastID); // Return the ID of the newly inserted item
-            }
+            if (err) { console.error("[DB Error] Failed to add news item:", err); reject(err); }
+            else { console.log(`[DB Success] Added news item with ID: ${this.lastID}`); resolve(this.lastID); }
         });
     });
 };
-
-// Delete a news item by ID
 const deleteNewsItem = (id) => {
     return new Promise((resolve, reject) => {
         db.run("DELETE FROM news_items WHERE id = ?", [id], function(err) {
-            if (err) {
-                console.error(`[DB Error] Failed to delete news item with ID ${id}:`, err);
-                reject(err);
-            } else {
-                if (this.changes > 0) {
-                    console.log(`[DB Success] Deleted news item with ID: ${id}`);
-                    resolve(true); // Indicate success
-                } else {
-                    console.log(`[DB Info] No news item found with ID: ${id} to delete.`);
-                    resolve(false); // Indicate item not found
-                }
+            if (err) { console.error(`[DB Error] Failed to delete news item with ID ${id}:`, err); reject(err); }
+            else {
+                if (this.changes > 0) { console.log(`[DB Success] Deleted news item with ID: ${id}`); resolve(true); }
+                else { console.log(`[DB Info] No news item found with ID: ${id} to delete.`); resolve(false); }
             }
         });
     });
 };
 
+// --- Map Data Parsing and Caching ---
+const ensureMapDataParsed = async (variantName) => {
+    const lowerVariant = variantName.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    if (provinceDataCache[lowerVariant] && nameToAbbrCache[lowerVariant]) {
+        return {
+            provinceLookup: provinceDataCache[lowerVariant],
+            nameToAbbr: nameToAbbrCache[lowerVariant]
+        };
+    }
+
+    console.log(`[Map Parse] Ensuring map data for variant: ${variantName}`);
+    const localProvinceData = {}; // Stores { ABR: { name, abbr, x (labelX), y (labelY), scX, scY, unitX, unitY, labelX, labelY } }
+    const localNameToAbbr = {};   // Stores { name_lc: ABR, alias_lc: ABR }
+
+    // Step 1: Parse the <variantName>.info file (from flocscripts/mapit/maps)
+    // for coordinates and canonical names/abbreviations
+    let infoFileContent;
+    let infoFilePath = path.join(mapDataDir, `${variantName}.info`);
+    let usedInfoPath = '';
+
+    try {
+        infoFileContent = await fsPromises.readFile(infoFilePath, 'utf-8');
+        usedInfoPath = infoFilePath;
+    } catch (errorOriginal) {
+        if (errorOriginal.code === 'ENOENT') {
+            infoFilePath = path.join(mapDataDir, `${lowerVariant}.info`);
+            try {
+                infoFileContent = await fsPromises.readFile(infoFilePath, 'utf-8');
+                usedInfoPath = infoFilePath;
+            } catch (errorLower) {
+                const errMsg = `Failed to read .info file for variant ${variantName}. Tried: ${variantName}.info and ${lowerVariant}.info. Orig: ${errorOriginal.message}, Lower: ${errorLower.message}`;
+                console.error(`[Map Parse Error] ${errMsg}`);
+                throw new Error(errMsg);
+            }
+        } else {
+            console.error(`[Map Parse Error] Could not read .info file ${infoFilePath}:`, errorOriginal);
+            throw errorOriginal;
+        }
+    }
+    // console.log(`[Map Parse] Using .info file: ${usedInfoPath}`);
+
+    const infoLines = infoFileContent.split(/\r?\n/);
+    let parsingSection = 'powers'; // Default, but some .info files might skip this or start with aliases
+
+    // Regex for coordinate lines: X Y |ABR|---|FullName|OptionalSCX SCY|OptionalTrailingAlias|
+    // Group 1: X (Label X), Group 2: Y (Label Y), Group 3: Abbr, Group 4: FullName,
+    // Group 5: SCX (opt), Group 6: SCY (opt), Group 7: Trailing Alias (opt)
+    const coordLineRegex = /^\s*(\d+)\s+(\d+)\s*\|([^|]+)\|\s*---\s*\|([^|]+?)\|(?:(\d+)\s+(\d+)\s*\|)?(?:([^|]*)\|)?\s*$/;
+
+
+    for (const line of infoLines) {
+        const trimmedLine = line.trim();
+        if (!trimmedLine || trimmedLine.startsWith('#')) continue;
+
+        if (trimmedLine === '-1') {
+            parsingSection = (parsingSection === 'powers' || parsingSection === 'initial_aliases') ? 'coordinates' : 'finished_info_coord_parsing';
+            continue;
+        }
+
+        if (parsingSection === 'coordinates') {
+            const coordMatch = trimmedLine.match(coordLineRegex);
+            if (coordMatch) {
+                const [, xStr, yStr, abbrField, fullNameField, scxStr, scyStr, trailingAliasField] = coordMatch;
+                const canonicalAbbr = abbrField.trim().toUpperCase();
+                const fullNameFromCoords = fullNameField.trim();
+
+                const labelX = parseInt(xStr, 10);
+                const labelY = parseInt(yStr, 10);
+                const scX = scxStr ? parseInt(scxStr, 10) : undefined;
+                const scY = scyStr ? parseInt(scyStr, 10) : undefined;
+
+                if (isNaN(labelX) || isNaN(labelY)) {
+                    console.warn(`[Map Parse Warn] Invalid label coordinates for ${canonicalAbbr} ('${fullNameFromCoords}') in ${variantName} from ${usedInfoPath}: X='${xStr}', Y='${yStr}'. Skipping.`);
+                    continue;
+                }
+
+                // Determine unit coordinates: prefer SC, fallback to label
+                const unitX = (scX !== undefined && !isNaN(scX)) ? scX : labelX;
+                const unitY = (scY !== undefined && !isNaN(scY)) ? scY : labelY;
+
+                localProvinceData[canonicalAbbr] = {
+                    name: fullNameFromCoords,
+                    abbr: canonicalAbbr,
+                    x: labelX, y: labelY, // Retain original x,y as labelX, labelY for clarity
+                    unitX: unitX, unitY: unitY,
+                    scX: (scX !== undefined && !isNaN(scX)) ? scX : undefined,
+                    scY: (scY !== undefined && !isNaN(scY)) ? scY : undefined,
+                    labelX: labelX, labelY: labelY
+                };
+
+                localNameToAbbr[fullNameFromCoords.toLowerCase()] = canonicalAbbr;
+                localNameToAbbr[canonicalAbbr.toLowerCase()] = canonicalAbbr;
+
+                if (trailingAliasField) {
+                    const trailingAlias = trailingAliasField.trim();
+                    if (trailingAlias && !localNameToAbbr[trailingAlias.toLowerCase()]) {
+                        localNameToAbbr[trailingAlias.toLowerCase()] = canonicalAbbr;
+                    }
+                }
+                const baseAbbr = canonicalAbbr.split('/')[0];
+                if (baseAbbr !== canonicalAbbr && !localNameToAbbr[baseAbbr.toLowerCase()]) {
+                     localNameToAbbr[baseAbbr.toLowerCase()] = baseAbbr;
+                }
+            } else {
+                 console.warn(`[Map Parse Warn] Unrecognized line format in .info coordinate section of ${variantName} from ${usedInfoPath}: ${trimmedLine}`);
+            }
+        }
+    }
+
+    // Step 2: Parse map.<variant> (from gameDataDir) for additional aliases
+    let mapVariantFilePath = path.join(gameDataDir, `map.${variantName}`);
+    let usedMapVariantPath = '';
+    let mapVariantFileContent;
+
+    try {
+        mapVariantFileContent = await fsPromises.readFile(mapVariantFilePath, 'utf-8');
+        usedMapVariantPath = mapVariantFilePath;
+    } catch (errorOriginal) {
+        if (errorOriginal.code === 'ENOENT') {
+            mapVariantFilePath = path.join(gameDataDir, `map.${lowerVariant}`);
+            try {
+                mapVariantFileContent = await fsPromises.readFile(mapVariantFilePath, 'utf-8');
+                usedMapVariantPath = mapVariantFilePath;
+            } catch (errorLower) {
+                mapVariantFileContent = null;
+            }
+        } else {
+            mapVariantFileContent = null;
+        }
+    }
+
+    if (mapVariantFileContent) {
+        const mapVariantLines = mapVariantFileContent.split(/\r?\n/);
+        const aliasLineRegex = /^\s*([^,]+?)\s*,\s*[^.]*\.\s*(.*)$/;
+        let inAliasSection = true;
+
+        for (const line of mapVariantLines) {
+            const trimmedLine = line.trim();
+            if (!trimmedLine || trimmedLine.startsWith('#')) continue;
+            if (trimmedLine === '-1') {
+                inAliasSection = false;
+                break;
+            }
+            if (inAliasSection) {
+                const aliasMatch = trimmedLine.match(aliasLineRegex);
+                if (aliasMatch) {
+                    const fullNameFromAliasFile = aliasMatch[1].trim();
+                    const aliasesStr = aliasMatch[2].trim();
+                    const aliases = aliasesStr.split(/\s+/).filter(a => a);
+                    const canonicalAbbrForFullName = localNameToAbbr[fullNameFromAliasFile.toLowerCase()];
+
+                    if (canonicalAbbrForFullName) {
+                        aliases.forEach(alias => {
+                            const aliasLc = alias.toLowerCase();
+                            if (!localNameToAbbr[aliasLc] ||
+                                (localNameToAbbr[aliasLc].length < canonicalAbbrForFullName.length && !localNameToAbbr[aliasLc].includes('/')) ||
+                                (localNameToAbbr[aliasLc] === aliasLc.toUpperCase() && aliasLc.toUpperCase() !== canonicalAbbrForFullName)
+                                ) {
+                                localNameToAbbr[aliasLc] = canonicalAbbrForFullName;
+                            }
+                        });
+                    } else {
+                        // console.warn(`[Map Parse Warn] Full name '${fullNameFromAliasFile}' from map.${variantName} (alias file) not found in canonical names derived from .info file. Aliases for it might be incomplete.`);
+                    }
+                }
+            }
+        }
+    }
+
+    if (Object.keys(localProvinceData).length === 0) {
+        const errMsg = `No provinces parsed from coordinate section of ${usedInfoPath} for variant ${variantName}. Check .info file format and content.`;
+        console.error(`[Map Parse Error] ${errMsg}`);
+        throw new Error(errMsg);
+    }
+
+    provinceDataCache[lowerVariant] = localProvinceData;
+    nameToAbbrCache[lowerVariant] = localNameToAbbr;
+    console.log(`[Map Parse Success] Parsed and cached info for variant: ${variantName} (cached as ${lowerVariant}). Provinces: ${Object.keys(localProvinceData).length}. Name/Alias map: ${Object.keys(localNameToAbbr).length}.`);
+    return {
+        provinceLookup: localProvinceData,
+        nameToAbbr: localNameToAbbr
+    };
+};
+
+
 // --- Parsing Helper Functions ---
-const parseListOutput = (gameName, output) => {
-    console.log(`[Parser LIST] Attempting to parse LIST output for ${gameName}`);
+const parseListOutput = (gameName, output, nameToAbbr) => {
+    // console.log(`[Parser LIST] Attempting to parse LIST output for ${gameName}`);
     const gameState = {
         name: gameName, status: 'Unknown', variant: 'Standard', options: [],
         currentPhase: 'Unknown', nextDeadline: null, players: [], masters: [],
         observers: [], settings: {}, rawListOutput: output,
         lastUpdated: Math.floor(Date.now() / 1000),
-        units: [], // Add top-level units array
-        supplyCenters: [] // Add top-level supply centers array
+        units: [], supplyCenters: []
     };
     const lines = output.split('\n');
-    let currentSection = 'header'; // header, players, settings, units, scs, unknown
-    let currentPowerForUnits = null; // Track power for unit lines
-    let currentPowerForSCs = null; // Track power for SC lines
+    let currentSection = 'header';
+    let currentPowerForUnits = null;
+    let currentPowerForSCs = null;
 
-    // --- Regex Definitions ---
-    const explicitDeadlineRegex = /::\s*Deadline:\s*([SFUW]\d{4}[MRBAX]?)\s+(.*)/i; // Allow A for Adjust, optional X
+    const explicitDeadlineRegex = /::\s*Deadline:\s*([SFUW]\d{4}[MRBAX]?)\s+(.*)/i;
     const activeStatusLineRegex = /Status of the (\w+) phase for (Spring|Summer|Fall|Winter) of (\d{4})\./i;
     const variantRegex = /Variant:\s*(\S+)\s*(.*)/i;
-    // Player Regex: Start, Power Name (expanded), whitespace, number, whitespace, capture email, rest of line
     const playerLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice)\s+\d+\s+([\w.-]+@[\w.-]+\.\w+).*$/i;
-    // Master Regex: Start, Master/Moderator, whitespace, number, whitespace, capture email, rest of line
     const masterLineRegex = /^\s*(?:Master|Moderator)\s+\d+\s+([\w.-]+@[\w.-]+\.\w+).*$/i;
-    // Observer Regex: Assuming format "Observer : email@domain.com" - adjust if needed
     const observerLineRegex = /^\s*Observer\s*:\s*([\w.-]+@[\w.-]+\.\w+).*$/i;
     const statusRegex = /Game status:\s*(.*)/i;
-    const settingsHeaderRegex = /The parameters for .*? are as follows:|Game settings:/i; // Match both possible headers
+    const settingsHeaderRegex = /The parameters for .*? are as follows:|Game settings:/i;
     const pressSettingRegex = /Press:\s*(.*?)(?:,|\s*$)/i;
     const diasSettingRegex = /\b(NoDIAS|DIAS)\b/i;
     const nmrSettingRegex = /\b(NMR|NoNMR)\b/i;
     const concessionSettingRegex = /\b(Concessions|No Concessions)\b/i;
-    const emailRegex = /[\w.-]+@[\w.-]+\.\w+/; // General email regex for observer line if needed
-
-    // Regex for Units section
-    const unitHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice):\s*$/i; // Power name followed by colon
-    const unitLineRegex = /^\s+(A|F|W|R|G)\s+([A-Z]{3}(?:\/[NESW]C)?)\s*(?:\(([^)]+)\))?/i; // Indented: Type Abbr(/Coast) (Status) - Added G for Garrison
-
-    // Regex for Supply Centers section
-    const scHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice)\s+\(\d+\):\s*$/i; // Power (Count):
-    const scLineRegex = /^\s+([A-Z]{3})\s*/i; // Indented: Abbr
-
-    // *** CORRECTED Regex to capture province name/abbr after unit type ***
-    // Group 1: Power, Group 2: Unit Type (word), Group 3: Location (rest of line until '.')
-    const directUnitLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s+(Army|Fleet|Garrison)\s+(.+)\.\s*$/i;
-
+    const emailRegex = /[\w.-]+@[\w.-]+\.\w+/;
+    const unitHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s*$/i;
+    const unitLineRegex = /^\s+(A|F|W|R|G)\s+([A-Z]{3}(?:\/[NESW]C)?)\s*(?:\(([^)]+)\))?/i; // Assumes abbr in LIST output
+    const scHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous)\s+\(\d+\):\s*$/i;
+    const directUnitLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s+(Army|Fleet|Garrison|Wing|Artillery)\s+(.+)\.\s*$/i;
     const citiesControlledHeaderRegex = /^Cities Controlled:/i;
-    // --- Section Headers ---
     const playerListHeader = "The following players are signed up for game";
 
-    // --- Parsing Loop ---
     lines.forEach(line => {
         const trimmedLine = line.trim();
         let match;
 
-        // --- Section Detection ---
-        if (trimmedLine.startsWith(playerListHeader)) {
-            currentSection = 'players';
-            console.log(`[Parser LIST ${gameName}] Switched section to: ${currentSection}`);
-            return;
-        }
-        if (settingsHeaderRegex.test(trimmedLine)) {
-            currentSection = 'settings';
-            console.log(`[Parser LIST ${gameName}] Switched section to: ${currentSection}`);
-            return;
-        }
-        match = trimmedLine.match(unitHeaderRegex);
-        if (match) {
-            currentSection = 'units';
-            currentPowerForUnits = match[1];
-            console.log(`[Parser LIST ${gameName}] Switched section to: ${currentSection} for ${currentPowerForUnits}`);
-            return;
-        }
-        match = trimmedLine.match(scHeaderRegex);
-        if (match) {
-            currentSection = 'scs';
-            currentPowerForSCs = match[1];
-            console.log(`[Parser LIST ${gameName}] Switched section to: ${currentSection} for ${currentPowerForSCs}`);
-            return;
-        }
-        // If we encounter a blank line, reset the sub-section context
-        if (citiesControlledHeaderRegex.test(trimmedLine)) {
-            currentSection = 'cities_controlled'; // New section name
-            console.log(`[Parser LIST ${gameName}] Switched section to: ${currentSection}`);
-            return;
-        }
-        if (!trimmedLine) {
-            if (currentSection === 'units') currentPowerForUnits = null;
-            if (currentSection === 'scs') currentPowerForSCs = null;
-            // Don't necessarily change the main section on a blank line
-            // currentSection = 'unknown';
-        }
+        if (trimmedLine.startsWith(playerListHeader)) { currentSection = 'players'; return; }
+        if (settingsHeaderRegex.test(trimmedLine)) { currentSection = 'settings'; return; }
+        match = trimmedLine.match(unitHeaderRegex); if (match) { currentSection = 'units'; currentPowerForUnits = match[1]; return; }
+        match = trimmedLine.match(scHeaderRegex); if (match) { currentSection = 'scs'; currentPowerForSCs = match[1]; return; }
+        if (citiesControlledHeaderRegex.test(trimmedLine)) { currentSection = 'cities_controlled'; return; }
+        if (!trimmedLine) { if (currentSection === 'units') currentPowerForUnits = null; if (currentSection === 'scs') currentPowerForSCs = null; }
 
-        // --- Check for Direct Unit Lines (e.g., Machiavelli format) ---
         match = trimmedLine.match(directUnitLineRegex);
         if (match) {
-            const power = match[1];
-            const unitType = match[2].charAt(0).toUpperCase(); // A, F, or G (from Army/Fleet/Garrison)
-            // *** CORRECTED: Capture location correctly ***
-            const location = match[3].trim(); // Store the name/abbr as provided by the judge
-            gameState.units.push({ power: power, type: unitType, location: location, status: null });
-            const player = gameState.players.find(p => p.power === power);
-            // Ensure player exists and has units array before pushing
-            if (player) {
-                if (!player.units) player.units = []; // Initialize if missing
-                player.units.push({ type: unitType, location: location, status: null });
+            const power = match[1]; const unitTypeFull = match[2];
+            let unitTypeChar = unitTypeFull.charAt(0).toUpperCase();
+            if (unitTypeFull.toUpperCase() === 'ARTILLERY') unitTypeChar = 'R'; // Handle specific type for Artillery
+
+            const locationName = match[3].trim();
+            let locationAbbr = locationName.toUpperCase().substring(0,3); // Default fallback
+            if (nameToAbbr) {
+                const resolvedAbbr = nameToAbbr[locationName.toLowerCase()];
+                if (resolvedAbbr) {
+                    locationAbbr = resolvedAbbr;
+                } else {
+                    console.warn(`[Parser LIST ${gameName}] Direct Unit: Could not find abbr for location '${locationName}' (using '${locationAbbr}' as fallback) for power ${power}`);
+                }
             }
-            console.log(`[Parser LIST ${gameName}] Parsed Direct Unit: ${power} ${unitType} ${location}`);
-            return; // Use return instead of continue inside forEach
+
+            gameState.units.push({ power: power, type: unitTypeChar, location: locationAbbr, status: null });
+            const player = gameState.players.find(p => p.power === power);
+            if (player) { if (!player.units) player.units = []; player.units.push({ type: unitTypeChar, location: locationAbbr, status: null }); }
+            return;
         }
 
-        // --- Parse based on current section ---
         switch (currentSection) {
-            case 'header':
-            case 'unknown': // Parse global info regardless of section if missed
-                match = line.match(explicitDeadlineRegex);
-                if (match) {
-                    gameState.currentPhase = match[1].trim().toUpperCase();
-                    gameState.nextDeadline = match[2].trim();
-                    if (gameState.status === 'Unknown' || gameState.status === 'Forming') gameState.status = 'Active';
-                    break; // Found deadline, stop checking other header items for this line
-                }
-                match = line.match(activeStatusLineRegex);
-                if (match) {
-                    const phaseTypeStr = match[1].toLowerCase();
-                    const seasonStr = match[2].toLowerCase();
-                    const year = match[3];
-                    let seasonCode = 'S'; if (seasonStr === 'fall') seasonCode = 'F'; else if (seasonStr === 'winter') seasonCode = 'W'; else if (seasonStr === 'summer') seasonCode = 'U';
-                    let phaseCode = 'M'; if (phaseTypeStr === 'retreat') phaseCode = 'R'; else if (phaseTypeStr === 'adjustment' || phaseTypeStr === 'builds') phaseCode = 'A';
-                    gameState.currentPhase = `${seasonCode}${year}${phaseCode}`;
-                    gameState.status = 'Active';
-                    console.log(`[Parser LIST ${gameName}] Parsed active phase info: ${gameState.currentPhase}`);
-                    break;
-                }
-                match = line.match(statusRegex);
-                if (match) {
-                    const explicitStatus = match[1].trim();
-                    if (explicitStatus !== 'Active' || gameState.status === 'Unknown') gameState.status = explicitStatus;
-                    console.log(`[Parser LIST ${gameName}] Parsed explicit status: ${gameState.status}`);
-                    break;
-                }
-                match = line.match(variantRegex);
-                if (match) {
-                    gameState.variant = match[1].trim();
-                    const optionsStr = match[2].replace(/,/g, ' ').trim();
-                    gameState.options = optionsStr.split(/\s+/).filter(opt => opt && opt !== 'Variant:');
-                    if (gameState.options.includes('Gunboat')) gameState.settings.gunboat = true;
-                    if (gameState.options.includes('NMR')) gameState.settings.nmr = true; else gameState.settings.nmr = false;
-                    if (gameState.options.includes('Chaos')) gameState.settings.chaos = true;
-                    console.log(`[Parser LIST ${gameName}] Parsed variant: ${gameState.variant}, Options: ${gameState.options.join(', ')}`);
-                    break;
-                }
+            case 'header': case 'unknown':
+                match = line.match(explicitDeadlineRegex); if (match) { gameState.currentPhase = match[1].trim().toUpperCase(); gameState.nextDeadline = match[2].trim(); if (gameState.status === 'Unknown' || gameState.status === 'Forming') gameState.status = 'Active'; break; }
+                match = line.match(activeStatusLineRegex); if (match) { const [, phaseTypeStr, seasonStr, year] = match; let seasonCode = 'S'; if (seasonStr.toLowerCase() === 'fall') seasonCode = 'F'; else if (seasonStr.toLowerCase() === 'winter') seasonCode = 'W'; else if (seasonStr.toLowerCase() === 'summer') seasonCode = 'U'; let phaseCode = 'M'; if (phaseTypeStr.toLowerCase() === 'retreat') phaseCode = 'R'; else if (phaseTypeStr.toLowerCase() === 'adjustment' || phaseTypeStr.toLowerCase() === 'builds') phaseCode = 'A'; gameState.currentPhase = `${seasonCode}${year}${phaseCode}`; gameState.status = 'Active'; break; }
+                match = line.match(statusRegex); if (match) { const explicitStatus = match[1].trim(); if (explicitStatus !== 'Active' || gameState.status === 'Unknown') gameState.status = explicitStatus; break; }
+                match = line.match(variantRegex); if (match) { gameState.variant = match[1].trim(); const optionsStr = match[2].replace(/,/g, ' ').trim(); gameState.options = optionsStr.split(/\s+/).filter(opt => opt && opt !== 'Variant:'); if (gameState.options.includes('Gunboat')) gameState.settings.gunboat = true; if (gameState.options.includes('NMR')) gameState.settings.nmr = true; else gameState.settings.nmr = false; if (gameState.options.includes('Chaos')) gameState.settings.chaos = true; break; }
                 break;
-
             case 'players':
-                const playerMatch = line.match(playerLineRegex);
-                const masterMatch = line.match(masterLineRegex);
-                const observerMatch = line.match(observerLineRegex);
-                if (playerMatch) {
-                    const power = playerMatch[1];
-                    const email = playerMatch[2];
-                    let playerStatus = 'Playing';
-                    const statusMatch = line.match(/\(([^)]+)\)/);
-                    if (statusMatch) playerStatus = statusMatch[1];
-                    gameState.players.push({ power: power, email: email || null, status: playerStatus, name: null, units: [], supplyCenters: [] });
-                    console.log(`[Parser LIST ${gameName}] Parsed Player: ${power} - ${email} (${playerStatus})`);
-                } else if (masterMatch) {
-                    const email = masterMatch[1];
-                    if (email && !gameState.masters.includes(email)) gameState.masters.push(email);
-                } else if (observerMatch) {
-                    const email = observerMatch[1].trim().match(emailRegex)?.[0];
-                    if (email && !gameState.observers.includes(email)) gameState.observers.push(email);
-                }
+                const playerMatch = line.match(playerLineRegex); const masterMatch = line.match(masterLineRegex); const observerMatch = line.match(observerLineRegex);
+                if (playerMatch) { const power = playerMatch[1]; const email = playerMatch[2]; let playerStatus = 'Playing'; const statusMatch = line.match(/\(([^)]+)\)/); if (statusMatch) playerStatus = statusMatch[1]; gameState.players.push({ power: power, email: email || null, status: playerStatus, name: null, units: [], supplyCenters: [] }); }
+                else if (masterMatch) { const email = masterMatch[1]; if (email && !gameState.masters.includes(email)) gameState.masters.push(email); }
+                else if (observerMatch) { const email = observerMatch[1].trim().match(emailRegex)?.[0]; if (email && !gameState.observers.includes(email)) gameState.observers.push(email); }
                 break;
-
             case 'settings':
                 match = line.match(pressSettingRegex); if (match) gameState.settings.press = match[1].trim();
                 match = line.match(diasSettingRegex); if (match) gameState.settings.dias = (match[1].toUpperCase() === 'DIAS');
                 match = line.match(nmrSettingRegex); if (match) gameState.settings.nmr = (match[1].toUpperCase() === 'NMR');
                 match = line.match(concessionSettingRegex); if (match) gameState.settings.concessions = (match[1].toLowerCase() === 'concessions');
-                if (line.toLowerCase().includes('gunboat')) gameState.settings.gunboat = true;
-                if (line.toLowerCase().includes('chaos')) gameState.settings.chaos = true;
-                if (line.toLowerCase().includes('partial allowed')) gameState.settings.partialPress = true;
-                if (line.toLowerCase().includes('no partial')) gameState.settings.partialPress = false;
-                if (line.toLowerCase().includes('observer any')) gameState.settings.observerPress = 'any';
-                if (line.toLowerCase().includes('observer white')) gameState.settings.observerPress = 'white';
-                if (line.toLowerCase().includes('observer none')) gameState.settings.observerPress = 'none';
-                if (line.toLowerCase().includes('strict convoy')) gameState.settings.strictConvoy = true;
-                if (line.toLowerCase().includes('strict wait')) gameState.settings.strictWait = true;
-                if (line.toLowerCase().includes('strict grace')) gameState.settings.strictGrace = true;
-                // Add more settings parsing here
+                if (line.toLowerCase().includes('gunboat')) gameState.settings.gunboat = true; if (line.toLowerCase().includes('chaos')) gameState.settings.chaos = true;
+                if (line.toLowerCase().includes('partial allowed')) gameState.settings.partialPress = true; if (line.toLowerCase().includes('no partial')) gameState.settings.partialPress = false;
+                if (line.toLowerCase().includes('observer any')) gameState.settings.observerPress = 'any'; if (line.toLowerCase().includes('observer white')) gameState.settings.observerPress = 'white'; if (line.toLowerCase().includes('observer none')) gameState.settings.observerPress = 'none';
+                if (line.toLowerCase().includes('strict convoy')) gameState.settings.strictConvoy = true; if (line.toLowerCase().includes('strict wait')) gameState.settings.strictWait = true; if (line.toLowerCase().includes('strict grace')) gameState.settings.strictGrace = true;
                 break;
-
             case 'units':
-                if (!currentPowerForUnits) break; // Should have power context
-                match = line.match(unitLineRegex); // Use non-trimmed line for indentation check
+                if (!currentPowerForUnits) break;
+                match = line.match(unitLineRegex);
                 if (match) {
                     const unitType = match[1].toUpperCase();
-                    const location = match[2].toUpperCase(); // *** Store the abbreviation as provided ***
-                    const unitStatus = match[3] ? match[3].trim() : null; // Status like (dislodged)
-                    gameState.units.push({ power: currentPowerForUnits, type: unitType, location: location, status: unitStatus });
+                    const locationAbbrFromList = match[2].toUpperCase();
+                    const unitStatus = match[3] ? match[3].trim() : null;
+                    gameState.units.push({ power: currentPowerForUnits, type: unitType, location: locationAbbrFromList, status: unitStatus });
                     const player = gameState.players.find(p => p.power === currentPowerForUnits);
-                    if (player) player.units.push({ type: unitType, location: location, status: unitStatus });
-                    console.log(`[Parser LIST ${gameName}] Parsed Unit: ${currentPowerForUnits} ${unitType} ${location} ${unitStatus || ''}`);
-                } else if (trimmedLine && !trimmedLine.startsWith('-')) { // Stop if non-empty, non-unit, non-separator line
-                    console.log(`[Parser LIST ${gameName}] Stopped reading units for ${currentPowerForUnits} on line: "${line}"`);
-                    currentPowerForUnits = null;
-                    currentSection = 'unknown'; // Revert section state
-                }
+                    if (player) player.units.push({ type: unitType, location: locationAbbrFromList, status: unitStatus });
+                } else if (trimmedLine && !trimmedLine.startsWith('-')) { currentPowerForUnits = null; currentSection = 'unknown'; }
                 break;
-
-
             case 'cities_controlled':
-                // Regex to capture Power: City*(X), City*(Y), ...
-                const cityLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice):\s+(.*)\.?\s*$/i;
+                const cityLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s+(.*)\.?\s*$/i;
                 match = trimmedLine.match(cityLineRegex);
                 if (match) {
-                    const power = match[1];
-                    const citiesStr = match[2];
-                    console.log(`[Parser LIST Debug] Cities string for ${power}: "${citiesStr}"`); // Debug log
-                    // *** CORRECTED Regex to handle potential spaces before/after abbr ***
-                    // Use a simpler regex to find all 3-letter uppercase words
-                    const cityMatches = citiesStr.match(/[A-Z]{3}/g); // Find all 3-letter uppercase sequences
-
-                    if (cityMatches) {
-                        cityMatches.forEach(location => {
-                            // Add to gameState.supplyCenters
-                            gameState.supplyCenters.push({ owner: power, location: location });
-                            // Add to player.supplyCenters
-                            const player = gameState.players.find(p => p.power === power);
-                            if (player) {
-                                 if (!player.supplyCenters) player.supplyCenters = []; // Initialize if missing
-                                 // Avoid adding duplicates if LIST output is weird
-                                 if (!player.supplyCenters.includes(location)) {
-                                     player.supplyCenters.push(location);
-                                 }
+                    const power = match[1]; const citiesStr = match[2];
+                    const cityEntries = citiesStr.split(',');
+                    cityEntries.forEach(entry => {
+                        const nameMatch = entry.trim().match(/^([^(*]+)/);
+                        if (nameMatch) {
+                            const cityName = nameMatch[1].trim();
+                            let provinceAbbr = cityName.toUpperCase().substring(0,3); // Default fallback
+                            if (nameToAbbr) {
+                                const resolvedAbbr = nameToAbbr[cityName.toLowerCase()];
+                                if (resolvedAbbr) {
+                                    provinceAbbr = resolvedAbbr;
+                                } else {
+                                    console.warn(`[Parser LIST ${gameName}] SC: Could not find abbr for SC name '${cityName}' for power ${power} (using '${provinceAbbr}' as fallback). Original entry: '${entry.trim()}'`);
+                                }
                             }
-                            console.log(`[Parser LIST ${gameName}] Parsed Controlled City (SC): ${power} owns ${location}`);
-                        });
-                    } else {
-                        console.log(`[Parser LIST Debug] No 3-letter abbreviations found in cities string for ${power}: "${citiesStr}"`);
-                    }
-                } else if (trimmedLine === 'Unowned:') {
-                    // Ignore the 'Unowned:' line for now
-                } else if (trimmedLine && !trimmedLine.startsWith(' ') && !trimmedLine.startsWith('Unowned:') && !trimmedLine.startsWith('*')) {
-                    // If we hit a non-indented line that isn't a power line or 'Unowned:' or the '* = Home' line, stop this section
-                    console.log(`[Parser LIST ${gameName}] Stopped reading controlled cities on line: "${line}"`);
-                    currentSection = 'unknown'; // Revert section state
+                            gameState.supplyCenters.push({ owner: power, location: provinceAbbr });
+                            const playerForSc = gameState.players.find(p => p.power === power);
+                            if (playerForSc) {
+                                 if (!playerForSc.supplyCenters) playerForSc.supplyCenters = [];
+                                 if (!playerForSc.supplyCenters.includes(provinceAbbr)) playerForSc.supplyCenters.push(provinceAbbr);
+                            }
+                        } else {
+                            console.warn(`[Parser LIST ${gameName}] Could not parse SC entry '${entry.trim()}' for power ${power}.`);
+                        }
+                    });
+                } else if (trimmedLine === 'Unowned:') { /* Ignore */ }
+                else if (trimmedLine && !trimmedLine.startsWith(' ') && !trimmedLine.startsWith('Unowned:') && !trimmedLine.startsWith('*')) {
+                    currentSection = 'unknown';
                 }
                 break;
             case 'scs':
-                if (!currentPowerForSCs) break; // Should have power context
-                match = line.match(scLineRegex); // Use non-trimmed line for indentation check
+                if (!currentPowerForSCs) break;
+                const scLineRegex = /^\s+([A-Z]{3}(?:\/[NESW]C)?)\s*/i;
+                match = line.match(scLineRegex);
                 if (match) {
-                    const location = match[1].toUpperCase(); // *** Store the abbreviation ***
-                    gameState.supplyCenters.push({ owner: currentPowerForSCs, location: location });
+                    const locationAbbrFromList = match[1].toUpperCase();
+                    gameState.supplyCenters.push({ owner: currentPowerForSCs, location: locationAbbrFromList });
                     const player = gameState.players.find(p => p.power === currentPowerForSCs);
-                    if (player) player.supplyCenters.push(location);
-                    console.log(`[Parser LIST ${gameName}] Parsed SC: ${currentPowerForSCs} owns ${location}`);
-                } else if (trimmedLine && !trimmedLine.startsWith('-')) { // Stop if non-empty, non-SC, non-separator line
-                    console.log(`[Parser LIST ${gameName}] Stopped reading SCs for ${currentPowerForSCs} on line: "${line}"`);
-                    currentPowerForSCs = null;
-                    currentSection = 'unknown'; // Revert section state
-                }
+                    if (player) { if (!player.supplyCenters) player.supplyCenters = []; if (!player.supplyCenters.includes(locationAbbrFromList)) player.supplyCenters.push(locationAbbrFromList); }
+                } else if (trimmedLine && !trimmedLine.startsWith('-')) { currentPowerForSCs = null; currentSection = 'unknown'; }
                 break;
         }
-    }); // End lines.forEach
+    });
 
-    // --- Final Status Check & Defaults ---
     if (gameState.status === 'Unknown' && gameState.currentPhase && gameState.currentPhase !== 'Unknown') {
         if (gameState.currentPhase.toUpperCase() === 'FORMING') gameState.status = 'Forming';
         else gameState.status = 'Active';
-        console.log(`[Parser LIST ${gameName}] Inferred status '${gameState.status}' from phase '${gameState.currentPhase}'.`);
     }
-
-    // Set defaults for settings if not found
     if (gameState.settings.nmr === undefined) gameState.settings.nmr = false;
     if (gameState.settings.dias === undefined) gameState.settings.dias = true;
     if (gameState.settings.concessions === undefined) gameState.settings.concessions = true;
@@ -814,470 +676,14 @@ const parseListOutput = (gameName, output) => {
     if (gameState.settings.press === undefined) gameState.settings.press = 'White';
     if (gameState.settings.partialPress === undefined) gameState.settings.partialPress = true;
     if (gameState.settings.observerPress === undefined) gameState.settings.observerPress = 'any';
-
-    console.log(`[Parser LIST ${gameName}] Final Parsed State: Status=${gameState.status}, Phase=${gameState.currentPhase}, Variant=${gameState.variant}, Masters=${JSON.stringify(gameState.masters)}, Players=${gameState.players.length}, Units=${gameState.units.length}, SCs=${gameState.supplyCenters.length}, Settings=`, gameState.settings);
     return gameState;
 };
 
-// Simplified WHOGAME parser - LIST output is usually more comprehensive now
-const parseWhogameOutput = (gameName, output) => {
-    console.log(`[Parser WHOGAME] Attempting to parse WHOGAME output for ${gameName}`);
-    const players = []; const masters = []; const observers = [];
-    const lines = output.split('\n'); const emailRegex = /[\w.-]+@[\w.-]+\.\w+/;
-    lines.forEach(line => {
-        const trimmedLine = line.trim(); if (!trimmedLine) return;
-        const masterMatch = trimmedLine.match(/^(?:Master|Moderator)\s*:\s*(.*)/i);
-        const observerMatch = trimmedLine.match(/^(?:Observer|Watcher)\s*:\s*(.*)/i);
-        // Adjusted regex to handle Machiavelli powers
-        const powerMatch = trimmedLine.match(/^(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice)\s*:\s*(.*)/i);
-        if (masterMatch) {
-            const detail = masterMatch[1].trim(); const email = detail.match(emailRegex)?.[0];
-            if (email && !masters.includes(email)) masters.push(email);
-        } else if (observerMatch) {
-            const detail = observerMatch[1].trim(); const email = detail.match(emailRegex)?.[0];
-            if (email && !observers.includes(email)) observers.push(email);
-        } else if (powerMatch) {
-            const power = powerMatch[1]; const detail = powerMatch[2].trim();
-            const email = detail.match(emailRegex)?.[0];
-            const name = email ? detail.replace(email, '').replace(/[()]/g, '').trim() : detail;
-            players.push({ power: power, email: email || null, name: name || null, status: 'Unknown' }); // Status needs update from LIST
-        }
-    });
-    console.log(`[Parser WHOGAME ${gameName}] Parsed ${players.length} players, ${masters.length} masters, ${observers.length} observers`);
-    return { players, masters, observers };
-};
-
-
-// Helper to convert phase string like "Spring 1901 Movement" to "S1901M"
-function getPhaseCode(phaseStr, year) {
-    if (!phaseStr || !year) return 'Unknown';
-    const lowerPhase = phaseStr.toLowerCase();
-    let seasonCode = 'S'; // Default Spring
-    if (lowerPhase.includes('fall')) seasonCode = 'F';
-    else if (lowerPhase.includes('winter')) seasonCode = 'W';
-    else if (lowerPhase.includes('summer')) seasonCode = 'U'; // Less common
-
-    let phaseTypeCode = 'M'; // Default Movement
-    if (lowerPhase.includes('retreat')) phaseTypeCode = 'R';
-    else if (lowerPhase.includes('adjustment') || lowerPhase.includes('build')) phaseTypeCode = 'A'; // Changed B to A
-
-    // Handle cases where only year/season might be present (e.g., pre-game)
-    if (!phaseTypeCode && (seasonCode === 'S' || seasonCode === 'F' || seasonCode === 'W' || seasonCode === 'U')) {
-         // If it looks like a phase start but no type, assume Movement for S/F, Build for W
-         phaseTypeCode = (seasonCode === 'W') ? 'A' : 'M';
-    } else if (!phaseTypeCode) {
-        // Fallback if completely unparsable
-        return `${year || '?'}${seasonCode || '?'}${phaseTypeCode || '?'}`;
-    }
-
-
-    return `${seasonCode}${year}${phaseTypeCode}`;
-}
-
-
-const parseHistoryOutput = (gameName, output) => {
-    console.log(`[Parser HISTORY] Attempting to parse HISTORY output for ${gameName}`);
-    const history = {
-        gameName: gameName,
-        variant: null,
-        statusTimestamp: null,
-        phases: {}, // Use object keyed by phase code
-    };
-    const lines = output.split('\n');
-    let currentPhaseData = null;
-    let currentPhaseCode = null; // Store the code for the current phase
-    let readingPress = false;
-    let currentPress = null;
-
-    // --- Regex Definitions ---
-    const gameHeaderRegex = /^History of (.*) \((.*)\)$/; // 1: gameName, 2: variant
-    const statusTimestampRegex = /^Status of the game .* as of (.*)$/; // 1: timestamp
-    const deadlineRegex = /^Deadline for (.*), (\d{4}) is (.*)$/; // 1: phaseStr, 2: year, 3: deadlineStr
-    const supplyCenterRegex = /^([A-Z][a-z]+): +(\d+) supply centers/; // 1: power, 2: count
-    const eliminationRegex = /^([A-Z][a-z]+) has been eliminated\.$/; // 1: power
-    const unitRegex = /^([A-Z][a-z]+): +(A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?)$/; // 1: power, 2: unitType, 3: location (abbr/coast)
-    const orderResultRegex = /^\*+(.*)\*+$/; // 1: result description
-    const pressHeaderRegex = /^Press from (.*) to (.*):$/; // 1: fromPower, 2: toPowerOrAll
-
-    // Order Regex (simplified examples, more robust parsing might be needed)
-    const holdOrderRegex = /^([A-Z][a-z]+): +(A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?) H(?:old)?$/i; // 1: power, 2: unitType, 3: unitLocation
-    const moveOrderRegex = /^([A-Z][a-z]+): +(A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?) - ([A-Z]{3}(?:\/[NESW]C)?)$/i; // 1: power, 2: unitType, 3: unitLocation, 4: destination
-    const supportHoldOrderRegex = /^([A-Z][a-z]+): +(A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?) S +(?:A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?)$/i; // 1: power, 2: unitType, 3: unitLocation, 4: supportedUnitLocation
-    const supportMoveOrderRegex = /^([A-Z][a-z]+): +(A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?) S +(?:A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?) - ([A-Z]{3}(?:\/[NESW]C)?)$/i; // 1: power, 2: unitType, 3: unitLocation, 4: supportedUnitLocation, 5: supportedUnitDestination
-    const convoyOrderRegex = /^([A-Z][a-z]+): +(F) +([A-Z]{3}(?:\/[NESW]C)?) C +(A) +([A-Z]{3}(?:\/[NESW]C)?) - ([A-Z]{3}(?:\/[NESW]C)?)$/i; // 1: power, 2: unitType(F), 3: unitLocation, 4: convoyedUnitType(A), 5: convoyedUnitLocation, 6: convoyedUnitDestination
-    const retreatOrderRegex = /^([A-Z][a-z]+): +(A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?) R +([A-Z]{3}(?:\/[NESW]C)?)$/i; // 1: power, 2: unitType, 3: unitLocation, 4: destination
-    const disbandOrderRegex = /^([A-Z][a-z]+): +(A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?) D(?:isband)?$/i; // 1: power, 2: unitType, 3: unitLocation
-    const buildOrderRegex = /^([A-Z][a-z]+): +Build (A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?)$/i; // 1: power, 2: unitType, 3: location
-    const waiveBuildOrderRegex = /^([A-Z][a-z]+): +Waive Build$/i; // 1: power
-    const removeOrderRegex = /^([A-Z][a-z]+): +Remove (A|F|W|R) +([A-Z]{3}(?:\/[NESW]C)?)$/i; // 1: power, 2: unitType, 3: location
-    const waiveRemovalOrderRegex = /^([A-Z][a-z]+): +Waive Removal$/i; // 1: power
-
-    // Function to initialize a phase data object
-    const createPhaseData = (phaseCode, deadline) => ({
-        phase: phaseCode,
-        deadline: deadline,
-        supplyCenters: {},
-        eliminations: [],
-        units: {}, // Units keyed by power { 'France': [{type: 'A', location: 'Paris'}], ... }
-        orders: {}, // Orders keyed by power { 'France': [{raw: '...', type: 'Hold'}], ... }
-        results: [], // Store results as simple strings for now
-        press: [],
-    });
-
-    // --- Parsing Loop ---
-    lines.forEach((line, index) => {
-        const trimmedLine = line.trim();
-        let match;
-
-        // Stop reading press if we hit a non-press line
-        if (readingPress && !pressHeaderRegex.test(trimmedLine) && !trimmedLine.startsWith(" ") && trimmedLine !== "") {
-             if (currentPress && currentPhaseData) {
-                 currentPress.message = currentPress.message.trim();
-                 // Only add if message is not empty
-                 if (currentPress.message) {
-                    currentPhaseData.press.push(currentPress);
-                 }
-                 console.log(`[Parser HISTORY ${gameName}] Finished reading press from ${currentPress.from} to ${currentPress.to}.`);
-             }
-             readingPress = false;
-             currentPress = null;
-        }
-
-
-        // 1. Game Header
-        match = trimmedLine.match(gameHeaderRegex);
-        if (match) {
-            history.gameName = match[1].trim(); // Update game name if different
-            history.variant = match[2].trim();
-            console.log(`[Parser HISTORY ${gameName}] Parsed Header: Name=${history.gameName}, Variant=${history.variant}`);
-            return; // Continue to next line
-        }
-
-        // 2. Status Timestamp
-        match = trimmedLine.match(statusTimestampRegex);
-        if (match) {
-            history.statusTimestamp = match[1].trim();
-            console.log(`[Parser HISTORY ${gameName}] Parsed Status Timestamp: ${history.statusTimestamp}`);
-            return; // Continue to next line
-        }
-
-        // 3. Deadline (Indicates start of a new phase)
-        match = trimmedLine.match(deadlineRegex);
-        if (match) {
-            // No need to push previous phase data here, we use an object keyed by phase code
-            readingPress = false; // Ensure press reading stops at phase boundary
-            currentPress = null;
-
-            const phaseStr = match[1].trim();
-            const year = match[2].trim();
-            const deadlineStr = match[3].trim();
-            currentPhaseCode = getPhaseCode(phaseStr, year); // Store the current phase code
-            currentPhaseData = createPhaseData(currentPhaseCode, deadlineStr);
-            history.phases[currentPhaseCode] = currentPhaseData; // Add to history object
-            console.log(`[Parser HISTORY ${gameName}] Started parsing phase: ${currentPhaseCode}, Deadline: ${deadlineStr}`);
-            return; // Continue to next line
-        }
-
-        // Ensure we have a phase context before parsing phase-specific data
-        if (!currentPhaseData) {
-            // Skip lines before the first deadline if they aren't global headers
-            // console.log(`[Parser HISTORY ${gameName}] Skipping line outside phase context: ${trimmedLine}`);
-            return;
-        }
-
-        // 4. Supply Centers
-        match = trimmedLine.match(supplyCenterRegex);
-        if (match) {
-            const power = match[1];
-            const count = parseInt(match[2], 10);
-            currentPhaseData.supplyCenters[power] = count;
-            return;
-        }
-
-        // 5. Eliminations
-        match = trimmedLine.match(eliminationRegex);
-        if (match) {
-            const power = match[1];
-            currentPhaseData.eliminations.push(power);
-            return;
-        }
-
-        // 6. Unit Positions (typically listed before orders)
-        match = trimmedLine.match(unitRegex);
-        if (match) {
-            const power = match[1];
-            const unitType = match[2].toUpperCase();
-            const location = match[3].trim().toUpperCase(); // Standardize case
-            if (!currentPhaseData.units[power]) {
-                currentPhaseData.units[power] = [];
-            }
-            // Avoid duplicates if units listed multiple times
-            if (!currentPhaseData.units[power].some(u => u.type === unitType && u.location === location)) {
-                 currentPhaseData.units[power].push({ type: unitType, location: location });
-            }
-            return;
-        }
-
-        // 7. Order Results
-        match = trimmedLine.match(orderResultRegex);
-        if (match) {
-            currentPhaseData.results.push(match[1].trim());
-            return;
-        }
-
-        // 8. Press Header
-        match = trimmedLine.match(pressHeaderRegex);
-        if (match) {
-             // Finalize previous press message if one was being read
-             if (readingPress && currentPress && currentPhaseData) {
-                 currentPress.message = currentPress.message.trim();
-                 if (currentPress.message) { // Only add if not empty
-                     currentPhaseData.press.push(currentPress);
-                 }
-             }
-
-            readingPress = true;
-            currentPress = {
-                from: match[1].trim(),
-                to: match[2].trim(),
-                message: ''
-            };
-            console.log(`[Parser HISTORY ${gameName}] Started reading press from ${currentPress.from} to ${currentPress.to}.`);
-            return;
-        }
-
-        // 9. Press Content
-        if (readingPress && currentPress) {
-            // Append line to current press message, preserving leading spaces for formatting
-            currentPress.message += line + '\n'; // Keep original line ending for multi-line
-            return;
-        }
-
-        // 10. Orders (Check various types) - Store raw order string for now
-        // More detailed parsing could create structured order objects
-        const parseOrder = (regex, orderType) => {
-             match = trimmedLine.match(regex);
-             if (match) {
-                 const power = match[1];
-                 if (!currentPhaseData.orders[power]) {
-                     currentPhaseData.orders[power] = [];
-                 }
-                 // Store the raw line as the order for simplicity, could parse details later
-                 currentPhaseData.orders[power].push({ raw: trimmedLine, type: orderType });
-                 return true; // Indicate match found
-             }
-             return false;
-        };
-
-        if (parseOrder(holdOrderRegex, 'Hold')) return;
-        if (parseOrder(moveOrderRegex, 'Move')) return;
-        if (parseOrder(supportHoldOrderRegex, 'Support Hold')) return;
-        if (parseOrder(supportMoveOrderRegex, 'Support Move')) return;
-        if (parseOrder(convoyOrderRegex, 'Convoy')) return;
-        if (parseOrder(retreatOrderRegex, 'Retreat')) return;
-        if (parseOrder(disbandOrderRegex, 'Disband')) return;
-        if (parseOrder(buildOrderRegex, 'Build')) return;
-        if (parseOrder(waiveBuildOrderRegex, 'Waive Build')) return;
-        if (parseOrder(removeOrderRegex, 'Remove')) return;
-        if (parseOrder(waiveRemovalOrderRegex, 'Waive Removal')) return;
-
-        // If line didn't match anything known, log it (optional)
-        // if (trimmedLine) {
-        //     console.log(`[Parser HISTORY ${gameName}] Unmatched line in phase ${currentPhaseData?.phase}: ${trimmedLine}`);
-        // }
-
-    }); // End lines.forEach
-
-    // Finalize any pending press message after loop finishes
-    if (readingPress && currentPress && currentPhaseData) {
-        currentPress.message = currentPress.message.trim();
-        if (currentPress.message) { // Only add if not empty
-            currentPhaseData.press.push(currentPress);
-        }
-    }
-
-    console.log(`[Parser HISTORY ${gameName}] Final Parsed Object:`, history); // Log the full object for debugging
-    return history;
-};
-
-
-// --- Map Info Parsing Function ---
-/**
- * Parses a .info file for a given variant, extracting province abbreviations,
- * full names, and coordinates. Caches results.
- * @param {string} variantName - The name of the variant (e.g., 'standard', 'machiavelli').
- * @returns {Promise<object|null>} - An object containing parsed map data { powers: [], provinces: { ABR: { name, abbr, x, y, ... } } } or null on failure.
- */
-const parseMapInfoFile = async (variantName) => {
-    if (!variantName || typeof variantName !== 'string') {
-        console.error('[Map Parse Error] Invalid variant name provided:', variantName);
-        throw new Error('Invalid variant name provided.');
-    }
-    const lowerVariant = variantName.toLowerCase().replace(/[^a-z0-9_-]/g, ''); // Basic sanitization for cache key
-
-    // Check cache first (using lowercase key)
-    if (mapInfoCache[lowerVariant]) {
-        console.log(`[Map Parse Cache] Returning cached info for variant: ${lowerVariant}`);
-        return mapInfoCache[lowerVariant];
-    }
-
-    console.log(`[Map Parse] Parsing info file for variant: ${variantName} (checking casings)`);
-
-    // Construct potential file paths
-    const filePathOriginal = path.join(mapDataPath, `${variantName}.info`);
-    const filePathLower = path.join(mapDataPath, `${lowerVariant}.info`);
-    let fileContent;
-    let usedPath = '';
-
-    try {
-        // Try reading the original case first
-        console.log(`[Map Parse] Attempting to read: ${filePathOriginal}`);
-        fileContent = await fsPromises.readFile(filePathOriginal, 'utf-8');
-        usedPath = filePathOriginal;
-        console.log(`[Map Parse] Successfully read original case: ${usedPath}`);
-    } catch (errorOriginal) {
-        if (errorOriginal.code === 'ENOENT') {
-            // If original case not found, try lowercase
-            console.log(`[Map Parse] Original case not found (${filePathOriginal}), trying lowercase: ${filePathLower}`);
-            try {
-                fileContent = await fsPromises.readFile(filePathLower, 'utf-8');
-                usedPath = filePathLower;
-                console.log(`[Map Parse] Successfully read lowercase: ${usedPath}`);
-            } catch (errorLower) {
-                console.error(`[Map Parse Error] Could not read file (both cases) - Original (${filePathOriginal}): ${errorOriginal.message}, Lowercase (${filePathLower}): ${errorLower.message}`);
-                throw new Error(`Failed to read map info file for variant ${variantName}. Tried paths: ${filePathOriginal}, ${filePathLower}`);
-            }
-        } else {
-            // Error other than ENOENT for the original path
-            console.error(`[Map Parse Error] Could not read file ${filePathOriginal}:`, errorOriginal);
-            throw new Error(`Failed to read map info file for variant ${variantName}. Path: ${filePathOriginal}`);
-        }
-    }
-
-    const lines = fileContent.split(/\r?\n/);
-    const mapData = {
-        powers: [],
-        provinces: {} // Keyed by abbreviation
-    };
-    let parsingSection = 'powers'; // Start by parsing powers
-
-    // Regex to capture province data: X Y [UX UY] [SCX SCY] |ABR|...|FullName|...
-    // Group 1: X, Group 2: Y
-    // Group 3 (optional): UX, Group 4 (optional): UY
-    // Group 5 (optional): SCX, Group 6 (optional): SCY
-    // Group 1: X, Group 2: Y
-    // Group 3 (optional): SCX, Group 4 (optional): SCY
-    // Group 5: ABR, Group 6: FullName
-    const provinceRegex = /^\s*(\d+)\s+(\d+)\s*\|([A-Z]{3})\|(?:[^|]*?\|){1}([^|]+)\|(?:\s*(\d+)\s+(\d+))?/;
-
-
-    for (const line of lines) {
-        const trimmedLine = line.trim();
-
-        // Skip empty lines and comments
-        if (!trimmedLine || trimmedLine.startsWith('#')) {
-            continue;
-        }
-
-        if (parsingSection === 'powers') {
-            if (trimmedLine === '-1') {
-                parsingSection = 'provinces'; // Switch to parsing provinces
-            } else {
-                // Assuming power names don't contain special characters needing complex parsing
-                mapData.powers.push(trimmedLine);
-            }
-        } else if (parsingSection === 'provinces') {
-            const match = trimmedLine.match(provinceRegex);
-            if (match) {
-                // Correctly capture groups based on the updated regex
-                const [, x, y, abbr, name, scx, scy] = match;
-                const provinceName = name.trim(); // Trim whitespace from name
-                const upperAbbr = abbr.toUpperCase(); // Standardize abbr to uppercase
-
-                if (upperAbbr && provinceName && x !== undefined && y !== undefined) {
-                     const primaryX = parseInt(x, 10);
-                     const primaryY = parseInt(y, 10);
-                     mapData.provinces[upperAbbr] = {
-                         name: provinceName,
-                         abbr: upperAbbr,
-                         x: primaryX, // Primary coordinate pair
-                         y: primaryY,
-                         unitX: primaryX, // Use primary for unit as no specific unit coords exist
-                         unitY: primaryY,
-                         scX: scx ? parseInt(scx, 10) : undefined, // Optional SC coordinate pair
-                         scY: scy ? parseInt(scy, 10) : undefined,
-                         labelX: primaryX, // Use primary for label
-                         labelY: primaryY
-                     };
-                     // console.log(`[Map Parse Debug] Parsed: ${upperAbbr} -> ${provinceName} (Coords: ${primaryX},${primaryY}, SC Coords: ${scx},${scy})`);
-                } else {
-                    console.warn(`[Map Parse Warn] Skipping province line with missing data in ${variantName}: ${line}`);
-                }
-            } else {
-                // Log lines that don't match the expected province format
-                console.warn(`[Map Parse Warn] Unrecognized line format in province section of ${variantName}: ${line}`);
-            }
-        }
-    } // End loop through lines
-
-     if (Object.keys(mapData.provinces).length === 0) {
-         console.warn(`[Map Parse Warn] No provinces parsed for variant ${variantName}. Check file format or path: ${usedPath}`);
-         // Return null or throw error if no provinces found, as map generation is impossible.
-         return null;
-     }
-
-    // Cache the result before returning (using lowercase key)
-    mapInfoCache[lowerVariant] = mapData;
-    console.log(`[Map Parse Success] Parsed and cached info for variant: ${variantName} (cached as ${lowerVariant}) from ${usedPath}. Found ${Object.keys(mapData.provinces).length} provinces.`);
-    return mapData;
-};
-
-
-// Helper to get or generate name->abbr mapping for a variant
-const getNameToAbbrMap = async (variantName) => {
-    const lowerVariant = variantName.toLowerCase().replace(/[^a-z0-9_-]/g, ''); // Use consistent key
-    if (nameToAbbrCache[lowerVariant]) {
-        return nameToAbbrCache[lowerVariant];
-    }
-
-    try {
-        const mapInfo = await parseMapInfoFile(variantName); // Use original case for file reading
-        if (!mapInfo || !mapInfo.provinces) {
-            throw new Error(`Could not get map info for ${variantName}`);
-        }
-        const nameToAbbr = {};
-        for (const abbr in mapInfo.provinces) {
-            const province = mapInfo.provinces[abbr];
-            const normalizedName = province.name.toLowerCase().trim();
-            if (!nameToAbbr[normalizedName]) {
-                nameToAbbr[normalizedName] = abbr;
-            }
-            // Add alias for abbreviation itself (lowercase)
-            if (!nameToAbbr[abbr.toLowerCase()]) {
-                 nameToAbbr[abbr.toLowerCase()] = abbr;
-            }
-        }
-        nameToAbbrCache[lowerVariant] = nameToAbbr; // Cache using lowercase key
-        console.log(`[Map Utils] Generated nameToAbbr map for variant: ${variantName} (cached as ${lowerVariant})`);
-        return nameToAbbr;
-    } catch (error) {
-        console.error(`[Map Utils Error] Failed to generate nameToAbbr map for ${variantName}:`, error);
-        return {}; // Return empty map on error
-    }
-};
-
-
 // --- Command Recommendation Logic ---
 const getRecommendedCommands = (gameState, userEmail) => {
-    console.log(`[getRecommendedCommands] Generating for user: ${userEmail}, Game State:`, gameState ? { name: gameState.name, status: gameState.status, phase: gameState.currentPhase, masters: gameState.masters } : null); // Log input
+    // console.log(`[getRecommendedCommands] Generating for user: ${userEmail}, Game State:`, gameState ? { name: gameState.name, status: gameState.status, phase: gameState.currentPhase, masters: gameState.masters } : null);
 
-    const recommendations = {
-        recommended: [], playerActions: [], settings: [],
-        gameInfo: [], master: [], general: [],
-    };
-
-    // Define all possible commands (keep this list comprehensive)
-    const allCommands = [ /* ... Keep the full list from previous version ... */ ];
+    const recommendations = { recommended: [], playerActions: [], settings: [], gameInfo: [], master: [], general: [] };
     const generalCmds = ['GET', 'HELP', 'VERSION', 'WHOIS', 'LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'MAP', 'GET DEDICATION', 'INFO PLAYER', 'MANUAL'];
     const playerAccountCmds = ['REGISTER', 'I AM ALSO', 'SET PASSWORD', 'SET ADDRESS'];
     const joiningCmds = ['CREATE ?', 'SIGN ON ?', 'SIGN ON ?game', 'SIGN ON power', 'OBSERVE', 'WATCH'];
@@ -1308,1794 +714,499 @@ const getRecommendedCommands = (gameState, userEmail) => {
         'SET SPECIAL', 'SET STORM'
     ];
 
-    // Assign all commands to basic categories first
     recommendations.general = [...generalCmds, ...playerAccountCmds];
     recommendations.gameInfo = [...joiningCmds];
     recommendations.playerActions = [...playerActionCmds];
     recommendations.settings = [...playerSettingCmds];
     recommendations.master = [...masterCmds];
 
-    // Refine based on context
-    if (!gameState || !userEmail) { // No game context or user email
-        console.log("[getRecommendedCommands] No game state or user email provided.");
+    if (!gameState || !userEmail) {
         recommendations.recommended = ['SIGN ON ?', 'SIGN ON ?game', 'SIGN ON power', 'OBSERVE', 'LIST', 'CREATE ?'];
     } else {
-        // Determine user's role
-        // Ensure masters array exists and is an array before checking includes
         const userIsMaster = Array.isArray(gameState.masters) && gameState.masters.includes(userEmail);
         const myPlayerInfo = Array.isArray(gameState.players) ? gameState.players.find(p => p.email === userEmail) : null;
         const userIsPlayer = !!myPlayerInfo;
         const userIsObserver = Array.isArray(gameState.observers) && gameState.observers.includes(userEmail) && !userIsPlayer && !userIsMaster;
-
         const phase = gameState.currentPhase?.toUpperCase() || 'UNKNOWN';
-        // Ensure status check is case-insensitive and handles potential null/undefined
         const status = gameState.status?.toUpperCase() || 'UNKNOWN';
         const playerStatus = myPlayerInfo?.status?.toUpperCase() || 'UNKNOWN';
         const isActivePlayer = userIsPlayer && !['CD', 'RESIGNED', 'ABANDONED', 'ELIMINATED'].includes(playerStatus);
 
-        console.log(`[getRecommendedCommands] Role Check: Master=${userIsMaster}, Player=${userIsPlayer}, Observer=${userIsObserver}, ActivePlayer=${isActivePlayer}`);
-        console.log(`[getRecommendedCommands] Game Status: ${status}, Phase: ${phase}`);
-
-        // --- Recommendations based on Status ---
         if (status === 'FORMING') {
-            console.log("[getRecommendedCommands] Status: FORMING");
             if (userIsPlayer) recommendations.recommended.push('SET PREFERENCE');
             else if (!userIsMaster && !userIsObserver) recommendations.recommended.push('SIGN ON ?game');
             if (userIsMaster) recommendations.recommended.push('FORCE BEGIN', 'SET');
             recommendations.recommended.push('LIST', 'WHOGAME');
         } else if (status === 'ACTIVE') {
-            console.log("[getRecommendedCommands] Status: ACTIVE");
-            // Player recommendations
             if (isActivePlayer) {
-                console.log("[getRecommendedCommands] User is Active Player.");
-                // Check phase for ORDERS (Movement, Retreat, Build/Adjust)
-                if (phase.endsWith('M') || phase.endsWith('R') || phase.endsWith('B') || phase.endsWith('A')) {
-                    recommendations.recommended.push('ORDERS');
-                }
-                if (gameState.settings?.press !== 'None') {
-                    recommendations.recommended.push('PRESS', 'BROADCAST');
-                }
+                if (phase.endsWith('M') || phase.endsWith('R') || phase.endsWith('B') || phase.endsWith('A')) recommendations.recommended.push('ORDERS');
+                if (gameState.settings?.press !== 'None') recommendations.recommended.push('PRESS', 'BROADCAST');
                 if (gameState.settings?.wait !== false) recommendations.recommended.push('SET WAIT');
-                if (gameState.settings?.dias !== false || gameState.settings?.dias === undefined) {
-                    recommendations.recommended.push('SET DRAW');
-                }
-                if (gameState.settings?.concessions !== false) {
-                    recommendations.recommended.push('SET CONCEDE');
-                }
+                if (gameState.settings?.dias !== false || gameState.settings?.dias === undefined) recommendations.recommended.push('SET DRAW');
+                if (gameState.settings?.concessions !== false) recommendations.recommended.push('SET CONCEDE');
                 recommendations.recommended.push('DIARY');
-            }
-            // Observer recommendations
-            else if (userIsObserver && gameState.settings?.observerPress !== 'none' && gameState.settings?.press !== 'None') {
-                console.log("[getRecommendedCommands] User is Observer with Press rights.");
+            } else if (userIsObserver && gameState.settings?.observerPress !== 'none' && gameState.settings?.press !== 'None') {
                  recommendations.recommended.push('PRESS', 'BROADCAST');
-            }
-            // Uninvolved user recommendations
-            else if (!userIsPlayer && !userIsMaster && !userIsObserver) {
-                console.log("[getRecommendedCommands] User is not involved.");
+            } else if (!userIsPlayer && !userIsMaster && !userIsObserver) {
                  recommendations.recommended.push('SIGN ON power', 'OBSERVE');
             }
-            // Master recommendations
-            if (userIsMaster) {
-                console.log("[getRecommendedCommands] User is Master.");
-                 recommendations.recommended.push('PROCESS', 'SET DEADLINE', 'PAUSE', 'EJECT', 'BECOME');
-                 // Add more common master actions if desired
-            }
-            // General recommendations for active games
+            if (userIsMaster) recommendations.recommended.push('PROCESS', 'SET DEADLINE', 'PAUSE', 'EJECT', 'BECOME');
             recommendations.recommended.push('LIST', 'HISTORY', 'SUMMARY', 'WHOGAME');
-
         } else if (status === 'PAUSED') {
-            console.log("[getRecommendedCommands] Status: PAUSED");
              if (userIsMaster) recommendations.recommended.push('RESUME', 'TERMINATE');
              if (gameState.settings?.press !== 'None' && (isActivePlayer || (userIsObserver && gameState.settings?.observerPress !== 'none'))) {
                  recommendations.recommended.push('PRESS', 'BROADCAST');
              }
              recommendations.recommended.push('LIST', 'HISTORY', 'SUMMARY', 'WHOGAME');
         } else if (status === 'FINISHED' || status === 'TERMINATED') {
-            console.log("[getRecommendedCommands] Status: FINISHED/TERMINATED");
              recommendations.recommended = ['HISTORY', 'SUMMARY', 'LIST'];
              if (userIsMaster) recommendations.recommended.push('ROLLBACK', 'UNSTART');
-        } else { // Unknown status
-            console.log("[getRecommendedCommands] Status: UNKNOWN");
+        } else {
              recommendations.recommended = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME'];
              if (!userIsPlayer && !userIsMaster && !userIsObserver) recommendations.recommended.push('SIGN ON power', 'OBSERVE');
         }
-
-        // --- Adjust Categories ---
-        if (userIsPlayer || userIsMaster || userIsObserver) {
-            recommendations.gameInfo = recommendations.gameInfo.filter(cmd => !joiningCmds.includes(cmd));
-        }
+        if (userIsPlayer || userIsMaster || userIsObserver) recommendations.gameInfo = recommendations.gameInfo.filter(cmd => !joiningCmds.includes(cmd));
         recommendations.gameInfo.push('LIST', 'HISTORY', 'SUMMARY', 'WHOGAME');
-
-        if (!userIsMaster) {
-            recommendations.master = [];
-        }
-        if (!userIsPlayer && !userIsObserver && !userIsMaster) {
-            recommendations.playerActions = [];
-            recommendations.settings = [];
-        } else if (userIsObserver && !userIsMaster) {
-            recommendations.playerActions = recommendations.playerActions.filter(cmd => ['RESIGN', 'WITHDRAW', 'PRESS', 'BROADCAST'].includes(cmd));
-            recommendations.settings = [];
-        }
+        if (!userIsMaster) recommendations.master = [];
+        if (!userIsPlayer && !userIsObserver && !userIsMaster) { recommendations.playerActions = []; recommendations.settings = []; }
+        else if (userIsObserver && !userIsMaster) { recommendations.playerActions = recommendations.playerActions.filter(cmd => ['RESIGN', 'WITHDRAW', 'PRESS', 'BROADCAST'].includes(cmd)); recommendations.settings = []; }
     }
-
-    // --- Final Cleanup ---
-    const allListedCmds = new Set([
-        ...recommendations.recommended, ...recommendations.playerActions, ...recommendations.settings,
-        ...recommendations.gameInfo, ...recommendations.master, ...recommendations.general
-    ]);
-    if (!allListedCmds.has('MANUAL')) {
+    if (!new Set([...recommendations.recommended, ...recommendations.playerActions, ...recommendations.settings, ...recommendations.gameInfo, ...recommendations.master, ...recommendations.general]).has('MANUAL')) {
         recommendations.general.push('MANUAL');
     }
-
     const uniqueCommands = new Set();
-    const filterUniqueAndSort = (arr) => arr.filter(cmd => {
-        if (uniqueCommands.has(cmd) || cmd === 'REGISTER' || cmd === 'SIGN OFF') return false;
-        uniqueCommands.add(cmd);
-        return true;
-    }).sort();
-
+    const filterUniqueAndSort = (arr) => arr.filter(cmd => { if (uniqueCommands.has(cmd) || cmd === 'REGISTER' || cmd === 'SIGN OFF') return false; uniqueCommands.add(cmd); return true; }).sort();
     const finalRecommendations = {};
-    for (const key in recommendations) {
-        finalRecommendations[key] = filterUniqueAndSort(recommendations[key]);
-    }
-
-    console.log(`[getRecommendedCommands] Final Recommendations:`, finalRecommendations); // Log final output
+    for (const key in recommendations) finalRecommendations[key] = filterUniqueAndSort(recommendations[key]);
+    // console.log(`[getRecommendedCommands] Final Recommendations:`, finalRecommendations);
     return finalRecommendations;
 };
+
 // --- Dip Execution Function ---
-// Takes email, command, and optional game context (name, password, variant)
 const executeDipCommand = (email, command, targetGame = null, targetPassword = null, targetVariant = null) => {
-    return new Promise(async (resolve, reject) => { // Make async to await getGameState
+    return new Promise(async (resolve, reject) => {
         const now = new Date();
         let fullCommand = command.trim();
         const commandParts = fullCommand.split(/\s+/);
         const commandVerb = commandParts[0].toUpperCase();
-
-        // Commands that *don't* need game context prepended (SIGN ON handled separately)
         const noContextCommands = [
-            'REGISTER', 'WHOIS', 'INFO', 'GET', 'VERSION', 'HELP', 'LIST', // Global info
-            'CREATE', // Initiating game interaction
-            'SET PASSWORD', 'SET ADDRESS', // User account settings
-            'MANUAL', // User explicitly handles everything
-            'I AM ALSO', 'GET DEDICATION', 'INFO PLAYER', 'SEND', 'MAP' // More info/account commands
+            'REGISTER', 'WHOIS', 'INFO', 'GET', 'VERSION', 'HELP', 'LIST',
+            'CREATE', 'SET PASSWORD', 'SET ADDRESS', 'MANUAL',
+            'I AM ALSO', 'GET DEDICATION', 'INFO PLAYER', 'SEND', 'MAP'
         ];
-
-        // Commands that *might* take a game name but don't require SIGN ON if provided
         const gameNameOptionalCommands = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'OBSERVE', 'WATCH'];
-
         let requiresSignOn = false;
 
         if (commandVerb === 'SIGN' && command.toUpperCase().includes(' ON ')) {
-            // SIGN ON itself doesn't need a prefix, it *is* the prefix/context setter
             requiresSignOn = false;
         } else if (noContextCommands.includes(commandVerb)) {
             requiresSignOn = false;
         } else if (gameNameOptionalCommands.includes(commandVerb) && commandParts.length > 1) {
-            // Check if the second part looks like a game name and not a keyword
             const potentialGameName = commandParts[1];
             const keywords = ['FULL', 'FROM', 'TO', 'LINES', 'EXCLSTART', 'EXCLEND', 'BROAD'];
             if (/^[a-zA-Z0-9]{1,8}$/.test(potentialGameName) && !keywords.includes(potentialGameName.toUpperCase())) {
-                 // Command provides its own game context, no SIGN ON needed
                  requiresSignOn = false;
-                 // Update targetGame if specified differently
-                 if (targetGame && targetGame !== potentialGameName) {
-                     console.log(`[Execute Prep] Command ${commandVerb} specifies game '${potentialGameName}', using it instead of context '${targetGame}' for this execution.`);
-                     targetGame = potentialGameName; // Use the command's game for this specific execution
-                 } else if (!targetGame) {
-                     targetGame = potentialGameName;
-                 }
+                 if (targetGame && targetGame !== potentialGameName) targetGame = potentialGameName;
+                 else if (!targetGame) targetGame = potentialGameName;
             } else {
-                 // Doesn't look like a game name, assume it needs context if targetGame is set
                  requiresSignOn = !!targetGame;
             }
         } else {
-            // Default: Assume context is needed if a target game is selected
             requiresSignOn = !!targetGame;
         }
 
-
         let signOnPrefix = null;
         if (requiresSignOn) {
-            if (!targetGame || !targetPassword) {
-                return reject({ success: false, output: `Error: Command "${commandVerb}" requires a target game and password, but none were provided or inferred.` });
-            }
-
-            // Determine the correct SIGN ON prefix (Variant > Role > Default)
-            const variant = targetVariant; // Use the passed-in variant
-
+            if (!targetGame || !targetPassword) return reject({ success: false, output: `Error: Command "${commandVerb}" requires a target game and password.` });
+            const variant = targetVariant;
             if (variant && variant.trim() !== '') {
-                // Variant logic: Use the specific format requested, overriding role-based prefix
-                const cleanVariant = variant.trim();
-                // Use SIGN ON ?game password variant format
-                signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword} ${cleanVariant}`;
-                console.log(`[Execute Prep] Using variant sign-on for ${email} on game ${targetGame} with variant ${cleanVariant}`);
+                signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword} ${variant.trim()}`;
             } else {
-                // No variant: Use role-based logic
                 try {
                     const gameState = await getGameState(targetGame);
-                    if (!gameState) {
-                         console.warn(`[Execute Prep] Game ${targetGame} not in DB. Assuming join/observe sign-on ('?') for command ${commandVerb}.`);
-                         signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword}`;
-                    } else {
+                    if (!gameState) signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword}`;
+                    else {
                         const userIsMaster = gameState.masters?.includes(email);
                         const myPlayerInfo = gameState.players?.find(p => p.email === email);
                         const userIsPlayer = !!myPlayerInfo;
                         const userPowerInitial = userIsPlayer ? myPlayerInfo.power?.charAt(0).toUpperCase() : null;
                         const userIsObserver = gameState.observers?.includes(email) && !userIsPlayer && !userIsMaster;
-
-                        if (userIsPlayer && userPowerInitial) {
-                            signOnPrefix = `SIGN ON ${userPowerInitial}${targetGame} ${targetPassword}`;
-                        } else if (userIsMaster) {
-                            // Masters sign on with 'M' initial (convention, might vary)
-                            signOnPrefix = `SIGN ON M${targetGame} ${targetPassword}`;
-                        } else if (userIsObserver) {
-                             // Observers sign on with 'O' initial (convention, might vary)
-                            signOnPrefix = `SIGN ON O${targetGame} ${targetPassword}`;
-                        } else {
-                             console.warn(`[Execute Prep] User ${email} not found as player/master/observer in ${targetGame}. Assuming join/observe sign-on ('?') for command ${commandVerb}.`);
-                             signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword}`;
-                        }
+                        if (userIsPlayer && userPowerInitial) signOnPrefix = `SIGN ON ${userPowerInitial}${targetGame} ${targetPassword}`;
+                        else if (userIsMaster) signOnPrefix = `SIGN ON M${targetGame} ${targetPassword}`;
+                        else if (userIsObserver) signOnPrefix = `SIGN ON O${targetGame} ${targetPassword}`;
+                        else signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword}`;
                     }
-                } catch (dbErr) {
-                    console.error(`[Execute Prep] DB Error checking user role for ${email} in ${targetGame}:`, dbErr);
-                    return reject({ success: false, output: `Database error checking user role for game ${targetGame}.` });
-                }
+                } catch (dbErr) { return reject({ success: false, output: `Database error checking user role for game ${targetGame}.` }); }
             }
-
-            // Apply the determined prefix
-            if (signOnPrefix) {
-                fullCommand = `${signOnPrefix}\n${fullCommand}`;
-                console.log(`[Execute Prep] Prepended "${signOnPrefix.split(' ')[0]}..." for user ${email} on game ${targetGame} for command ${commandVerb}`);
-            } else { // Should only happen if requiresSignOn was true but no prefix could be determined (e.g., DB error handled above)
-                 console.error(`[Execute Prep] Could not determine SIGN ON prefix for user ${email} on game ${targetGame} for command ${commandVerb}. Proceeding without prefix.`);
-            }
+            if (signOnPrefix) fullCommand = `${signOnPrefix}\n${fullCommand}`;
         }
-
-        // Ensure SIGN OFF is present, avoid duplicates if user typed it
-        if (!fullCommand.toUpperCase().endsWith('SIGN OFF')) {
-            fullCommand += '\nSIGN OFF';
-        }
+        if (!fullCommand.toUpperCase().endsWith('SIGN OFF')) fullCommand += '\nSIGN OFF';
         const dipInput = `FROM: ${email}\nTO: ${judgeEmail}\nSubject: njudge-web via ${email}\nDate: ${now.toUTCString()}\n\n${fullCommand}\n`;
-
-        console.log(`[Execute] User ${email} executing: Command=${dipBinaryPath}, Args=${[...dipBinaryArgs].join(' ')}, Input=${dipInput.substring(0, 200).replace(/\n/g, '\\n')}...`);
-
-        let stdoutData = '';
-        let stderrData = '';
-        let processError = null;
-
-        const dipProcess = spawn(dipBinaryPath, dipBinaryArgs, { timeout: 30000, cwd: dipBinaryRootPath }); // Increased timeout
-
+        // console.log(`[Execute] User ${email} executing: Command=${dipBinaryPath}, Args=${[...dipBinaryArgs].join(' ')}, Input=${dipInput.substring(0, 200).replace(/\n/g, '\\n')}...`);
+        let stdoutData = ''; let stderrData = ''; let processError = null;
+        const dipProcess = spawn(dipBinaryPath, dipBinaryArgs, { timeout: 30000, cwd: dipBinaryRootPath });
         dipProcess.stdout.on('data', (data) => { stdoutData += data.toString(); });
         dipProcess.stderr.on('data', (data) => { stderrData += data.toString(); console.error(`Stderr chunk for ${email} (${commandVerb}): ${data}`); });
         dipProcess.on('error', (err) => { console.error(`[Execute Error] Spawn Error for ${email}: ${err.message}`); processError = err; if (!dipProcess.killed) dipProcess.kill(); });
-
         dipProcess.on('close', (code, signal) => {
-            console.log(`[Execute] Dip process for ${email} closed with code ${code}, signal ${signal}`);
+            // console.log(`[Execute] Dip process for ${email} closed with code ${code}, signal ${signal}`);
             const output = `--- stdout ---\n${stdoutData}\n--- stderr ---\n${stderrData}`;
             const executionSuccess = code === 0 && signal === null;
-
-            if (processError) {
-                return reject({ success: false, output: `Spawn failed: ${processError.message}\n\n${output}` });
-            }
+            if (processError) return reject({ success: false, output: `Spawn failed: ${processError.message}\n\n${output}` });
             if (!executionSuccess) {
-                 console.error(`[Execute Error] Execution Failed for ${email}: Exit code ${code}, Signal ${signal}`);
                  let errorMsg = `Execution failed: Exit code ${code}, Signal ${signal}`;
-                 if (stderrData.includes('command not found') || stderrData.includes('No such file')) {
-                     errorMsg += `\n\nPossible cause: dip binary path incorrect or binary not executable. Check DIP_BINARY_PATH in .env and permissions.`;
-                 } else if (stderrData.includes('timeout')) {
-                      errorMsg += `\n\nPossible cause: Command took too long to execute.`;
-                 }
-                 // Include judge output in the error message if available
+                 if (stderrData.includes('command not found') || stderrData.includes('No such file')) errorMsg += `\n\nPossible cause: dip binary path incorrect or binary not executable.`;
+                 else if (stderrData.includes('timeout')) errorMsg += `\n\nPossible cause: Command took too long to execute.`;
                  errorMsg += `\n\n${output}`;
                  return reject({ success: false, output: errorMsg });
             }
-
-            // Resolve with success and output
             resolve({ success: true, output: output, stdout: stdoutData, stderr: stderrData });
         });
-
-        try {
-            dipProcess.stdin.write(dipInput);
-            dipProcess.stdin.end();
-        } catch (stdinError) {
-            console.error(`[Execute Error] Error writing to dip process stdin for ${email}: ${stdinError.message}`);
-            if (!dipProcess.killed) dipProcess.kill();
-            reject({ success: false, output: `Error communicating with adjudicator process: ${stdinError.message}` });
-        }
+        try { dipProcess.stdin.write(dipInput); dipProcess.stdin.end(); }
+        catch (stdinError) { if (!dipProcess.killed) dipProcess.kill(); reject({ success: false, output: `Error communicating with adjudicator process: ${stdinError.message}` }); }
     });
 };
 
+// --- PNG Generation Function (using Ghostscript) ---
+async function generateMapPng(postscriptContent, outputPngPath) {
+    return new Promise((resolve, reject) => {
+        const gsArgs = [
+            '-dNOPAUSE', '-dBATCH', '-sDEVICE=png16m', '-r150',
+            '-dTextAlphaBits=4', '-dGraphicsAlphaBits=4',
+            `-sOutputFile=${outputPngPath}`, '-'
+        ];
+        // console.log(`[generateMapPng] Running ${ghostscriptPath} with args: ${gsArgs.slice(0, -1).join(' ')} -sOutputFile=${outputPngPath} -`);
+        const gsProcess = spawn(ghostscriptPath, gsArgs);
+        let stdoutData = ''; let stderrData = ''; let processError = null;
+        gsProcess.stdout.on('data', (data) => { stdoutData += data.toString(); });
+        gsProcess.stderr.on('data', (data) => { stderrData += data.toString(); });
+        gsProcess.on('error', (err) => {
+            console.error(`[generateMapPng] Spawn Error: ${err.message}`);
+            processError = (err.code === 'ENOENT') ? new Error(`Ghostscript command ('${ghostscriptPath}') not found.`) : err;
+            if (!gsProcess.killed) gsProcess.kill();
+        });
+        gsProcess.on('close', (code, signal) => {
+            // console.log(`[generateMapPng] Ghostscript process closed with code ${code}, signal ${signal}`);
+            if (processError) return reject(new Error(`Ghostscript spawn failed: ${processError.message}\nStderr: ${stderrData}`));
+            if (code !== 0) {
+                 console.error(`[generateMapPng] Ghostscript failed: Exit code ${code}, Signal ${signal}\nStderr:\n${stderrData}\nStdout:\n${stdoutData}`);
+                return reject(new Error(`Ghostscript execution failed with code ${code}.\nStderr: ${stderrData}`));
+            }
+            fs.access(outputPngPath, fs.constants.F_OK, (errAccess) => {
+                if (errAccess) return reject(new Error(`Ghostscript finished successfully but output file ${outputPngPath} was not created.`));
+                // console.log(`[generateMapPng] Successfully generated ${outputPngPath}`);
+                resolve();
+            });
+        });
+        try { gsProcess.stdin.write(postscriptContent); gsProcess.stdin.end(); }
+        catch (stdinError) { if (!gsProcess.killed) gsProcess.kill(); reject(new Error(`Error communicating with Ghostscript process: ${stdinError.message}`)); }
+    });
+}
 
-
-// --- Map Data Helper ---
-/**
- * Generates a map PNG for a specific game phase by creating PostScript and converting it using Ghostscript.
- * @param {string} gameName - The name of the game.
- * @param {string} [phase] - The specific phase (e.g., 'S1901M'). If omitted, fetches the latest phase.
- * @returns {Promise<object|null>} - An object with { success: true, mapUrl: '/path/to/map.png' } or null on failure.
- */
+// --- Map Data API Endpoint ---
 async function getMapData(gameName, phase) {
     console.log(`[getMapData PNG] Entering with gameName: ${gameName}, phase: ${phase}`);
     try {
-        // 1. Get basic game info (variant)
         const basicGameState = await getGameState(gameName);
         if (!basicGameState) {
             console.error(`[getMapData PNG Error] Game not found in DB: ${gameName}`);
-            return null; // Game doesn't exist
+            return null;
         }
-        const variantName = basicGameState.variant || 'Standard'; // Keep original case
-        const lowerVariant = variantName.toLowerCase().replace(/[^a-z0-9_-]/g, ''); // For lookups if needed
-        console.log(`[getMapData PNG] Determined variant: ${variantName} (checking casings)`);
+        const variantName = basicGameState.variant || 'Standard';
+        const lowerVariant = variantName.toLowerCase().replace(/[^a-z0-9_-]/g, '');
 
-        // 2. Fetch current game state using LIST command
-        // Use judgeEmail or a system identity for fetching public data
+        const { nameToAbbr, provinceLookup } = await ensureMapDataParsed(variantName);
+        if (!provinceLookup || Object.keys(provinceLookup).length === 0) {
+             throw new Error(`Map data (province names/abbreviations/coordinates) could not be loaded for variant ${variantName}. Cannot generate map.`);
+        }
+
         const listResult = await executeDipCommand(judgeEmail, `LIST ${gameName}`, gameName);
         if (!listResult.success) {
             console.error(`[getMapData PNG Error] Failed to fetch LIST data for ${gameName}:`, listResult.output);
-            return null; // Cannot proceed without LIST data
+            return null;
         }
-        const listOutput = listResult.stdout;
-
-        // 3. Parse LIST output to get current game state details
-        const currentGameState = parseListOutput(gameName, listOutput);
+        const currentGameState = parseListOutput(gameName, listResult.stdout, nameToAbbr);
         if (!currentGameState) {
             console.error(`[getMapData PNG Error] Failed to parse LIST output for ${gameName}`);
             return null;
         }
-        console.log(`[getMapData PNG] Parsed LIST. Status: ${currentGameState.status}, Phase: ${currentGameState.currentPhase}, Units: ${currentGameState.units?.length}, SCs: ${currentGameState.supplyCenters?.length}`);
 
-        // 4. Determine the target phase code
         let targetPhase = phase || currentGameState.currentPhase || 'UnknownPhase';
-        if (targetPhase === 'Unknown') targetPhase = 'UnknownPhase'; // Avoid 'Unknown' as filename part
-        console.log(`[getMapData PNG] Target phase for PNG: ${targetPhase}`);
+        if (targetPhase === 'Unknown') targetPhase = 'UnknownPhase';
 
-        // 5. Get province metadata from .info file (using cache)
-        // *** This now reads the .info file with coordinates (and handles casing) ***
-        const mapInfo = await parseMapInfoFile(variantName); // Pass original variant name
-        if (!mapInfo || !mapInfo.provinces || Object.keys(mapInfo.provinces).length === 0) {
-            console.error(`[getMapData PNG Error] Failed to parse or get cached map info file for variant: ${variantName}`);
-            throw new Error(`Map data (province names/abbreviations/coordinates) could not be loaded for variant ${variantName}. Cannot generate map.`);
-        }
-        const provinceLookup = mapInfo.provinces; // Abbr -> { name, abbr, x, y, unitX, unitY, ... }
-        // Generate name->abbr map for this variant if needed (e.g., if LIST output gives full names)
-        const nameToAbbr = await getNameToAbbrMap(variantName); // Pass original variant name
+        const cmapPathOriginal = path.join(mapDataDir, `${variantName}.cmap.ps`);
+        const cmapPathLower = path.join(mapDataDir, `${lowerVariant}.cmap.ps`);
+        const mapPathOriginal = path.join(mapDataDir, `${variantName}.map.ps`);
+        const mapPathLower = path.join(mapDataDir, `${lowerVariant}.map.ps`);
+        let basePsContent = ''; let isColored = false; let usedTemplatePath = '';
 
-        // 6. Read Base PostScript Template (checking casings)
-        // *** Use mapDataPath for .ps files ***
-        const cmapPathOriginal = path.join(mapDataPath, `${variantName}.cmap.ps`);
-        const cmapPathLower = path.join(mapDataPath, `${lowerVariant}.cmap.ps`);
-        const mapPathOriginal = path.join(mapDataPath, `${variantName}.map.ps`);
-        const mapPathLower = path.join(mapDataPath, `${lowerVariant}.map.ps`);
-        let basePsContent = '';
-        let isColored = false;
-        let usedTemplatePath = '';
+        try { basePsContent = await fsPromises.readFile(cmapPathOriginal, 'utf-8'); isColored = true; usedTemplatePath = cmapPathOriginal; }
+        catch (errCmapOrig) { if (errCmapOrig.code === 'ENOENT') {
+            try { basePsContent = await fsPromises.readFile(cmapPathLower, 'utf-8'); isColored = true; usedTemplatePath = cmapPathLower; }
+            catch (errCmapLower) { if (errCmapLower.code === 'ENOENT') {
+                try { basePsContent = await fsPromises.readFile(mapPathOriginal, 'utf-8'); isColored = false; usedTemplatePath = mapPathOriginal; }
+                catch (errMapOrig) { if (errMapOrig.code === 'ENOENT') {
+                    try { basePsContent = await fsPromises.readFile(mapPathLower, 'utf-8'); isColored = false; usedTemplatePath = mapPathLower; }
+                    catch (errMapLower) { console.error(`[getMapData PNG Error] Could not read any map template for variant ${variantName}. Tried ${cmapPathOriginal}, ${cmapPathLower}, ${mapPathOriginal}, ${mapPathLower}`); return null; }
+                } else { console.error(`[getMapData PNG Error] Error reading map template ${mapPathOriginal}:`, errMapOrig); return null; }}
+            } else { console.error(`[getMapData PNG Error] Error reading map template ${cmapPathLower}:`, errCmapLower); return null; }}
+        } else { console.error(`[getMapData PNG Error] Error reading map template ${cmapPathOriginal}:`, errCmapOrig); return null; }}
+        console.log(`[getMapData PNG] Using PS template: ${usedTemplatePath}`);
 
-        try {
-            console.log(`[getMapData PNG] Attempting to read template: ${cmapPathOriginal}`);
-            basePsContent = await fsPromises.readFile(cmapPathOriginal, 'utf-8');
-            isColored = true;
-            usedTemplatePath = cmapPathOriginal;
-            console.log(`[getMapData PNG] Read colored map template (original case): ${usedTemplatePath}`);
-        } catch (errCmapOrig) {
-            if (errCmapOrig.code === 'ENOENT') {
-                console.log(`[getMapData PNG] Template not found (${cmapPathOriginal}), trying lowercase: ${cmapPathLower}`);
-                try {
-                    basePsContent = await fsPromises.readFile(cmapPathLower, 'utf-8');
-                    isColored = true;
-                    usedTemplatePath = cmapPathLower;
-                    console.log(`[getMapData PNG] Read colored map template (lowercase): ${usedTemplatePath}`);
-                } catch (errCmapLower) {
-                    if (errCmapLower.code === 'ENOENT') {
-                        console.log(`[getMapData PNG] Colored template not found (both cases), trying non-colored: ${mapPathOriginal}`);
-                        try {
-                            basePsContent = await fsPromises.readFile(mapPathOriginal, 'utf-8');
-                            isColored = false;
-                            usedTemplatePath = mapPathOriginal;
-                            console.log(`[getMapData PNG] Read non-colored map template (original case): ${usedTemplatePath}`);
-                        } catch (errMapOrig) {
-                            if (errMapOrig.code === 'ENOENT') {
-                                console.log(`[getMapData PNG] Non-colored template not found (${mapPathOriginal}), trying lowercase: ${mapPathLower}`);
-                                try {
-                                    basePsContent = await fsPromises.readFile(mapPathLower, 'utf-8');
-                                    isColored = false;
-                                    usedTemplatePath = mapPathLower;
-                                    console.log(`[getMapData PNG] Read non-colored map template (lowercase): ${usedTemplatePath}`);
-                                } catch (errMapLower) {
-                                    console.error(`[getMapData PNG Error] Could not read any map template for variant ${variantName}. Paths tried: ${cmapPathOriginal}, ${cmapPathLower}, ${mapPathOriginal}, ${mapPathLower}`);
-                                    return null; // Cannot proceed without template
-                                }
-                            } else {
-                                console.error(`[getMapData PNG Error] Error reading map template ${mapPathOriginal}:`, errMapOrig);
-                                return null;
-                            }
-                        }
-                    } else {
-                        console.error(`[getMapData PNG Error] Error reading map template ${cmapPathLower}:`, errCmapLower);
-                        return null;
-                    }
-                }
-            } else {
-                 console.error(`[getMapData PNG Error] Error reading map template ${cmapPathOriginal}:`, errCmapOrig);
-                 return null;
-            }
-        }
-
-        // 7. Generate Dynamic PostScript Commands (Units & SCs)
         let unitPsCommands = [];
-        let scPsCommands = [];
-        // *** Renamed functions to reflect they draw at origin ***
         const psDrawFunctions = { "A": "DrawArmySymbol", "F": "DrawFleetSymbol", "W": "DrawWingSymbol", "R": "DrawArtillerySymbol", "G": "DrawGarrisonSymbol" };
 
-        // Mapping from power name (uppercase) to the numeric index defined in the .cmap.ps file
-        const POWER_TO_INDEX = {
-            'AUSTRIA': 1,
-            'FRANCE': 2,
-            'MILAN': 3,
-            'FLORENCE': 4,
-            'NAPLES': 5,
-            'PAPACY': 6,
-            'TURKEY': 7,
-            'VENICE': 8,
-            'AUTONOMOUS': 9
-            // Add other powers if needed for different variants
-        };
+        let powerToIndexMap = {};
+        if (lowerVariant === 'machiavelli') {
+            powerToIndexMap = {
+                'AUSTRIA': 1, 'FRANCE': 2, 'MILAN': 3, 'FLORENCE': 4,
+                'NAPLES': 5, 'PAPACY': 6, 'TURKEY': 7, 'VENICE': 8, 'AUTONOMOUS': 9
+            };
+        } else { // Default to Standard Diplomacy (or other variants if added)
+            powerToIndexMap = {
+                'AUSTRIA': 1, 'ENGLAND':2, 'FRANCE': 3, 'GERMANY':4,
+                'ITALY':5, 'RUSSIA':6, 'TURKEY': 7
+            };
+        }
 
-
-        // -- Start Page & Title --
-        // Title drawing will be handled separately before calling DrawMap
-
-        // -- Generate Unit Commands --
         const allUnits = currentGameState.units || [];
-        console.log(`[getMapData PNG] Found ${allUnits.length} units to draw.`);
-        let coordinateError = false; // Flag if we encounter missing coords
+        let coordinateError = false;
 
         allUnits.forEach(unit => {
-            let unitLocation = unit.location;
-            let provinceAbbr = null;
-
-            // Check if location is already a valid abbreviation
-            if (unitLocation && provinceLookup[unitLocation.toUpperCase()]) {
-                provinceAbbr = unitLocation.toUpperCase();
-                 console.log(`[getMapData PNG Debug] Unit Loop: Location '${unitLocation}' is already a valid abbr.`);
-            } else if (unitLocation) {
-                // If not, try translating from name using the dynamic map
-                const normalizedLocation = unitLocation.toLowerCase().trim();
-                provinceAbbr = nameToAbbr[normalizedLocation];
-                if (provinceAbbr) {
-                    console.log(`[getMapData PNG] Translated unit location name '${unit.location}' to abbr '${provinceAbbr}'`);
-                } else {
-                    console.warn(`[getMapData PNG] Could not find abbreviation for unit location '${unit.location}'`);
-                }
+            let unitLocationAbbr = unit.location; // Already an abbreviation from parseListOutput
+            if (!provinceLookup[unitLocationAbbr] && unit.location && nameToAbbr) {
+                const resolved = nameToAbbr[unit.location.toLowerCase().trim()];
+                if (resolved) unitLocationAbbr = resolved;
             }
 
-            if (!provinceAbbr) {
-                console.warn(`[getMapData PNG Debug] Unit Loop: Skipping unit with unresolvable location:`, unit);
-                return; // Skip this unit if location couldn't be resolved to an abbreviation
+            if (!unitLocationAbbr || !provinceLookup[unitLocationAbbr]) {
+                console.warn(`[getMapData PNG] Skipping unit, unresolvable or missing coordinate data for location: '${unit.location}' (resolved to '${unitLocationAbbr}') for power ${unit.power}`);
+                return;
             }
 
-            // Location might still include coast like 'STP/SC', need to extract base abbr 'STP'
-            const locationParts = provinceAbbr.split('/');
-            const baseAbbr = locationParts[0];
-            const provinceData = provinceLookup[baseAbbr];
+            const provinceData = provinceLookup[unitLocationAbbr];
 
-            if (provinceData) {
-                // *** Check if coordinates were parsed correctly ***
-                if (provinceData.x === undefined || provinceData.y === undefined) {
-                    console.error(`[getMapData PNG Error] Coordinate data missing for province '${baseAbbr}' in variant '${variantName}' after parsing. Cannot place unit.`);
-                    coordinateError = true; // Set flag
-                    return; // Skip drawing this unit
-                }
-
-                const drawFunc = psDrawFunctions[unit.type] || 'DrawArmy'; // Default to Army
-                // Use unit coordinates if available, otherwise province label coords
-                const x = provinceData.unitX ?? provinceData.labelX ?? provinceData.x; // Fallback chain
-                const y = provinceData.unitY ?? provinceData.labelY ?? provinceData.y; // Fallback chain
-
-                // *** CORRECTED: Push numeric index instead of power name ***
-                const powerIndex = POWER_TO_INDEX[unit.power.toUpperCase()];
-                if (powerIndex === undefined) {
-                    console.warn(`[getMapData PNG] Unknown power '${unit.power}' encountered for unit. Cannot determine PS index. Skipping unit.`);
-                    return; // Skip this unit
-                }
-                // PS expects: X Y Index DrawFunction
-                unitPsCommands.push(`${x} ${y} ${powerIndex} ${drawFunc}`);
-                // console.log(`[getMapData PNG] Unit PS: ${x} ${y} ${powerIndex} ${drawFunc} (Power: ${unit.power}, Loc: ${provinceAbbr})`); // Reduce log noise
-            } else {
-                console.warn(`[getMapData PNG] Province abbreviation '${baseAbbr}' (from unit location '${unit.location}') not found in map info.`);
+            if (provinceData.unitX === undefined || provinceData.unitY === undefined || isNaN(provinceData.unitX) || isNaN(provinceData.unitY)) {
+                console.error(`[getMapData PNG Error] Unit coordinate data missing or invalid for province '${unitLocationAbbr}' (Unit: ${unit.type} ${unit.location} by ${unit.power}). UnitX: ${provinceData.unitX}, UnitY: ${provinceData.unitY}. Label coords: ${provinceData.labelX},${provinceData.labelY}. SC coords: ${provinceData.scX},${provinceData.scY}`);
+                coordinateError = true; return;
             }
+            const drawFunc = psDrawFunctions[unit.type] || 'DrawArmySymbol';
+            const x = provinceData.unitX;
+            const y = provinceData.unitY;
+            const powerIndex = powerToIndexMap[unit.power.toUpperCase()];
+
+            if (powerIndex === undefined) {
+                console.warn(`[getMapData PNG] Unknown power '${unit.power}' for unit in ${unitLocationAbbr}. Skipping unit. Check POWER_TO_INDEX for variant ${variantName}.`);
+                return;
+            }
+            // *** MODIFIED LINE FOR UNIT DRAWING ***
+            unitPsCommands.push(`gsave ${x} ${y} translate ${powerIndex} ${drawFunc} grestore`);
         });
 
-        // -- Generate Supply Center Commands --
-        const supplyCenters = currentGameState.supplyCenters || [];
-        console.log(`[getMapData PNG] Found ${supplyCenters.length} owned SCs to color.`);
-
+        let scPsCommands = [];
         if (isColored) {
-            supplyCenters.forEach(sc => {
-                const scAbbr = sc.location?.toUpperCase(); // Abbreviation from LIST output
-                const owner = sc.owner;
-
-                if (!scAbbr) {
-                     console.warn(`[getMapData PNG Debug] SC Loop: Skipping SC with undefined location:`, sc);
-                     return; // Skip SC if location is missing
+            const scsByOwner = {};
+            (currentGameState.supplyCenters || []).forEach(sc => {
+                if (!sc.location || !sc.owner || sc.owner.toUpperCase() === 'UNOWNED') {
+                    return;
                 }
-
-                // Use the abbreviation directly to find province data
-                const provinceData = provinceLookup[scAbbr];
-
-                if (provinceData && owner && owner !== 'UNOWNED') {
-                     // Check if coordinates exist for SC placement (needed for some PS templates)
-                     if (provinceData.scX === undefined || provinceData.scY === undefined) {
-                         // Fallback to label or main coords if SC coords missing
-                         const scX = provinceData.labelX ?? provinceData.x;
-                         const scY = provinceData.labelY ?? provinceData.y;
-                         if (scX === undefined || scY === undefined) {
-                             console.error(`[getMapData PNG Error] SC Coordinate data missing for province '${scAbbr}' in variant '${variantName}'. Cannot color SC.`);
-                             coordinateError = true; // Set flag
-                             return; // Skip coloring this SC
-                         }
-                         // If fallback coords exist, proceed, but log a warning
-                         console.warn(`[getMapData PNG Warn] SC coordinates missing for '${scAbbr}', using fallback coordinates.`);
-                     }
-                    // PS command: Set Color, Call Province Proc (which includes coords and draws symbol)
-                    scPsCommands.push(`${owner}CENTER`); // Set color context
-                    scPsCommands.push(`${scAbbr}`); // Call province procedure (e.g., /AUS { coords Symbol } def)
-                    // console.log(`[getMapData PNG] SC PS: ${owner}CENTER ${scAbbr}`); // Reduce log noise
-                } else if (!provinceData) {
-                     console.warn(`[getMapData PNG] Map abbreviation '${scAbbr}' for SC not found in map info.`);
+                const ownerKey = sc.owner.toUpperCase();
+                if (!scsByOwner[ownerKey]) {
+                    scsByOwner[ownerKey] = [];
+                }
+                const scAbbr = sc.location.toUpperCase(); // Should be an abbreviation
+                if (provinceLookup[scAbbr]) {
+                    scsByOwner[ownerKey].push(scAbbr);
+                } else {
+                    console.warn(`[getMapData PNG] SC: Province data for '${scAbbr}' (owner ${ownerKey}) not found in provinceLookup. This SC might not be drawn correctly if its PS drawing procedure (e.g., /${scAbbr}) is missing or if the abbreviation is incorrect.`);
                 }
             });
-            // Add final commands for SC drawing within the dynamic block
-            scPsCommands.push("closepath newpath");
-            scPsCommands.push("Black"); // Reset color
+
+            const sortedOwners = Object.keys(scsByOwner).sort();
+            for (const owner of sortedOwners) {
+                if (scsByOwner[owner].length > 0) {
+                    scPsCommands.push(`${owner}CENTER`);
+                    scsByOwner[owner].sort().forEach(abbr => {
+                        scPsCommands.push(abbr);
+                    });
+                }
+            }
+
+            if (scPsCommands.length > 0) {
+                scPsCommands.push("closepath newpath");
+                scPsCommands.push("Black");
+            }
         }
 
-        // -- Combine into Dynamic Procedure Definitions --
+        if (coordinateError) throw new Error(`Map generation failed for ${gameName} (${variantName}): Coordinate data missing or invalid for one or more provinces. Check .info file and parsing logic.`);
+
         let dynamicPsDefs = [
-            "/DrawDynamicUnits {",
-            ...unitPsCommands,
-            "} def",
-            "/DrawDynamicSCs {",
-            ...scPsCommands,
-            "} def"
+            `/DrawDynamicUnits {`, ...unitPsCommands, `} def`,
+            `/DrawDynamicSCs {`, ...scPsCommands, `} def`
         ];
-
-        // -- Setup Commands (Title) --
-        let setupPsCommands = [];
         const title = `${gameName}, ${targetPhase}`;
-        setupPsCommands.push(`(${title}) DrawTitle`);
+        let setupPsCommands = [`(${title}) DrawTitle`];
+        const combinedPsContent = `${basePsContent}\n${dynamicPsDefs.join("\n")}\n${setupPsCommands.join("\n")}\nDrawMap\nShowPage\n`;
 
-
-        // *** Check if coordinate errors occurred before proceeding ***
-        if (coordinateError) {
-            throw new Error(`Map generation failed for ${gameName} (${variantName}): Coordinate data missing in parsed map file.`);
-        }
-
-        // 8. Combine Base PS + Dynamic Definitions + Setup + Call DrawMap + ShowPage
-        // Note: DrawMap call happens here, *after* dynamic defs are loaded.
-        // The basePsContent itself needs modification to call the dynamic procedures.
-        const combinedPsContent = basePsContent + "\n" +
-                                  dynamicPsDefs.join("\n") + "\n" +
-                                  setupPsCommands.join("\n") + "\n" +
-                                  "DrawMap\n" + // Call DrawMap *after* dynamic defs are loaded
-                                  "ShowPage\n";
-
-
-        // Sanitize phase name for filename *before* use
+        const safeGameName = gameName.replace(/[^a-zA-Z0-9_-]/g, '_');
         const safePhase = targetPhase.replace(/[^a-zA-Z0-9_-]/g, '_');
+        // const debugPsPath = path.join(staticMapDir, `${safeGameName}_${safePhase}_debug.ps`);
+        // try { await fsPromises.writeFile(debugPsPath, combinedPsContent); console.log(`[getMapData PNG Debug] Saved combined PostScript to ${debugPsPath}`); }
+        // catch (writeErr) { console.error(`[getMapData PNG Debug] Failed to write debug PS file:`, writeErr); }
 
-        // DEBUG: Save combined PostScript for inspection
-        const debugPsPath = path.join(staticMapDir, `${gameName}_${safePhase}_debug.ps`);
-        try {
-            await fsPromises.writeFile(debugPsPath, combinedPsContent);
-            console.log(`[getMapData PNG Debug] Saved combined PostScript to ${debugPsPath}`);
-        } catch (writeErr) {
-            console.error(`[getMapData PNG Debug] Failed to write debug PS file:`, writeErr);
-        }
-        // END DEBUG
-
-        // 9. Define Output Path
-        // Sanitize phase name for filename
-        // safePhase definition moved up
-        const outputPngFilename = `${gameName}_${safePhase}.png`;
+        const outputPngFilename = `${safeGameName}_${safePhase}.png`;
         const outputPngPath = path.join(staticMapDir, outputPngFilename);
-        console.log(`[getMapData PNG] Output path set to: ${outputPngPath}`);
-
-        // 10. Generate PNG using Ghostscript
         await generateMapPng(combinedPsContent, outputPngPath);
-
-        // 11. Return URL
         const mapUrl = `/generated_maps/${outputPngFilename}`;
         console.log(`[getMapData PNG] Successfully generated map. URL: ${mapUrl}`);
         return { success: true, mapUrl: mapUrl };
 
     } catch (error) {
         console.error(`[getMapData PNG Fatal Error] Unexpected error for ${gameName} / ${phase || 'latest'}:`, error);
-        // Return a more specific error if it's the coordinate issue
-        if (error.message.includes("Coordinate data missing")) {
-             throw error; // Re-throw the specific error
-        }
-        return null; // Indicate general failure
+        if (error.message.includes("Coordinate data missing")) throw error;
+        if (error.message.includes("Failed to read map info file") || error.message.includes("Failed to read .info file")) throw error;
+        return null;
     }
 }
 
 
 // --- API Endpoints ---
-
-// --- Express App Setup ---
 const app = express();
 const port = process.env.PORT || 3000;
 const sessionSecret = process.env.SESSION_SECRET;
-
-if (!sessionSecret || sessionSecret === 'your-very-secret-key') {
-    console.warn('\n!!! WARNING: SESSION_SECRET is not set or is using the default value in .env !!!');
-    console.warn('!!! Please set a strong, random secret for session management in production. !!!\n');
-}
-
-app.set('view engine', 'ejs');
-app.set('views', path.join(__dirname, 'views'));
-app.use(expressLayouts);
-app.set('layout', 'layout');
-app.set("layout extractScripts", true);
-app.set("layout extractStyles", true);
-
-app.use(cookieParser()); // Added cookie parser
-
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-app.use(session({
-    store: new SQLiteStore({ db: 'sessions.db', dir: __dirname, table: 'sessions', concurrentDB: true }),
-    secret: sessionSecret || 'fallback-secret-change-me',
-    resave: false,
-    saveUninitialized: false,
-    cookie: { secure: process.env.NODE_ENV === 'production', httpOnly: true, maxAge: 1000 * 60 * 60 * 24 * 7 } // 1 week
-}));
-
-// Roo Debug: Log all requests after session middleware
-app.use((req, res, next) => {
-  console.log(`[Request Logger] Path: ${req.path}, Method: ${req.method}, User: ${req.session?.email}`);
-  next();
-});
-
-// Middleware to ensure email is in session
-function requireEmail(req, res, next) {
-    if (!req.session.email) {
-        // Clear any potentially stale game cookies if session is lost
-        res.clearCookie('targetGame');
-        // Clear all game-specific password/variant cookies (more robust)
-        Object.keys(req.cookies).forEach(cookieName => {
-             if (cookieName.startsWith('targetPassword_') || cookieName.startsWith('targetVariant_')) {
-                 res.clearCookie(cookieName);
-             }
-        });
-        if (req.path === '/') return next(); // Allow access to root
-        if (req.xhr || req.headers.accept.indexOf('json') > -1) {
-             return res.status(401).json({ success: false, output: 'Session expired or invalid. Please reload.' });
-        }
-        return res.redirect('/');
-    }
-    res.locals.user = req.session.email; // Make email available in all views
-    next();
-}
-
-// Middleware to require authentication for API routes
-function requireAuth(req, res, next) {
-    console.log(`[Auth Check] Middleware entered for path: ${req.path}, User: ${req.session?.email}`); // Roo Debug Log
-    if (req.session && req.session.email) {
-        // Attach userId (email) to the request object for convenience in route handlers
-        req.userId = req.session.email;
-        next(); // User is authenticated, proceed
-    } else {
-        res.status(401).json({ success: false, message: 'Authentication required.' });
-    }
-}
-
-// --- Routes ---
-
-// Ensure the static map directory exists
-try {
-    if (!fs.existsSync(staticMapDir)) {
-        fs.mkdirSync(staticMapDir, { recursive: true });
-        console.log(`Created static map directory: ${staticMapDir}`);
-    }
-} catch (err) {
-    console.error(`Error creating static map directory ${staticMapDir}:`, err);
-    // Decide if this is fatal; for now, log and continue
-}
-
-// Serve generated map images (place before other routes, after session/auth middleware perhaps?)
+if (!sessionSecret || sessionSecret === 'your-very-secret-key') console.warn('\n!!! WARNING: SESSION_SECRET is not set or is using the default value in .env !!!\n');
+app.set('view engine', 'ejs'); app.set('views', path.join(__dirname, 'views'));
+app.use(expressLayouts); app.set('layout', 'layout'); app.set("layout extractScripts", true); app.set("layout extractStyles", true);
+app.use(cookieParser()); app.use(express.json()); app.use(express.urlencoded({ extended: true }));
+app.use(session({ store: new SQLiteStore({ db: 'sessions.db', dir: __dirname, table: 'sessions', concurrentDB: true }), secret: sessionSecret || 'fallback-secret-change-me', resave: false, saveUninitialized: false, cookie: { secure: process.env.NODE_ENV === 'production', httpOnly: true, maxAge: 1000 * 60 * 60 * 24 * 7 } }));
+app.use((req, res, next) => { /* console.log(`[Request Logger] Path: ${req.path}, Method: ${req.method}, User: ${req.session?.email}`); */ next(); });
+function requireEmail(req, res, next) { if (!req.session.email) { res.clearCookie('targetGame'); Object.keys(req.cookies).forEach(cookieName => { if (cookieName.startsWith('targetPassword_') || cookieName.startsWith('targetVariant_')) res.clearCookie(cookieName); }); if (req.path === '/') return next(); if (req.xhr || req.headers.accept.indexOf('json') > -1) return res.status(401).json({ success: false, output: 'Session expired or invalid. Please reload.' }); return res.redirect('/'); } res.locals.user = req.session.email; next(); }
+function requireAuth(req, res, next) { if (req.session && req.session.email) { req.userId = req.session.email; next(); } else { res.status(401).json({ success: false, message: 'Authentication required.' }); } }
+try { if (!fs.existsSync(staticMapDir)) { fs.mkdirSync(staticMapDir, { recursive: true }); console.log(`Created static map directory: ${staticMapDir}`); } } catch (err) { console.error(`Error creating static map directory ${staticMapDir}:`, err); }
 app.use('/generated_maps', express.static(staticMapDir));
 console.log(`Serving static maps from ${staticMapDir} at /generated_maps`);
 
-// --- PNG Generation Function (using Ghostscript) ---
-async function generateMapPng(postscriptContent, outputPngPath) {
-    return new Promise((resolve, reject) => {
-        // *** Use ghostscriptPath from env vars ***
-        const gsArgs = [
-            '-dNOPAUSE',
-            '-dBATCH',
-            '-sDEVICE=png16m',      // Output device: 24-bit PNG
-            '-r150',               // Resolution DPI
-            '-dTextAlphaBits=4',   // Text anti-aliasing
-            '-dGraphicsAlphaBits=4',// Graphics anti-aliasing
-            `-sOutputFile=${outputPngPath}`, // Output file path
-            '-'                    // Read PS from stdin
-        ];
-
-        console.log(`[generateMapPng] Running ${ghostscriptPath} with args: ${gsArgs.slice(0, -1).join(' ')} -sOutputFile=${outputPngPath} -`);
-        const gsProcess = spawn(ghostscriptPath, gsArgs);
-
-        let stdoutData = '';
-        let stderrData = '';
-        let processError = null;
-
-        gsProcess.stdout.on('data', (data) => { stdoutData += data.toString(); });
-        gsProcess.stderr.on('data', (data) => { stderrData += data.toString(); });
-        gsProcess.on('error', (err) => {
-            console.error(`[generateMapPng] Spawn Error: ${err.message}`);
-            // Provide specific error if gs command not found
-            if (err.code === 'ENOENT') {
-                 processError = new Error(`Ghostscript command ('${ghostscriptPath}') not found. Ensure Ghostscript is installed and in the system PATH, or set GHOSTSCRIPT_PATH in your .env file.`);
-            } else {
-                 processError = err;
-            }
-            if (!gsProcess.killed) gsProcess.kill();
-        });
-
-        gsProcess.on('close', (code, signal) => {
-            console.log(`[generateMapPng] Ghostscript process closed with code ${code}, signal ${signal}`);
-            if (processError) {
-                return reject(new Error(`Ghostscript spawn failed: ${processError.message}\nStderr: ${stderrData}`));
-            }
-            if (code !== 0) {
-                 console.error(`[generateMapPng] Ghostscript failed: Exit code ${code}, Signal ${signal}`);
-                 console.error(`[generateMapPng] Stderr:\n${stderrData}`);
-                 console.error(`[generateMapPng] Stdout:\n${stdoutData}`);
-                return reject(new Error(`Ghostscript execution failed with code ${code}.\nStderr: ${stderrData}`));
-            }
-            // Check if the output file actually exists
-            fs.access(outputPngPath, fs.constants.F_OK, (err) => {
-                if (err) {
-                     console.error(`[generateMapPng] Output file ${outputPngPath} not found after gs success.`);
-                     return reject(new Error(`Ghostscript finished successfully but output file ${outputPngPath} was not created.`));
-                }
-                console.log(`[generateMapPng] Successfully generated ${outputPngPath}`);
-                resolve();
-            });
-        });
-
-        // Write the PostScript content to stdin
-        try {
-            gsProcess.stdin.write(postscriptContent);
-            gsProcess.stdin.end();
-        } catch (stdinError) {
-            console.error(`[generateMapPng] Error writing to gs process stdin: ${stdinError.message}`);
-            if (!gsProcess.killed) gsProcess.kill();
-            reject(new Error(`Error communicating with Ghostscript process: ${stdinError.message}`));
-        }
-    });
-}
-
-
-app.get('/', (req, res) => {
-    if (req.session.email) {
-        return res.redirect('/dashboard');
-    }
-    res.render('index', { layout: false });
-});
-
-app.post('/start', async (req, res) => {
-    const email = req.body.email;
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { // Basic email format check
-        return res.render('index', { layout: false, error: 'Please enter a valid email address.' });
-    }
-    try {
-        await ensureUserExists(email); // Add/update user in our tracking DB
-        req.session.email = email;
-        // Clear any old game context on new login
-        res.clearCookie('targetGame');
-        Object.keys(req.cookies).forEach(cookieName => {
-             if (cookieName.startsWith('targetPassword_') || cookieName.startsWith('targetVariant_')) {
-                 res.clearCookie(cookieName);
-             }
-        });
-        req.session.save(err => {
-            if (err) { console.error("Session save error on /start:", err); return res.render('index', { layout: false, error: 'Session error. Please try again.' }); }
-            res.redirect('/dashboard');
-        });
-    } catch (err) {
-         console.error("Error ensuring user exists:", err);
-         res.render('index', { layout: false, error: 'Database error. Please try again.' });
-    }
-});
-
-// Display registration form
-app.get('/register', requireEmail, (req, res) => {
-     res.render('register', { email: req.session.email, error: null, formData: {} });
-});
-
-// Handle registration submission
-app.post('/register', requireEmail, async (req, res) => {
-    const email = req.session.email;
-    const { name, address, phone, country, level, site } = req.body;
-
-    // Basic validation
-    if (!name || !address || !phone || !country || !level || !site) {
-        return res.render('register', { email: email, error: 'All fields are required.', formData: req.body });
-    }
-
-    // Construct REGISTER command carefully, ensuring newlines
-    const registerCommand = `REGISTER
-name: ${name}
-address: ${address}
-phone: ${phone}
-country: ${country}
-level: ${level}
-e-mail: ${email}
-site: ${site}
-package: yes
-END`;
-
-    try {
-        // Registration doesn't need game context
-        const result = await executeDipCommand(email, registerCommand);
-
-        const outputLower = result.stdout.trim().toLowerCase();
-        // Check for various success messages
-        if (outputLower.includes("registration accepted") ||
-            outputLower.includes("updated registration") ||
-            outputLower.includes("already registered") ||
-            outputLower.includes("this is an update to an existing registration")) {
-            await setUserRegistered(email); // Mark as registered in our DB
-            console.log(`[Register Success] User ${email} registered with judge.`);
-            req.session.save(err => {
-                 if (err) console.error("Session save error after registration:", err);
-                 res.redirect('/dashboard'); // Redirect to dashboard on success
-            });
-        } else {
-            console.error(`[Register Fail] Judge rejected registration for ${email}. Output:\n${result.output}`);
-            res.render('register', {
-                email: email,
-                error: `Judge rejected registration. Please check the output below and correct your details.`,
-                judgeOutput: result.output,
-                formData: req.body
-            });
-        }
-    } catch (error) {
-        console.error(`[Register Error] Failed to execute REGISTER command for ${email}:`, error);
-        res.render('register', {
-            email: email,
-            error: `Error communicating with the judge: ${error.output || error.message}`,
-            judgeOutput: error.output,
-            formData: req.body
-        });
-    }
-});
-
-
-// Function to sync dip.master with DB
-async function syncDipMaster() {
-    console.log('[Sync] Starting sync from dip.master...');
-    let gamesFromMaster = {};
-    let syncError = null;
-
-    try {
-        if (!fs.existsSync(dipMasterPath)) {
-            throw new Error(`File not found: ${dipMasterPath}. Set DIP_MASTER_PATH in .env or ensure it's relative to DIP_BINARY_PATH.`);
-        }
-        const masterContent = fs.readFileSync(dipMasterPath, 'utf8');
-        // Split by the separator line '-' which must be on its own line
-        const gameBlocks = masterContent.split(/^\s*-\s*$/m);
-
-        // Regex to capture game name (alphanumeric, 1-8), turn indicator, and phase/status from the *first* line of a block
-        const gameLineRegex = /^([a-zA-Z0-9]{1,8})\s+(\S+)\s+([SFUW]\d{4}[MRBAX]|Forming|Paused|Finished|Terminated)/i;
-
-        gameBlocks.forEach((block, index) => {
-            const blockTrimmed = block.trim();
-            if (!blockTrimmed) return; // Skip empty blocks
-
-            const blockLines = blockTrimmed.split('\n');
-            if (blockLines.length > 0) {
-                const firstLine = blockLines[0].trim();
-                // console.log(`[Sync Debug] Processing block ${index}, first line: "${firstLine}"`); // Debug log (reduce noise)
-                const match = firstLine.match(gameLineRegex);
-                if (match) {
-                    const gameName = match[1];
-                    const turnIndicator = match[2]; // e.g., x0, 001, 002
-                    const phaseOrStatus = match[3];
-                    if (gameName && gameName !== 'control' && !gamesFromMaster[gameName]) { // Avoid control entry and duplicates
-                        gamesFromMaster[gameName] = { name: gameName, status: 'Unknown', currentPhase: 'Unknown' };
-                        // Distinguish phase from status
-                        if (/^[SFUW]\d{4}[MRBAX]$/i.test(phaseOrStatus)) {
-                            gamesFromMaster[gameName].currentPhase = phaseOrStatus.toUpperCase(); // Standardize case
-                            gamesFromMaster[gameName].status = 'Active'; // Assume active if phase looks valid
-                        } else {
-                            // Use Forming, Paused etc. as status, ensure proper casing
-                            const statusLower = phaseOrStatus.toLowerCase();
-                            if (statusLower === 'forming') gamesFromMaster[gameName].status = 'Forming';
-                            else if (statusLower === 'paused') gamesFromMaster[gameName].status = 'Paused';
-                            else if (statusLower === 'finished') gamesFromMaster[gameName].status = 'Finished';
-                            else if (statusLower === 'terminated') gamesFromMaster[gameName].status = 'Terminated';
-                            else gamesFromMaster[gameName].status = 'Unknown'; // Fallback
-                        }
-                        // console.log(`[Sync] Found game: ${gameName}, Status/Phase: ${phaseOrStatus} (Match: Yes)`); // Debug log (reduce noise)
-                    } else if (gameName === 'control') {
-                        // console.log(`[Sync Debug] Skipping 'control' entry.`); // Debug log (reduce noise)
-                    } else if (gamesFromMaster[gameName]) {
-                         // console.log(`[Sync Debug] Skipping duplicate game entry for '${gameName}'.`); // Debug log (reduce noise)
-                    } else {
-                         // console.log(`[Sync Debug] Regex matched but gameName invalid? gameName='${gameName}'`); // Debug log (reduce noise)
-                    }
-                } else {
-                     // console.log(`[Sync Debug] Regex did NOT match first line: "${firstLine}"`); // Debug log (reduce noise)
-                }
-            } else {
-                 // console.log(`[Sync Debug] Skipping empty block ${index}.`); // Debug log (reduce noise)
-            }
-        });
-        console.log(`[Sync] Found ${Object.keys(gamesFromMaster).length} potential games in ${dipMasterPath}`);
-
-        // Update DB based on dip.master findings
-        const existingStates = await getAllGameStates();
-        for (const gameName in gamesFromMaster) {
-            const masterInfo = gamesFromMaster[gameName];
-            let currentState = existingStates[gameName];
-            let needsSave = false;
-
-            if (!currentState) {
-                console.log(`[Sync DB] Game '${gameName}' not in DB. Adding basic state from dip.master.`);
-                // Create a minimal state based on dip.master info
-                currentState = { name: gameName, status: masterInfo.status, variant: 'Standard', options: [], currentPhase: masterInfo.currentPhase, nextDeadline: null, masters: [], players: [], observers: [], settings: {} };
-                needsSave = true;
-            } else {
-                // Update phase/status if different from dip.master AND dip.master has a meaningful value
-                if (masterInfo.currentPhase !== 'Unknown' && currentState.currentPhase !== masterInfo.currentPhase) {
-                    console.log(`[Sync DB] Updating phase for game '${gameName}' from ${currentState.currentPhase} to ${masterInfo.currentPhase}`);
-                    currentState.currentPhase = masterInfo.currentPhase;
-                    needsSave = true;
-                }
-                 if (masterInfo.status !== 'Unknown' && currentState.status !== masterInfo.status) {
-                    // Allow dip.master status (like Paused, Finished) to override DB if different
-                    console.log(`[Sync DB] Updating status for game '${gameName}' from ${currentState.status} to ${masterInfo.status}`);
-                    currentState.status = masterInfo.status;
-                    needsSave = true;
-                }
-                // If status is still Forming/Unknown in DB, but dip.master indicates Active phase, update status
-                if ((currentState.status === 'Unknown' || currentState.status === 'Forming') && masterInfo.status === 'Active') {
-                     console.log(`[Sync DB] Inferred status 'Active' for game '${gameName}' based on phase ${masterInfo.currentPhase}`);
-                     currentState.status = 'Active';
-                     needsSave = true;
-                }
-            }
-
-            if (needsSave) {
-                currentState.lastUpdated = Math.floor(Date.now() / 1000);
-                await saveGameState(gameName, currentState);
-            }
-        }
-        console.log(`[Sync DB] Finished DB update from dip.master.`);
-
-    } catch (err) {
-        console.error(`[Sync Error] Error reading or processing ${dipMasterPath}:`, err);
-        syncError = `Failed to load/sync game list from ${dipMasterPath}. Error: ${err.code || err.message}`;
-    }
-    return { gamesFromMaster, syncError };
-}
-
-// API endpoint to get game list, optionally filtered
-app.get('/api/games', requireEmail, async (req, res) => {
-    try {
-        // Extract filter parameters from query string
-        const filters = {
-            status: req.query.status,
-            variant: req.query.variant,
-            phase: req.query.phase,
-            player: req.query.player // e.g., ?player=user@example.com
-            // Add other potential filters here
-        };
-
-        // Remove undefined filters
-        Object.keys(filters).forEach(key => filters[key] === undefined && delete filters[key]);
-
-        // Sync before getting list (optional, depending on desired freshness vs performance)
-        // Consider if sync is needed every time for filtered lists
-        // await syncDipMaster();
-
-        // Fetch games using the filter function
-        const gameStates = await getFilteredGameStates(filters);
-
-        // Return essential info (or full state if needed by frontend)
-        const gameList = Object.values(gameStates).map(g => ({
-            name: g.name,
-            status: g.status,
-            variant: g.variant,
-            phase: g.currentPhase,
-            players: g.players.map(p => p.email), // Example: return player emails
-            masters: g.masters,
-            nextDeadline: g.nextDeadline
-            // Add other fields as needed by the frontend display
-        }));
-        res.json({ success: true, games: gameList });
-    } catch (err) {
-        console.error("[API Error] /api/games:", err);
-        res.status(500).json({ success: false, message: "Failed to retrieve game list." });
-    }
-});
-
-// API endpoint to get detailed state for a specific game
-app.get('/api/game/:gameName', requireEmail, async (req, res) => {
-    const gameName = req.params.gameName;
-    if (!gameName) {
-        return res.status(400).json({ success: false, message: "Game name is required." });
-    }
-    try {
-        let gameState = await getGameState(gameName);
-        if (!gameState) {
-            // If not in DB, maybe it exists in dip.master but hasn't been LISTed yet?
-            // Trigger a sync and try again.
-            console.log(`[API /api/game] Game ${gameName} not in DB, attempting sync and re-fetch.`);
-            await syncDipMaster();
-            gameState = await getGameState(gameName);
-
-            if (!gameState) {
-                 // Still not found after sync, return 404
-                 return res.status(404).json({ success: false, message: `Game '${gameName}' not found.` });
-            }
-        }
-        // Generate recommendations based on this specific game state
-        const recommendedCommands = getRecommendedCommands(gameState, req.session.email);
-        res.json({ success: true, gameState, recommendedCommands });
-    } catch (err) {
-        console.error(`[API Error] /api/game/${gameName}:`, err);
-        res.status(500).json({ success: false, message: `Failed to retrieve game state for ${gameName}.` });
-    }
-});
-
-
-// --- Saved Search Bookmark API Endpoints ---
-
-// GET all saved search bookmarks for the logged-in user
-app.get('/api/user/search-bookmarks', requireAuth, async (req, res) => {
-    const userId = req.session.email;
-    try {
-        const bookmarks = await getSavedSearches(userId);
-        res.json({ success: true, bookmarks });
-    } catch (err) {
-        console.error(`[API Error] /api/user/search-bookmarks GET for ${userId}:`, err);
-        res.status(500).json({ success: false, message: "Failed to retrieve saved searches." });
-    }
-});
-
-// POST to save/update a search bookmark for the logged-in user
-app.post('/api/user/search-bookmarks', requireAuth, async (req, res) => {
-    const userId = req.session.email;
-    const { name, params } = req.body;
-
-    if (!name || typeof name !== 'string' || name.trim().length === 0) {
-        return res.status(400).json({ success: false, message: "Bookmark name is required." });
-    }
-    if (!params || typeof params !== 'object') {
-        return res.status(400).json({ success: false, message: "Search parameters (params) object is required." });
-    }
-
-    try {
-        await saveSavedSearch(userId, name.trim(), params);
-        res.json({ success: true, message: `Bookmark '${name.trim()}' saved successfully.` });
-    } catch (err) {
-        console.error(`[API Error] /api/user/search-bookmarks POST for ${userId}:`, err);
-        res.status(500).json({ success: false, message: "Failed to save bookmark." });
-    }
-});
-
-// DELETE a specific search bookmark for the logged-in user
-app.delete('/api/user/search-bookmarks/:name', requireAuth, async (req, res) => {
-    const userId = req.session.email;
-    // Decode the name from the URL parameter
-    const bookmarkName = decodeURIComponent(req.params.name);
-
-    if (!bookmarkName) {
-         return res.status(400).json({ success: false, message: "Bookmark name parameter is required." });
-    }
-
-    try {
-        const deleted = await deleteSavedSearch(userId, bookmarkName);
-        if (deleted) {
-            res.json({ success: true, message: `Bookmark '${bookmarkName}' deleted successfully.` });
-        } else {
-            res.status(404).json({ success: false, message: `Bookmark '${bookmarkName}' not found.` });
-        }
-    } catch (err) {
-        console.error(`[API Error] /api/user/search-bookmarks DELETE for ${userId}:`, err);
-        res.status(500).json({ success: false, message: "Failed to delete bookmark." });
-    }
-});
-
-
-// Main dashboard route
-
-// --- News API Endpoints ---
-
-// GET all news items (public)
-app.get('/api/news', async (req, res) => {
-    try {
-        const newsItems = await getAllNewsItems();
-        res.json({ success: true, news: newsItems });
-    } catch (err) {
-        console.error("[API Error] /api/news GET:", err);
-        res.status(500).json({ success: false, message: "Failed to retrieve news items." });
-    }
-});
-
-// POST a new news item (protected)
-// Make sure express.json() middleware is used globally or add it here if needed
-app.post('/api/news', requireAuth, async (req, res) => { // Removed redundant express.json()
-    const { content } = req.body;
-    const userId = req.session.email; // Identify who is posting
-
-    if (!content) {
-        return res.status(400).json({ success: false, message: "Missing 'content' in request body." });
-    }
-
-    try {
-        const newNewsId = await addNewsItem(content);
-        console.log(`[API Success] User ${userId} added news item ID: ${newNewsId}`);
-        res.status(201).json({ success: true, message: "News item added successfully.", newsId: newNewsId });
-    } catch (err) {
-        console.error(`[API Error] /api/news POST by ${userId}:`, err);
-        res.status(500).json({ success: false, message: err.message || "Failed to add news item." });
-    }
-});
-
-// DELETE a news item by ID (protected)
-app.delete('/api/news/:id', requireAuth, async (req, res) => {
-    const newsId = parseInt(req.params.id, 10); // Ensure ID is an integer
-    const userId = req.session.email; // Identify who is deleting
-
-    if (isNaN(newsId)) {
-        return res.status(400).json({ success: false, message: "Invalid news item ID." });
-    }
-
-    try {
-        const deleted = await deleteNewsItem(newsId);
-        if (deleted) {
-            console.log(`[API Success] User ${userId} deleted news item ID: ${newsId}`);
-            res.json({ success: true, message: `News item ${newsId} deleted successfully.` });
-        } else {
-            res.status(404).json({ success: false, message: `News item ${newsId} not found.` });
-        }
-    } catch (err) {
-        console.error(`[API Error] /api/news DELETE by ${userId} for ID ${newsId}:`, err);
-        res.status(500).json({ success: false, message: "Failed to delete news item." });
-    }
-});
-
-
-app.get('/dashboard', requireEmail, async (req, res) => {
-    const email = req.session.email;
-    let errorMessage = req.session.errorMessage || null;
-    req.session.errorMessage = null; // Clear error after displaying once
-    let registrationStatus = null;
-
-    try {
-        // 1. Check registration status
-        registrationStatus = await getUserRegistrationStatus(email);
-        if (registrationStatus === null) {
-             console.warn(`User ${email} reached dashboard without record in users DB. Forcing registration.`);
-             registrationStatus = 0;
-             await ensureUserExists(email);
-        }
-
-        if (registrationStatus === 0) {
-            console.log(`User ${email} needs to register with the judge.`);
-            return res.redirect('/register');
-        }
-
-        // 2. User is registered. Sync games and render dashboard.
-        const syncResult = await syncDipMaster();
-        if (syncResult.syncError && !errorMessage) {
-            errorMessage = syncResult.syncError;
-        }
-
-        // Get all games for the game selector dropdown
-        const allGameStates = await getAllGameStates();
-        const gameList = Object.values(allGameStates).map(g => ({ name: g.name, status: g.status }));
-
-        // Get initial target game from cookie, if available
-        const initialTargetGameName = req.cookies.targetGame;
-        let initialGameState = null;
-        let initialRecommendedCommands = {};
-
-        if (initialTargetGameName) {
-            initialGameState = allGameStates[initialTargetGameName];
-            if (initialGameState) {
-                 initialRecommendedCommands = getRecommendedCommands(initialGameState, email);
-            } else {
-                 console.warn(`[Dashboard] Initial target game '${initialTargetGameName}' from cookie not found in DB.`);
-                 res.clearCookie('targetGame'); // Clear invalid cookie
-                 // Clear corresponding password/variant cookies
-                 res.clearCookie(`targetPassword_${initialTargetGameName}`);
-                 res.clearCookie(`targetVariant_${initialTargetGameName}`);
-            }
-        }
-
-        // If no valid initial game, get default recommendations (no game context)
-        if (!initialGameState) {
-             initialRecommendedCommands = getRecommendedCommands(null, email);
-        }
-
-        res.render('dashboard', {
-            email: email,
-            allGames: gameList, // Pass list of all games for selector
-            initialTargetGame: initialGameState, // Pass state of initially selected game (or null)
-            initialRecommendedCommands: initialRecommendedCommands, // Pass recommendations for initial game (or default)
-            error: errorMessage,
-            layout: 'layout'
-        });
-
-    } catch (err) {
-        console.error(`[Dashboard Error] Failed to load dashboard data for ${email}:`, err);
-        errorMessage = `Error loading dashboard: ${err.message}`;
-        // Attempt to render with default state on error
-        res.render('dashboard', {
-            email: email,
-            allGames: [],
-            initialTargetGame: null,
-            initialRecommendedCommands: getRecommendedCommands(null, email),
-            error: errorMessage,
-            layout: 'layout'
-        });
-    }
-});
-
-app.post('/signoff', (req, res) => {
-    const email = req.session.email; // Log who is signing off
-    console.log(`[Auth] User ${email} signing off.`);
-    req.session.destroy((err) => {
-        // Clear cookies regardless of session destruction success
-        res.clearCookie('connect.sid'); // Session cookie
-        res.clearCookie('targetGame'); // General target game cookie
-        // Clear all game-specific password/variant cookies
-        Object.keys(req.cookies).forEach(cookieName => {
-             if (cookieName.startsWith('targetPassword_') || cookieName.startsWith('targetVariant_')) {
-                 res.clearCookie(cookieName);
-             }
-        });
-        if (err) {
-            console.error("Session destruction error:", err);
-        }
-        res.redirect('/');
-    });
-});
-
-
-// API endpoint to execute the dip command
-app.post('/execute-dip', requireEmail, async (req, res) => {
-    const { command, targetGame, targetPassword, targetVariant } = req.body;
-    const email = req.session.email;
-
-    if (!command) {
-        return res.status(400).json({ success: false, output: 'Error: Missing command.' });
-    }
-
-    const commandVerb = command.trim().split(/\s+/)[0].toUpperCase();
-    let actualTargetGame = targetGame; // Game context for the command
-
-    // Determine the actual target game if the command itself specifies one
-     const commandParts = command.trim().split(/\s+/);
-     const gameNameCommands = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'OBSERVE', 'WATCH', 'SIGN', 'CREATE', 'EJECT'];
-     if (gameNameCommands.includes(commandVerb) && commandParts.length > 1) {
-         let potentialGameName = commandParts[1];
-         // Adjust for SIGN ON Pgame and CREATE/SIGN ON ?game syntax
-         if (commandVerb === 'SIGN' && command.toUpperCase().includes(' ON ') && !potentialGameName.startsWith('?')) { if (potentialGameName.length > 1 && /^[A-Z]$/i.test(potentialGameName[0])) { potentialGameName = potentialGameName.substring(1); } }
-         else if ((commandVerb === 'SIGN' || commandVerb === 'CREATE') && potentialGameName.startsWith('?')) { potentialGameName = potentialGameName.substring(1); }
-         else if (commandVerb === 'EJECT' && potentialGameName.includes('@')) { potentialGameName = null; }
-
-         const keywords = ['FULL', 'FROM', 'TO', 'LINES', 'EXCLSTART', 'EXCLEND', 'BROAD', 'ON', '?', 'MASTER'];
-         if (potentialGameName && /^[a-zA-Z0-9]{1,8}$/.test(potentialGameName) && !keywords.includes(potentialGameName.toUpperCase())) {
-             if (actualTargetGame && actualTargetGame !== potentialGameName) {
-                 console.log(`[Execute Prep] Command ${commandVerb} specifies game '${potentialGameName}', overriding target context '${actualTargetGame}'.`);
-             } else if (!actualTargetGame) {
-                  console.log(`[Execute Prep] Command ${commandVerb} specifies game '${potentialGameName}', setting target context.`);
-             }
-             actualTargetGame = potentialGameName;
-         }
-     }
-
-    try {
-        const result = await executeDipCommand(email, command, actualTargetGame, targetPassword, targetVariant);
-        const stdoutData = result.stdout;
-        let requiresGameRefresh = false; // Flag to indicate if LIST should be run after
-
-        // --- Post-Execution Processing ---
-
-        // 1. Handle REGISTER Success (Update our DB)
-        if (commandVerb === 'REGISTER') {
-             const outputLower = stdoutData.toLowerCase();
-             if (outputLower.includes("registration accepted") || outputLower.includes("updated registration") || outputLower.includes("already registered")) {
-                 await setUserRegistered(email);
-                 console.log(`[Execute] Marked ${email} as registered in local DB after REGISTER command.`);
-             }
-        }
-
-        // 2. Handle SIGN ON / OBSERVE / CREATE Success (Update cookies, flag for refresh)
-        let isSignOnOrObserveSuccess = false;
-        let newGameCreated = false;
-        let signedOnGame = null; // The game name confirmed by the judge
-
-        const signOnSuccessPattern = /signed on as (?:\w+)\s*(?:in game)?\s*'(\w+)'/i;
-        const observeSuccessPattern = /(?:Observing|Watching) game '(\w+)'/i;
-        const createSuccessPattern = /Game '(\w+)' created/i;
-
-        let match;
-        if ((match = stdoutData.match(signOnSuccessPattern)) && (commandVerb === 'SIGN' && command.toUpperCase().includes(' ON '))) {
-            signedOnGame = match[1];
-            console.log(`[Execute] SIGN ON Success detected for ${email}: Game=${signedOnGame}`);
-            isSignOnOrObserveSuccess = true;
-        } else if ((match = stdoutData.match(observeSuccessPattern)) && (commandVerb === 'OBSERVE' || commandVerb === 'WATCH')) {
-            signedOnGame = match[1];
-            console.log(`[Execute] OBSERVE/WATCH Success detected for ${email}: Game=${signedOnGame}`);
-            isSignOnOrObserveSuccess = true;
-        } else if ((match = stdoutData.match(createSuccessPattern)) && commandVerb === 'CREATE') {
-            signedOnGame = match[1];
-            console.log(`[Execute] CREATE Success detected for ${email}: Game=${signedOnGame}`);
-            isSignOnOrObserveSuccess = true;
-            newGameCreated = true;
-            console.log(`[Execute Sync] Triggering dip.master sync after CREATE ${signedOnGame}`);
-            syncDipMaster().catch(syncErr => console.error("Error during post-create sync:", syncErr));
-        }
-
-        if (isSignOnOrObserveSuccess && signedOnGame) {
-            actualTargetGame = signedOnGame;
-            requiresGameRefresh = true;
-            console.log(`[Execute] SignOn/Observe/Create success for ${signedOnGame}. Client should update context.`);
-        }
-
-        // 3. Identify other commands that likely modify game state and require refresh
-        const stateChangingCommands = [
-            'PROCESS', 'SET', 'RESIGN', 'WITHDRAW', 'EJECT', 'TERMINATE', 'ROLLBACK', 'FORCE BEGIN', 'UNSTART', 'PROMOTE',
-            'PAUSE', 'RESUME', 'BECOME MASTER', 'SET MODERATE', 'SET UNMODERATE', 'CLEAR'
-        ];
-        if (stateChangingCommands.includes(commandVerb) && result.success && actualTargetGame) {
-            const outputLower = stdoutData.toLowerCase();
-            if (outputLower.includes('processed') || outputLower.includes('terminated') || outputLower.includes('resigned') ||
-                outputLower.includes('ejected') || outputLower.includes('rolled back') || outputLower.includes('set') ||
-                outputLower.includes('promoted') || outputLower.includes('paused') || outputLower.includes('resumed') ||
-                outputLower.includes('cleared') || outputLower.includes('moderated') || outputLower.includes('unmoderated'))
-            {
-                 console.log(`[Execute] Command ${commandVerb} likely modified state for ${actualTargetGame}. Flagging for refresh.`);
-                 requiresGameRefresh = true;
-            }
-        }
-        if (commandVerb === 'LIST' && result.success && actualTargetGame) {
-             requiresGameRefresh = true;
-        }
-
-
-        // 4. Refresh game state from Judge if needed
-        let refreshedGameState = null;
-        let updatedRecommendedCommands = null; // *** ADDED VARIABLE ***
-
-        if (requiresGameRefresh && actualTargetGame) {
-            console.log(`[Execute Refresh] Running LIST ${actualTargetGame} to refresh state after ${commandVerb}`);
-            try {
-                const listResult = await executeDipCommand(email, `LIST ${actualTargetGame}`, actualTargetGame, targetPassword, targetVariant);
-                if (listResult.success) {
-                    refreshedGameState = parseListOutput(actualTargetGame, listResult.stdout);
-                    await saveGameState(actualTargetGame, refreshedGameState);
-                    console.log(`[Execute Refresh] Successfully refreshed and saved state for ${actualTargetGame}`);
-
-                    // *** ADDED: Calculate recommendations based on the *just parsed* state ***
-                    updatedRecommendedCommands = getRecommendedCommands(refreshedGameState, email);
-                    console.log(`[Execute Refresh] Generated recommendations for refreshed state.`);
-
-                } else {
-                    console.error(`[Execute Refresh] Failed to run LIST command for ${actualTargetGame}:`, listResult.output);
-                }
-            } catch (refreshError) {
-                console.error(`[Execute Refresh] Error during state refresh for ${actualTargetGame}:`, refreshError);
-            }
-        }
-
-        // 5. Send Response
-        res.json({
-            success: result.success,
-            output: result.output,
-            isSignOnOrObserveSuccess: isSignOnOrObserveSuccess,
-            createdGameName: newGameCreated ? signedOnGame : null,
-            refreshedGameState: refreshedGameState,
-            updatedRecommendedCommands: updatedRecommendedCommands // *** ADDED: Send new recommendations ***
-        });
-
-    } catch (error) {
-        console.error(`[Execute Error] Command "${commandVerb}" for ${email} failed:`, error);
-        res.status(error.output?.includes('Spawn failed') ? 503 : 500).json({
-             success: false,
-             output: error.output || 'Unknown execution error',
-             isSignOnOrObserveSuccess: false
-        });
-    }
-});
-
-// Endpoint to add a new game
-app.post('/api/games', requireAuth, async (req, res) => {
-    // Basic implementation: requires gameName and variant in the body.
-    // TODO: Extend to handle more complex ADDGAME parameters (press, deadlines, players etc.)
-    const { gameName, variant, password } = req.body; // Include password
-    const userEmail = req.session.email;
-
-    if (!gameName || !variant) {
-        return res.status(400).json({ success: false, message: 'Missing required parameters: gameName, variant' });
-    }
-
-    // Construct the CREATE ? command string
-    let commandParts = ['CREATE', `?${gameName}`];
-    if (password) {
-        commandParts.push(password);
-    } else {
-        // If no password provided, use a default or handle as needed by judge
-        // For now, let's assume password is required by CREATE ? syntax, but maybe not?
-        // Let's make password required for CREATE via API for simplicity for now.
-        // If password is truly optional, the judge might handle it.
-        return res.status(400).json({ success: false, message: 'Password is required for game creation via this API.' });
-    }
-    commandParts.push(variant); // Add variant/options string
-    // Add BECOME MASTER if requested? Maybe a checkbox in UI?
-    // if (req.body.becomeMaster) commandParts.push('\nBECOME MASTER');
-
-    const command = commandParts.join(' ');
-
-    console.log(`[API /api/games POST] User ${userEmail} attempting command: ${command}`);
-
-    try {
-        // Using executeDipCommand to run the CREATE command
-        const result = await executeDipCommand(userEmail, command); // Don't pass game context for CREATE
-
-        // Check stdout for success message
-        const createSuccessPattern = /Game '(\w+)' created/i;
-        const match = result.stdout.match(createSuccessPattern);
-
-        if (result.success && match && match[1] === gameName) {
-            console.log(`[API /api/games POST] Command successful for ${gameName}. Output:\n${result.stdout}`);
-            // Trigger sync to update master list
-            await syncDipMaster();
-            // Optionally trigger a game list refresh here
-            res.status(201).json({ success: true, message: `Game '${gameName}' created successfully.`, output: result.stdout });
-        } else {
-             console.error(`[API /api/games POST] CREATE command failed or confirmation missing for ${gameName}. Output:\n${result.output}`);
-             res.status(500).json({ success: false, message: `Failed to create game '${gameName}'. Judge response might indicate the issue.`, output: result.output });
-        }
-    } catch (error) {
-        console.error(`[API /api/games POST] Error executing CREATE command for ${gameName}:`, error);
-        // Try to provide more specific status codes based on common errors
-        const statusCode = error.output?.includes('Spawn failed') ? 503 :
-                           error.output?.includes('already exists') ? 409 : // Conflict
-                           500; // Default internal server error
-        res.status(statusCode).json({
-            success: false,
-            message: `Failed to add game '${gameName}'.`,
-            output: error.output || error.message || 'Unknown error'
-        });
-    }
-});
-
-// Endpoint to remove a game
-app.delete('/api/games/:gameName', requireAuth, async (req, res) => {
-    const { gameName } = req.params;
-    // Password might be needed for REMOVEGAME, potentially passed in body
-    const { password } = req.body;
-    const userEmail = req.session.email;
-
-    if (!gameName) {
-        // Should not happen with route definition, but good practice
-        return res.status(400).json({ success: false, message: 'Missing gameName in path parameter.' });
-    }
-
-    // Construct the TERMINATE command string (safer than REMOVEGAME?)
-    // Or use EJECT M<gameName> password? Let's try TERMINATE first.
-    const command = `TERMINATE`; // TERMINATE doesn't take game name directly, needs SIGN ON
-
-    console.log(`[API /api/games DELETE] User ${userEmail} attempting command: ${command} for game ${gameName}`);
-
-    try {
-        // Pass password to executeDipCommand for SIGN ON context
-        const result = await executeDipCommand(userEmail, command, gameName, password);
-
-        // Check stdout for success message
-        const terminateSuccessPattern = /Game terminated/i;
-        if (result.success && terminateSuccessPattern.test(result.stdout)) {
-            console.log(`[API /api/games DELETE] Command successful for ${gameName}. Output:\n${result.stdout}`);
-            // Update game status in DB to Terminated
-            const currentState = await getGameState(gameName);
-            if (currentState) {
-                currentState.status = 'Terminated';
-                currentState.lastUpdated = Math.floor(Date.now() / 1000);
-                await saveGameState(gameName, currentState);
-            }
-            // Optionally trigger game list refresh or remove from DB here?
-            // Sync might eventually remove it if judge cleans up dip.master
-            await syncDipMaster(); // Sync to reflect potential removal from master list
-            res.status(200).json({ success: true, message: `Game '${gameName}' terminated successfully.`, output: result.stdout });
-        } else {
-             console.error(`[API /api/games DELETE] TERMINATE command failed or confirmation missing for ${gameName}. Output:\n${result.output}`);
-             res.status(500).json({ success: false, message: `Failed to terminate game '${gameName}'. Judge response might indicate the issue.`, output: result.output });
-        }
-    } catch (error) {
-        console.error(`[API /api/games DELETE] Error executing TERMINATE command for ${gameName}:`, error);
-         // Try to provide more specific status codes
-        const statusCode = error.output?.includes('Spawn failed') ? 503 :
-                           error.output?.includes('No such game') ? 404 : // Not Found
-                           error.output?.includes('incorrect password') ? 401 : // Unauthorized (or 403 Forbidden)
-                           error.output?.includes('only be issued by a Master') ? 403 : // Forbidden
-                           500; // Default internal server error
-        res.status(statusCode).json({
-            success: false,
-            message: `Failed to terminate game '${gameName}'.`,
-            output: error.output || error.message || 'Unknown error'
-        });
-    }
-});
-
-
-
-// --- Map Data API Endpoint ---
-
-// GET /api/map/:gameName/:phase?
-// Provides the URL to the generated map PNG.
-console.log(`[Route Definition Check] Defining GET /api/map/:gameName/:phase?`); // Roo Debug Log
-app.get('/api/map/:gameName/:phase?', requireAuth, async (req, res) => { // Roo: Added requireAuth
+app.get('/', (req, res) => { if (req.session.email) return res.redirect('/dashboard'); res.render('index', { layout: false }); });
+app.post('/start', async (req, res) => { const email = req.body.email; if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.render('index', { layout: false, error: 'Please enter a valid email address.' }); try { await ensureUserExists(email); req.session.email = email; res.clearCookie('targetGame'); Object.keys(req.cookies).forEach(cookieName => { if (cookieName.startsWith('targetPassword_') || cookieName.startsWith('targetVariant_')) res.clearCookie(cookieName); }); req.session.save(err => { if (err) { console.error("Session save error on /start:", err); return res.render('index', { layout: false, error: 'Session error. Please try again.' }); } res.redirect('/dashboard'); }); } catch (err) { console.error("Error ensuring user exists:", err); res.render('index', { layout: false, error: 'Database error. Please try again.' }); } });
+app.get('/register', requireEmail, (req, res) => { res.render('register', { email: req.session.email, error: null, formData: {} }); });
+app.post('/register', requireEmail, async (req, res) => { const email = req.session.email; const { name, address, phone, country, level, site } = req.body; if (!name || !address || !phone || !country || !level || !site) return res.render('register', { email: email, error: 'All fields are required.', formData: req.body }); const registerCommand = `REGISTER\nname: ${name}\naddress: ${address}\nphone: ${phone}\ncountry: ${country}\nlevel: ${level}\ne-mail: ${email}\nsite: ${site}\npackage: yes\nEND`; try { const result = await executeDipCommand(email, registerCommand); const outputLower = result.stdout.trim().toLowerCase(); if (outputLower.includes("registration accepted") || outputLower.includes("updated registration") || outputLower.includes("already registered") || outputLower.includes("this is an update to an existing registration")) { await setUserRegistered(email); console.log(`[Register Success] User ${email} registered with judge.`); req.session.save(err => { if (err) console.error("Session save error after registration:", err); res.redirect('/dashboard'); }); } else { console.error(`[Register Fail] Judge rejected registration for ${email}. Output:\n${result.output}`); res.render('register', { email: email, error: `Judge rejected registration. Please check the output below and correct your details.`, judgeOutput: result.output, formData: req.body }); } } catch (error) { console.error(`[Register Error] Failed to execute REGISTER command for ${email}:`, error); res.render('register', { email: email, error: `Error communicating with the judge: ${error.output || error.message}`, judgeOutput: error.output, formData: req.body }); } });
+app.post('/signoff', (req, res) => { const email = req.session.email; console.log(`[Auth] User ${email} signing off.`); req.session.destroy((err) => { res.clearCookie('connect.sid'); res.clearCookie('targetGame'); Object.keys(req.cookies).forEach(cookieName => { if (cookieName.startsWith('targetPassword_') || cookieName.startsWith('targetVariant_')) res.clearCookie(cookieName); }); if (err) console.error("Session destruction error:", err); res.redirect('/'); }); });
+app.get('/api/games', requireEmail, async (req, res) => { try { const filters = { status: req.query.status, variant: req.query.variant, phase: req.query.phase, player: req.query.player }; Object.keys(filters).forEach(key => filters[key] === undefined && delete filters[key]); const gameStates = await getFilteredGameStates(filters); const gameList = Object.values(gameStates).map(g => ({ name: g.name, status: g.status, variant: g.variant, phase: g.currentPhase, players: g.players.map(p => p.email), masters: g.masters, nextDeadline: g.nextDeadline })); res.json({ success: true, games: gameList }); } catch (err) { console.error("[API Error] /api/games:", err); res.status(500).json({ success: false, message: "Failed to retrieve game list." }); } });
+app.get('/api/game/:gameName', requireEmail, async (req, res) => { const gameName = req.params.gameName; if (!gameName) return res.status(400).json({ success: false, message: "Game name is required." }); try { let gameState = await getGameState(gameName); if (!gameState) { await syncDipMaster(); gameState = await getGameState(gameName); if (!gameState) return res.status(404).json({ success: false, message: `Game '${gameName}' not found.` }); } const recommendedCommands = getRecommendedCommands(gameState, req.session.email); res.json({ success: true, gameState, recommendedCommands }); } catch (err) { console.error(`[API Error] /api/game/${gameName}:`, err); res.status(500).json({ success: false, message: `Failed to retrieve game state for ${gameName}.` }); } });
+app.get('/api/user/search-bookmarks', requireAuth, async (req, res) => { try { const bookmarks = await getSavedSearches(req.session.email); res.json({ success: true, bookmarks }); } catch (err) { res.status(500).json({ success: false, message: "Failed to retrieve saved searches." }); } });
+app.post('/api/user/search-bookmarks', requireAuth, async (req, res) => { const { name, params } = req.body; if (!name || typeof name !== 'string' || name.trim().length === 0) return res.status(400).json({ success: false, message: "Bookmark name is required." }); if (!params || typeof params !== 'object') return res.status(400).json({ success: false, message: "Search parameters (params) object is required." }); try { await saveSavedSearch(req.session.email, name.trim(), params); res.json({ success: true, message: `Bookmark '${name.trim()}' saved successfully.` }); } catch (err) { res.status(500).json({ success: false, message: "Failed to save bookmark." }); } });
+app.delete('/api/user/search-bookmarks/:name', requireAuth, async (req, res) => { const bookmarkName = decodeURIComponent(req.params.name); if (!bookmarkName) return res.status(400).json({ success: false, message: "Bookmark name parameter is required." }); try { const deleted = await deleteSavedSearch(req.session.email, bookmarkName); if (deleted) res.json({ success: true, message: `Bookmark '${bookmarkName}' deleted successfully.` }); else res.status(404).json({ success: false, message: `Bookmark '${bookmarkName}' not found.` }); } catch (err) { res.status(500).json({ success: false, message: "Failed to delete bookmark." }); } });
+app.get('/api/news', async (req, res) => { try { const newsItems = await getAllNewsItems(); res.json({ success: true, news: newsItems }); } catch (err) { res.status(500).json({ success: false, message: "Failed to retrieve news items." }); } });
+app.post('/api/news', requireAuth, async (req, res) => { const { content } = req.body; if (!content) return res.status(400).json({ success: false, message: "Missing 'content' in request body." }); try { const newNewsId = await addNewsItem(content); res.status(201).json({ success: true, message: "News item added successfully.", newsId: newNewsId }); } catch (err) { res.status(500).json({ success: false, message: err.message || "Failed to add news item." }); } });
+app.delete('/api/news/:id', requireAuth, async (req, res) => { const newsId = parseInt(req.params.id, 10); if (isNaN(newsId)) return res.status(400).json({ success: false, message: "Invalid news item ID." }); try { const deleted = await deleteNewsItem(newsId); if (deleted) res.json({ success: true, message: `News item ${newsId} deleted successfully.` }); else res.status(404).json({ success: false, message: `News item ${newsId} not found.` }); } catch (err) { res.status(500).json({ success: false, message: "Failed to delete news item." }); } });
+app.get('/dashboard', requireEmail, async (req, res) => { const email = req.session.email; let errorMessage = req.session.errorMessage || null; req.session.errorMessage = null; let registrationStatus = null; try { registrationStatus = await getUserRegistrationStatus(email); if (registrationStatus === null) { await ensureUserExists(email); registrationStatus = 0; } if (registrationStatus === 0) return res.redirect('/register'); const syncResult = await syncDipMaster(); if (syncResult.syncError && !errorMessage) errorMessage = syncResult.syncError; const allGameStates = await getAllGameStates(); const gameList = Object.values(allGameStates).map(g => ({ name: g.name, status: g.status })); const initialTargetGameName = req.cookies.targetGame; let initialGameState = null; let initialRecommendedCommands = {}; if (initialTargetGameName) { initialGameState = allGameStates[initialTargetGameName]; if (initialGameState) initialRecommendedCommands = getRecommendedCommands(initialGameState, email); else { res.clearCookie('targetGame'); res.clearCookie(`targetPassword_${initialTargetGameName}`); res.clearCookie(`targetVariant_${initialTargetGameName}`); } } if (!initialGameState) initialRecommendedCommands = getRecommendedCommands(null, email); res.render('dashboard', { email: email, allGames: gameList, initialTargetGame: initialGameState, initialRecommendedCommands: initialRecommendedCommands, error: errorMessage, layout: 'layout' }); } catch (err) { console.error(`[Dashboard Error] Failed to load dashboard data for ${email}:`, err); res.render('dashboard', { email: email, allGames: [], initialTargetGame: null, initialRecommendedCommands: getRecommendedCommands(null, email), error: `Error loading dashboard: ${err.message}`, layout: 'layout' }); } });
+app.post('/execute-dip', requireEmail, async (req, res) => { const { command, targetGame, targetPassword, targetVariant } = req.body; const email = req.session.email; if (!command) return res.status(400).json({ success: false, output: 'Error: Missing command.' }); const commandVerb = command.trim().split(/\s+/)[0].toUpperCase(); let actualTargetGame = targetGame; const commandParts = command.trim().split(/\s+/); const gameNameCommands = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'OBSERVE', 'WATCH', 'SIGN', 'CREATE', 'EJECT']; if (gameNameCommands.includes(commandVerb) && commandParts.length > 1) { let potentialGameName = commandParts[1]; if (commandVerb === 'SIGN' && command.toUpperCase().includes(' ON ') && !potentialGameName.startsWith('?')) { if (potentialGameName.length > 1 && /^[A-Z]$/i.test(potentialGameName[0])) potentialGameName = potentialGameName.substring(1); } else if ((commandVerb === 'SIGN' || commandVerb === 'CREATE') && potentialGameName.startsWith('?')) potentialGameName = potentialGameName.substring(1); else if (commandVerb === 'EJECT' && potentialGameName.includes('@')) potentialGameName = null; const keywords = ['FULL', 'FROM', 'TO', 'LINES', 'EXCLSTART', 'EXCLEND', 'BROAD', 'ON', '?', 'MASTER']; if (potentialGameName && /^[a-zA-Z0-9]{1,8}$/.test(potentialGameName) && !keywords.includes(potentialGameName.toUpperCase())) actualTargetGame = potentialGameName; } try { const result = await executeDipCommand(email, command, actualTargetGame, targetPassword, targetVariant); const stdoutData = result.stdout; let requiresGameRefresh = false; let isSignOnOrObserveSuccess = false; let newGameCreated = false; let signedOnGame = null; const signOnSuccessPattern = /signed on as (?:\w+)\s*(?:in game)?\s*'(\w+)'/i; const observeSuccessPattern = /(?:Observing|Watching) game '(\w+)'/i; const createSuccessPattern = /Game '(\w+)' created/i; let match; if ((match = stdoutData.match(signOnSuccessPattern)) && (commandVerb === 'SIGN' && command.toUpperCase().includes(' ON '))) { signedOnGame = match[1]; isSignOnOrObserveSuccess = true; } else if ((match = stdoutData.match(observeSuccessPattern)) && (commandVerb === 'OBSERVE' || commandVerb === 'WATCH')) { signedOnGame = match[1]; isSignOnOrObserveSuccess = true; } else if ((match = stdoutData.match(createSuccessPattern)) && commandVerb === 'CREATE') { signedOnGame = match[1]; isSignOnOrObserveSuccess = true; newGameCreated = true; syncDipMaster().catch(syncErr => console.error("Error during post-create sync:", syncErr)); } if (isSignOnOrObserveSuccess && signedOnGame) { actualTargetGame = signedOnGame; requiresGameRefresh = true; } const stateChangingCommands = ['PROCESS', 'SET', 'RESIGN', 'WITHDRAW', 'EJECT', 'TERMINATE', 'ROLLBACK', 'FORCE BEGIN', 'UNSTART', 'PROMOTE', 'PAUSE', 'RESUME', 'BECOME MASTER', 'SET MODERATE', 'SET UNMODERATE', 'CLEAR']; if (stateChangingCommands.includes(commandVerb) && result.success && actualTargetGame) { const outputLower = stdoutData.toLowerCase(); if (outputLower.includes('processed') || outputLower.includes('terminated') || outputLower.includes('resigned') || outputLower.includes('ejected') || outputLower.includes('rolled back') || outputLower.includes('set') || outputLower.includes('promoted') || outputLower.includes('paused') || outputLower.includes('resumed') || outputLower.includes('cleared') || outputLower.includes('moderated') || outputLower.includes('unmoderated')) requiresGameRefresh = true; } if (commandVerb === 'LIST' && result.success && actualTargetGame) requiresGameRefresh = true; let refreshedGameState = null; let updatedRecommendedCommands = null; if (requiresGameRefresh && actualTargetGame) { try { const { nameToAbbr } = await ensureMapDataParsed( (await getGameState(actualTargetGame))?.variant || 'Standard' ); const listResult = await executeDipCommand(email, `LIST ${actualTargetGame}`, actualTargetGame, targetPassword, targetVariant); if (listResult.success) { refreshedGameState = parseListOutput(actualTargetGame, listResult.stdout, nameToAbbr); await saveGameState(actualTargetGame, refreshedGameState); updatedRecommendedCommands = getRecommendedCommands(refreshedGameState, email); } } catch (refreshError) { console.error(`[Execute Refresh] Error during state refresh for ${actualTargetGame}:`, refreshError); } } res.json({ success: result.success, output: result.output, isSignOnOrObserveSuccess: isSignOnOrObserveSuccess, createdGameName: newGameCreated ? signedOnGame : null, refreshedGameState: refreshedGameState, updatedRecommendedCommands: updatedRecommendedCommands }); } catch (error) { console.error(`[Execute Error] Command "${commandVerb}" for ${email} failed:`, error); res.status(error.output?.includes('Spawn failed') ? 503 : 500).json({ success: false, output: error.output || 'Unknown execution error', isSignOnOrObserveSuccess: false }); } });
+app.post('/api/games', requireAuth, async (req, res) => { const { gameName, variant, password } = req.body; const userEmail = req.session.email; if (!gameName || !variant) return res.status(400).json({ success: false, message: 'Missing required parameters: gameName, variant' }); if (!password) return res.status(400).json({ success: false, message: 'Password is required for game creation via this API.' }); let commandParts = ['CREATE', `?${gameName}`, password, variant]; const command = commandParts.join(' '); try { const result = await executeDipCommand(userEmail, command); const createSuccessPattern = /Game '(\w+)' created/i; const match = result.stdout.match(createSuccessPattern); if (result.success && match && match[1] === gameName) { await syncDipMaster(); res.status(201).json({ success: true, message: `Game '${gameName}' created successfully.`, output: result.stdout }); } else { res.status(500).json({ success: false, message: `Failed to create game '${gameName}'. Judge response might indicate the issue.`, output: result.output }); } } catch (error) { const statusCode = error.output?.includes('Spawn failed') ? 503 : error.output?.includes('already exists') ? 409 : 500; res.status(statusCode).json({ success: false, message: `Failed to add game '${gameName}'.`, output: error.output || error.message || 'Unknown error' }); } });
+app.delete('/api/games/:gameName', requireAuth, async (req, res) => { const { gameName } = req.params; const { password } = req.body; const userEmail = req.session.email; if (!gameName) return res.status(400).json({ success: false, message: 'Missing gameName in path parameter.' }); const command = `TERMINATE`; try { const result = await executeDipCommand(userEmail, command, gameName, password); const terminateSuccessPattern = /Game terminated/i; if (result.success && terminateSuccessPattern.test(result.stdout)) { const currentState = await getGameState(gameName); if (currentState) { currentState.status = 'Terminated'; currentState.lastUpdated = Math.floor(Date.now() / 1000); await saveGameState(gameName, currentState); } await syncDipMaster(); res.status(200).json({ success: true, message: `Game '${gameName}' terminated successfully.`, output: result.stdout }); } else { res.status(500).json({ success: false, message: `Failed to terminate game '${gameName}'. Judge response might indicate the issue.`, output: result.output }); } } catch (error) { const statusCode = error.output?.includes('Spawn failed') ? 503 : error.output?.includes('No such game') ? 404 : error.output?.includes('incorrect password') ? 401 : error.output?.includes('only be issued by a Master') ? 403 : 500; res.status(statusCode).json({ success: false, message: `Failed to terminate game '${gameName}'.`, output: error.output || error.message || 'Unknown error' }); } });
+
+console.log(`[Route Definition Check] Defining GET /api/map/:gameName/:phase?`);
+app.get('/api/map/:gameName/:phase?', requireAuth, async (req, res) => {
     const { gameName, phase } = req.params;
-    console.log(`[Map API Request PNG] Handler Reached. gameName: ${gameName}, phase: ${phase}, user: ${req.userId}`); // Roo Debug Log
-
-    if (!gameName) {
-        return res.status(400).json({ success: false, message: 'Game name is required.' });
-    }
-
+    if (!gameName) return res.status(400).json({ success: false, message: 'Game name is required.' });
     try {
-        // Call the updated getMapData which now returns { success: true, mapUrl: '...' } or null
         const mapResult = await getMapData(gameName, phase);
-
-        if (mapResult && mapResult.success) {
-            // Send the URL to the generated PNG
-            res.json({ success: true, mapUrl: mapResult.mapUrl });
-        } else {
-            // getMapData failed or returned null
-            console.error(`[Map API Request PNG Error] getMapData failed for ${gameName} / ${phase || 'latest'}`);
-            // Check if game exists to return 404 vs 500
+        if (mapResult && mapResult.success) res.json({ success: true, mapUrl: mapResult.mapUrl });
+        else {
             const gameExists = await getGameState(gameName);
-            if (!gameExists) {
-                 return res.status(404).json({ success: false, message: `Game '${gameName}' not found.` });
-            } else {
-                 // Game exists, but map generation failed
-                 return res.status(500).json({ success: false, message: `Could not generate map image for game '${gameName}' phase '${phase || 'latest'}'. Check server logs.` });
-            }
+            if (!gameExists) return res.status(404).json({ success: false, message: `Game '${gameName}' not found.` });
+            else return res.status(500).json({ success: false, message: `Could not generate map image for game '${gameName}' phase '${phase || 'latest'}'. Check server logs.` });
         }
-
     } catch (error) {
         console.error(`[Map API Request PNG Fatal Error] Failed to get map URL for ${gameName} / ${phase || 'latest'}:`, error);
-        // Check if the error is the specific coordinate missing error
-        if (error.message.includes("Coordinate data missing")) {
-             res.status(500).json({ success: false, message: `Map generation failed: ${error.message}. The map data file (.info) for this variant seems incomplete or incorrectly parsed.` });
-        } else if (error.message.includes("Failed to read map info file")) {
-             // Extract variant name from the error message if possible
+        if (error.message.includes("Coordinate data missing")) res.status(500).json({ success: false, message: `Map generation failed: ${error.message}. The map data file (.info) for this variant seems incomplete or incorrectly parsed.` });
+        else if (error.message.includes("Failed to read map info file") || error.message.includes("Failed to read .info file")) {
              const variantMatch = error.message.match(/variant ([^.]+)/);
-             const variantName = variantMatch ? variantMatch[1] : req.params.variant || 'unknown'; // Fallback
-             res.status(500).json({ success: false, message: `Map generation failed: ${error.message}. Check if the .info file exists for variant '${variantName}' (or its lowercase version) in '${mapDataPath}'.` });
-        } else {
-             res.status(500).json({ success: false, message: 'An internal server error occurred while generating the map image.' });
-        }
+             const variantName = variantMatch ? variantMatch[1] : 'unknown';
+             res.status(500).json({ success: false, message: `Map generation failed: ${error.message}. Check if the .info file exists for variant '${variantName}' (or its lowercase version) in '${mapDataDir}'.` });
+        } else res.status(500).json({ success: false, message: 'An internal server error occurred while generating the map image.' });
     }
 });
-
-
-
-// --- User Preference API Endpoints ---
-
-// GET all preferences for the logged-in user
-console.log(`[Route Definition Check] Defining GET /api/user/preferences`); // Roo Debug Log
-app.get('/api/user/preferences', requireAuth, async (req, res) => {
-    try {
-        const preferences = await getUserPreferences(req.userId);
-        // Check if preferences object is empty
-        if (Object.keys(preferences).length === 0) {
-            console.log(`[API Info] No preferences found for user ${req.userId}. Returning 200 with empty object.`);
-            // Return 200 OK with empty object if no preferences exist
-            res.status(200).json({ success: true, preferences: {} });
-        } else {
-            res.json({ success: true, preferences });
-        }
-    } catch (error) {
-        console.error(`[API Error] GET /api/user/preferences failed for user ${req.userId}:`, error);
-        res.status(500).json({ success: false, message: 'Failed to retrieve preferences.' });
-    }
-});
-
-// PUT (set/update) multiple preferences for the logged-in user (Changed from POST)
-console.log(`[Route Definition Check] Defining PUT /api/user/preferences`); // Roo Debug Log
-app.put('/api/user/preferences', requireAuth, async (req, res) => { // Changed to PUT
-    const preferencesToSet = req.body; // Expects an object like { key1: value1, key2: value2 }
-    if (typeof preferencesToSet !== 'object' || preferencesToSet === null) {
-        return res.status(400).json({ success: false, message: 'Invalid request body. Expected a JSON object of preferences.' });
-    }
-
-    const promises = [];
-    for (const key in preferencesToSet) {
-        if (Object.hasOwnProperty.call(preferencesToSet, key)) {
-            promises.push(setUserPreference(req.userId, key, preferencesToSet[key]));
-        }
-    }
-
-    try {
-        await Promise.all(promises);
-        res.json({ success: true, message: 'Preferences updated successfully.' });
-    } catch (error) {
-        console.error(`[API Error] PUT /api/user/preferences failed for user ${req.userId}:`, error);
-        res.status(500).json({ success: false, message: 'Failed to update preferences.' });
-    }
-});
-
-// DELETE a specific preference key for the logged-in user
-console.log(`[Route Definition Check] Defining DELETE /api/user/preferences/:key`); // Roo Debug Log
-app.delete('/api/user/preferences/:key', requireAuth, async (req, res) => {
-    const keyToDelete = req.params.key;
-    if (!keyToDelete) {
-        return res.status(400).json({ success: false, message: 'Preference key parameter is required.' });
-    }
-
-    try {
-        const deleted = await deleteUserPreference(req.userId, keyToDelete);
-        if (deleted) {
-            res.json({ success: true, message: `Preference '${keyToDelete}' deleted.` });
-        } else {
-            res.status(404).json({ success: false, message: `Preference '${keyToDelete}' not found.` });
-        }
-    } catch (error) {
-        console.error(`[API Error] DELETE /api/user/preferences/${keyToDelete} failed for user ${req.userId}:`, error);
-        res.status(500).json({ success: false, message: 'Failed to delete preference.' });
-    }
-});
-
-// POST reset all preferences for the logged-in user
-console.log(`[Route Definition Check] Defining POST /api/user/preferences/reset`); // Roo Debug Log
-app.post('/api/user/preferences/reset', requireAuth, async (req, res) => {
-    try {
-        const count = await deleteAllUserPreferences(req.userId);
-        res.json({ success: true, message: `Reset ${count} preferences.` });
-    } catch (error) {
-        console.error(`[API Error] POST /api/user/preferences/reset failed for user ${req.userId}:`, error);
-        res.status(500).json({ success: false, message: 'Failed to reset preferences.' });
-    }
-});
-
-
-// --- Public Stats API Endpoints ---
-
-// GET /api/stats/game-status - Get game counts by status
-app.get('/api/stats/game-status', async (req, res) => {
-    try {
-        const gameCounts = await getGameCountsByStatus();
-        res.json({ success: true, stats: gameCounts }); // Wrap in success object
-    } catch (error) {
-        console.error("Error fetching game status stats:", error);
-        res.status(500).json({ success: false, message: "Failed to retrieve game status statistics." });
-    }
-});
-
-
-// GET /api/game/:gameName/history - Get parsed history for a game
-app.get('/api/game/:gameName/history', requireEmail, async (req, res) => {
-    const gameName = req.params.gameName;
-    const userEmail = req.session.email; // Assuming requireEmail middleware sets this
-
-    if (!gameName) {
-        return res.status(400).json({ success: false, message: 'Game name is required.' });
-    }
-
-    console.log(`[API HISTORY] Request received for game: ${gameName} from user: ${userEmail}`);
-
-    try {
-        // Execute the 'HISTORY <gameName>' command
-        // Use the existing executeDipCommand function
-        const historyResult = await executeDipCommand(userEmail, `HISTORY ${gameName}`, gameName);
-
-        // Check if the command returned an error message within the output
-        if (!historyResult.success) {
-             console.warn(`[API HISTORY Warning] Command for ${gameName} failed: ${historyResult.output}`);
-             // Determine appropriate status code based on error message
-             const statusCode = historyResult.output.includes('No such game') ? 404 : 500;
-             return res.status(statusCode).json({ success: false, message: historyResult.output.trim() });
-        }
-
-        const parsedHistory = parseHistoryOutput(gameName, historyResult.stdout);
-        res.json({ success: true, history: parsedHistory }); // Wrap in success object
-
-    } catch (error) {
-        console.error(`[API HISTORY Error] Failed to get or parse history for game ${gameName}:`, error);
-        // Handle potential errors from executeDipCommand (e.g., spawn issues)
-        const statusCode = error.output?.includes('Spawn failed') ? 503 : (error.message?.includes('No such game') ? 404 : 500);
-        const errorMessage = error.message || 'Failed to retrieve game history.';
-        res.status(statusCode).json({ success: false, message: errorMessage, details: error.output || null });
-    }
-});
-
+console.log(`[Route Definition Check] Defining GET /api/user/preferences`);
+app.get('/api/user/preferences', requireAuth, async (req, res) => { try { const preferences = await getUserPreferences(req.userId); if (Object.keys(preferences).length === 0) res.status(200).json({ success: true, preferences: {} }); else res.json({ success: true, preferences }); } catch (error) { res.status(500).json({ success: false, message: 'Failed to retrieve preferences.' }); } });
+console.log(`[Route Definition Check] Defining PUT /api/user/preferences`);
+app.put('/api/user/preferences', requireAuth, async (req, res) => { const preferencesToSet = req.body; if (typeof preferencesToSet !== 'object' || preferencesToSet === null) return res.status(400).json({ success: false, message: 'Invalid request body. Expected a JSON object of preferences.' }); const promises = []; for (const key in preferencesToSet) if (Object.hasOwnProperty.call(preferencesToSet, key)) promises.push(setUserPreference(req.userId, key, preferencesToSet[key])); try { await Promise.all(promises); res.json({ success: true, message: 'Preferences updated successfully.' }); } catch (error) { res.status(500).json({ success: false, message: 'Failed to update preferences.' }); } });
+console.log(`[Route Definition Check] Defining DELETE /api/user/preferences/:key`);
+app.delete('/api/user/preferences/:key', requireAuth, async (req, res) => { const keyToDelete = req.params.key; if (!keyToDelete) return res.status(400).json({ success: false, message: 'Preference key parameter is required.' }); try { const deleted = await deleteUserPreference(req.userId, keyToDelete); if (deleted) res.json({ success: true, message: `Preference '${keyToDelete}' deleted.` }); else res.status(404).json({ success: false, message: `Preference '${keyToDelete}' not found.` }); } catch (error) { res.status(500).json({ success: false, message: 'Failed to delete preference.' }); } });
+console.log(`[Route Definition Check] Defining POST /api/user/preferences/reset`);
+app.post('/api/user/preferences/reset', requireAuth, async (req, res) => { try { const count = await deleteAllUserPreferences(req.userId); res.json({ success: true, message: `Reset ${count} preferences.` }); } catch (error) { res.status(500).json({ success: false, message: 'Failed to reset preferences.' }); } });
+app.get('/api/stats/game-status', async (req, res) => { try { const gameCounts = await getGameCountsByStatus(); res.json({ success: true, stats: gameCounts }); } catch (error) { res.status(500).json({ success: false, message: "Failed to retrieve game status statistics." }); } });
+app.get('/api/game/:gameName/history', requireEmail, async (req, res) => { const gameName = req.params.gameName; const userEmail = req.session.email; if (!gameName) return res.status(400).json({ success: false, message: 'Game name is required.' }); try { const historyResult = await executeDipCommand(userEmail, `HISTORY ${gameName}`, gameName); if (!historyResult.success) { const statusCode = historyResult.output.includes('No such game') ? 404 : 500; return res.status(statusCode).json({ success: false, message: historyResult.output.trim() }); } const { nameToAbbr } = await ensureMapDataParsed( (await getGameState(gameName))?.variant || 'Standard' ); const parsedHistory = parseHistoryOutput(gameName, historyResult.stdout, nameToAbbr); res.json({ success: true, history: parsedHistory }); } catch (error) { const statusCode = error.output?.includes('Spawn failed') ? 503 : (error.message?.includes('No such game') ? 404 : 500); const errorMessage = error.message || 'Failed to retrieve game history.'; res.status(statusCode).json({ success: false, message: errorMessage, details: error.output || null }); } });
 
 // --- Start Server ---
-app.use(express.static(path.join(__dirname, 'public'))); // Serve static files from public
+app.use(express.static(path.join(__dirname, 'public')));
 app.listen(port, () => {
     console.log(`Dip Web App listening at http://localhost:${port}`);
     console.log(`Using dip binary: ${dipBinaryPath}`);
     if (dipBinaryArgs.length > 0) console.log(`Using dip binary args: ${dipBinaryArgs.join(' ')}`);
     console.log(`Using dip binary root path: ${dipBinaryRootPath}`);
     console.log(`Expecting dip.master at: ${dipMasterPath}`);
-    // *** UPDATED: Log paths for map info and templates ***
-    console.log(`Expecting map data files (.info) and templates (.ps) in: ${mapDataPath}`);
-    // console.log(`Expecting map template files (.ps) in: ${mapTemplateBasePath}`); // Removed, using mapDataPath
-    console.log(`Storing generated maps in: ${staticMapDir}`); // Log output path
+    console.log(`Expecting map data files (.info) in: ${mapDataDir}`);
+    console.log(`Expecting map alias files (map.<variant>) in: ${gameDataDir}`);
+    console.log(`Expecting map template files (.ps) in: ${mapDataDir}`);
+    console.log(`Storing generated maps in: ${staticMapDir}`);
 
     const resolvedDipCommand = path.resolve(dipBinaryRootPath, path.basename(dipBinaryPath));
-    if (!fs.existsSync(resolvedDipCommand)) {
-        console.warn(`\n!!! WARNING: Dip binary not found at '${resolvedDipCommand}'. Check DIP_BINARY_PATH in .env. !!!\n`);
-    } else {
-        try {
-            fs.accessSync(resolvedDipCommand, fs.constants.X_OK);
-            console.log(`Dip binary found at '${resolvedDipCommand}' and appears executable.`);
-        } catch (err) {
-            console.warn(`\n!!! WARNING: Dip binary found at '${resolvedDipCommand}' but might not be executable. Error: ${err.message}. Try: chmod +x ${resolvedDipCommand} !!!\n`);
-        }
-    }
+    if (!fs.existsSync(resolvedDipCommand)) console.warn(`\n!!! WARNING: Dip binary not found at '${resolvedDipCommand}'. Check DIP_BINARY_PATH in .env. !!!\n`);
+    else { try { fs.accessSync(resolvedDipCommand, fs.constants.X_OK); console.log(`Dip binary found at '${resolvedDipCommand}' and appears executable.`); } catch (err) { console.warn(`\n!!! WARNING: Dip binary found at '${resolvedDipCommand}' but might not be executable. Error: ${err.message}. Try: chmod +x ${resolvedDipCommand} !!!\n`); } }
+    if (!fs.existsSync(dipMasterPath)) console.warn(`\n!!! WARNING: dip.master file not found at '${dipMasterPath}'. Game list sync might fail. !!!\n`);
+    else { console.log(`Found dip.master at '${dipMasterPath}'. Performing initial sync...`); syncDipMaster().catch(err => console.error("[Startup Sync Error]", err)); }
 
-    if (!fs.existsSync(dipMasterPath)) {
-        console.warn(`\n!!! WARNING: dip.master file not found at '${dipMasterPath}'. Check DIP_MASTER_PATH in .env or ensure it's relative to binary path. Game list sync might fail. !!!\n`);
-    } else {
-        console.log(`Found dip.master at '${dipMasterPath}'. Performing initial sync...`);
-        syncDipMaster().catch(err => console.error("[Startup Sync Error]", err));
-    }
-    function print (path, layer) {
-        if (layer.route) {
-          layer.route.stack.forEach(print.bind(null, path.concat(split(layer.route.path))))
-        } else if (layer.name === 'router' && layer.handle.stack) {
-          layer.handle.stack.forEach(print.bind(null, path.concat(split(layer.regexp))))
-        } else if (layer.method) {
-          console.log('%s /%s',
-            layer.method.toUpperCase(),
-            path.concat(split(layer.regexp)).filter(Boolean).join('/'))
-        }
-      }
-
-      function split (thing) {
-        if (typeof thing === 'string') {
-          return thing.split('/')
-        } else if (thing.fast_slash) {
-          return ''
-        } else {
-          var match = thing.toString()
-            .replace('\\/?', '')
-            .replace('(?=\\/|$)', '$')
-            .match(/^\/\^((?:\\[.*+?^${}()|[\]\\\/]|[^.*+?^${}()|[\]\\\/])*)\$\//)
-          return match
-            ? match[1].replace(/\\(.)/g, '$1').split('/')
-            : '<complex:' + thing.toString() + '>'
-        }
-      }
-
-      // Log all defined routes at startup
-      console.log("Defined Routes:");
-      app._router.stack.forEach(print.bind(null, []))
-      console.log("----------------");
+    function print (path, layer) { if (layer.route) { layer.route.stack.forEach(print.bind(null, path.concat(split(layer.route.path)))) } else if (layer.name === 'router' && layer.handle.stack) { layer.handle.stack.forEach(print.bind(null, path.concat(split(layer.regexp)))) } else if (layer.method) { console.log('%s /%s', layer.method.toUpperCase(), path.concat(split(layer.regexp)).filter(Boolean).join('/'))}}
+    function split (thing) { if (typeof thing === 'string') return thing.split('/'); else if (thing.fast_slash) return ''; else { var match = thing.toString().replace('\\/?', '').replace('(?=\\/|$)', '$').match(/^\/\^((?:\\[.*+?^${}()|[\]\\\/]|[^.*+?^${}()|[\]\\\/])*)\$\//); return match ? match[1].replace(/\\(.)/g, '$1').split('/') : '<complex:' + thing.toString() + '>' }}
+    console.log("Defined Routes:"); app._router.stack.forEach(print.bind(null, [])); console.log("----------------");
 });
+process.on('SIGINT', () => { console.log('SIGINT signal received: closing databases...'); let closedCount = 0; const totalDbs = 3; const tryExit = () => { closedCount++; if (closedCount === totalDbs) { console.log('All databases closed gracefully.'); process.exit(0); } }; db.close((err) => { if (err) console.error('Error closing game_states DB:', err.message); else console.log('Game states DB closed.'); tryExit(); }); sessionDb.close((err) => { if (err) console.error('Error closing sessions DB:', err.message); else console.log('Sessions DB closed.'); tryExit(); }); userDb.close((err) => { if (err) console.error('Error closing users DB:', err.message); else console.log('Users DB closed.'); tryExit(); }); setTimeout(() => { console.error("Databases did not close gracefully within 5s, forcing exit."); process.exit(1); }, 5000); });
 
-process.on('SIGINT', () => {
-    console.log('SIGINT signal received: closing databases...');
-    let closedCount = 0;
-    const totalDbs = 3;
-    const tryExit = () => {
-        closedCount++;
-        if (closedCount === totalDbs) {
-            console.log('All databases closed gracefully.');
-            process.exit(0);
+// --- Sync dip.master with DB ---
+async function syncDipMaster() {
+    // console.log('[Sync] Starting sync from dip.master...');
+    let gamesFromMaster = {}; let syncError = null;
+    try {
+        if (!fs.existsSync(dipMasterPath)) throw new Error(`File not found: ${dipMasterPath}.`);
+        const masterContent = fs.readFileSync(dipMasterPath, 'utf8');
+        const gameBlocks = masterContent.split(/^\s*-\s*$/m);
+        const gameLineRegex = /^([a-zA-Z0-9]{1,8})\s+(\S+)\s+([SFUW]\d{4}[MRBAX]|Forming|Paused|Finished|Terminated)/i;
+        gameBlocks.forEach((block) => {
+            const blockTrimmed = block.trim(); if (!blockTrimmed) return;
+            const blockLines = blockTrimmed.split('\n');
+            if (blockLines.length > 0) {
+                const firstLine = blockLines[0].trim();
+                const match = firstLine.match(gameLineRegex);
+                if (match) {
+                    const gameName = match[1]; const phaseOrStatus = match[3];
+                    if (gameName && gameName !== 'control' && !gamesFromMaster[gameName]) {
+                        gamesFromMaster[gameName] = { name: gameName, status: 'Unknown', currentPhase: 'Unknown' };
+                        if (/^[SFUW]\d{4}[MRBAX]$/i.test(phaseOrStatus)) { gamesFromMaster[gameName].currentPhase = phaseOrStatus.toUpperCase(); gamesFromMaster[gameName].status = 'Active'; }
+                        else { const statusLower = phaseOrStatus.toLowerCase(); if (statusLower === 'forming') gamesFromMaster[gameName].status = 'Forming'; else if (statusLower === 'paused') gamesFromMaster[gameName].status = 'Paused'; else if (statusLower === 'finished') gamesFromMaster[gameName].status = 'Finished'; else if (statusLower === 'terminated') gamesFromMaster[gameName].status = 'Terminated'; else gamesFromMaster[gameName].status = 'Unknown'; }
+                    }
+                }
+            }
+        });
+        // console.log(`[Sync] Found ${Object.keys(gamesFromMaster).length} potential games in ${dipMasterPath}`);
+        const existingStates = await getAllGameStates();
+        for (const gameName in gamesFromMaster) {
+            const masterInfo = gamesFromMaster[gameName]; let currentState = existingStates[gameName]; let needsSave = false;
+            if (!currentState) { currentState = { name: gameName, status: masterInfo.status, variant: 'Standard', options: [], currentPhase: masterInfo.currentPhase, nextDeadline: null, masters: [], players: [], observers: [], settings: {} }; needsSave = true; }
+            else {
+                if (masterInfo.currentPhase !== 'Unknown' && currentState.currentPhase !== masterInfo.currentPhase) { currentState.currentPhase = masterInfo.currentPhase; needsSave = true; }
+                if (masterInfo.status !== 'Unknown' && currentState.status !== masterInfo.status) { currentState.status = masterInfo.status; needsSave = true; }
+                if ((currentState.status === 'Unknown' || currentState.status === 'Forming') && masterInfo.status === 'Active') { currentState.status = 'Active'; needsSave = true; }
+            }
+            if (needsSave) { currentState.lastUpdated = Math.floor(Date.now() / 1000); await saveGameState(gameName, currentState); }
         }
-    };
-    db.close((err) => { if (err) console.error('Error closing game_states DB:', err.message); else console.log('Game states DB closed.'); tryExit(); });
-    sessionDb.close((err) => { if (err) console.error('Error closing sessions DB:', err.message); else console.log('Sessions DB closed.'); tryExit(); });
-    userDb.close((err) => { if (err) console.error('Error closing users DB:', err.message); else console.log('Users DB closed.'); tryExit(); });
-    setTimeout(() => { console.error("Databases did not close gracefully within 5s, forcing exit."); process.exit(1); }, 5000);
-});
+        // console.log(`[Sync DB] Finished DB update from dip.master.`);
+    } catch (err) { console.error(`[Sync Error] Error reading or processing ${dipMasterPath}:`, err); syncError = `Failed to load/sync game list from ${dipMasterPath}. Error: ${err.code || err.message}`; }
+    return { gamesFromMaster, syncError };
+}
+
+// --- Helper function to parse HISTORY output (if needed for map generation, though LIST is primary) ---
+const parseHistoryOutput = (gameName, output, nameToAbbr) => {
+    // Placeholder - Implement if detailed history parsing is needed for map or other features
+    // Ensure it uses nameToAbbr for province name resolution if it deals with full names
+    return { gameName, variant: null, phases: {} };
+};
