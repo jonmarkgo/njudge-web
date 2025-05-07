@@ -972,8 +972,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (commandTypeSelect) {
         commandTypeSelect.addEventListener('change', (e) => {
             const selectedCommand = e.target.value;
-            generateCommandOptions(selectedCommand); // Generate specific options
-            updateGeneratedCommandText(); // Update text area immediately if possible
+            // Pass current game state to the generator
+            generateCommandOptions(selectedCommand, window.currentGameData);
+            updateGeneratedCommandText(window.currentGameData); // Update text area immediately if possible
         });
     }
 
@@ -991,7 +992,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
         // Update command text on any input change in the textarea itself
-        generatedCommandTextarea.addEventListener('input', updateGeneratedCommandText);
+        generatedCommandTextarea.addEventListener('input', () => updateGeneratedCommandText(window.currentGameData));
     }
 
     // --- Refresh State Button ---
@@ -1204,7 +1205,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- generateCommandOptions: Expanded significantly ---
-    function generateCommandOptions(selectedCommand) {
+    // Pass gameData to this function
+    function generateCommandOptions(selectedCommand, gameData) {
         if (!optionsArea || !generatedCommandTextarea) return; // Ensure elements exist
 
         optionsArea.innerHTML = ''; // Clear previous options
@@ -1216,57 +1218,103 @@ document.addEventListener('DOMContentLoaded', () => {
         const labelClass = 'block text-sm font-medium text-gray-700 mb-1';
         const helpTextClass = 'text-xs text-gray-500 mt-1';
         const checkboxClass = 'rounded border-gray-300 text-primary focus:ring-primary mr-2';
+        const radioClass = 'rounded-full border-gray-300 text-primary focus:ring-primary mr-1';
+        const powerInitials = gameData?.players?.map(p => p.power?.charAt(0).toUpperCase()).filter(Boolean) || [];
+        const myPlayerInfo = gameData?.players?.find(p => p.email === currentUserEmail);
+        const myPowerInitial = myPlayerInfo?.power?.charAt(0).toUpperCase();
+        const myUnits = myPlayerInfo?.units || [];
 
         // Helper to create form elements
         const createInput = (id, type, label, placeholder = '', required = false, value = '', help = '', otherAttrs = {}) => {
             let attrsString = '';
             for (const [key, val] of Object.entries(otherAttrs)) {
-                attrsString += ` ${key}="${val}"`;
+                attrsString += ` ${key}="${String(val).replace(/"/g, '&quot;')}"`; // Escape quotes in attributes
             }
             return `
-                <div>
-                    <label for="${id}" class="${labelClass}">${label}${required ? '<span class="text-red-500">*</span>' : ''}:</label>
-                    <input type="${type}" id="${id}" name="${id}" class="${inputClass}" placeholder="${placeholder}" ${required ? 'required' : ''} value="${value}" ${attrsString}>
+                <div class="my-2">
+                    <label for="${id}" class="${labelClass}">${label}${required ? '<span class="text-red-500">*</span>' : ''}</label>
+                    <input type="${type}" id="${id}" name="${id}" class="${inputClass}" placeholder="${placeholder}" ${required ? 'required' : ''} value="${String(value).replace(/"/g, '&quot;')}" ${attrsString}>
                     ${help ? `<p class="${helpTextClass}">${help}</p>` : ''}
                 </div>`;
         };
         const createTextarea = (id, label, placeholder = '', required = false, rows = 3, help = '') => {
              return `
-                <div>
-                    <label for="${id}" class="${labelClass}">${label}${required ? '<span class="text-red-500">*</span>' : ''}:</label>
+                <div class="my-2">
+                    <label for="${id}" class="${labelClass}">${label}${required ? '<span class="text-red-500">*</span>' : ''}</label>
                     <textarea id="${id}" name="${id}" class="${inputClass} font-mono min-h-[${rows * 1.5}rem] resize-y" placeholder="${placeholder}" ${required ? 'required' : ''} rows="${rows}"></textarea>
                     ${help ? `<p class="${helpTextClass}">${help}</p>` : ''}
                 </div>`;
         };
-        const createSelect = (id, label, options, required = false, help = '') => {
-            const optionsHtml = options.map(opt => `<option value="${opt.value}" ${opt.selected ? 'selected' : ''}>${opt.text}</option>`).join('');
+        const createSelect = (id, label, options, required = false, help = '', multiple = false, size = 1) => {
+            const optionsHtml = options.map(opt => `<option value="${opt.value}" ${opt.selected ? 'selected' : ''} ${opt.disabled ? 'disabled' : ''}>${opt.text}</option>`).join('');
             return `
-                <div>
-                    <label for="${id}" class="${labelClass}">${label}${required ? '<span class="text-red-500">*</span>' : ''}:</label>
-                    <select id="${id}" name="${id}" class="${inputClass}" ${required ? 'required' : ''}>${optionsHtml}</select>
+                <div class="my-2">
+                    <label for="${id}" class="${labelClass}">${label}${required ? '<span class="text-red-500">*</span>' : ''}</label>
+                    <select id="${id}" name="${id}" class="${inputClass}" ${required ? 'required' : ''} ${multiple ? 'multiple' : ''} size="${multiple ? Math.max(size, options.length, 3) : 1}">${optionsHtml}</select>
                     ${help ? `<p class="${helpTextClass}">${help}</p>` : ''}
                 </div>`;
         };
-         const createCheckbox = (id, label, checked = false, help = '') => {
+         const createCheckbox = (id, label, checked = false, help = '', value = 'true', name = id) => {
              return `
-                <div class="flex items-center">
-                    <input type="checkbox" id="${id}" name="${id}" class="${checkboxClass}" ${checked ? 'checked' : ''}>
-                    <label for="${id}" class="text-sm font-medium text-gray-700">${label}</label>
+                <div class="flex items-center my-1">
+                    <input type="checkbox" id="${id}" name="${name}" class="${checkboxClass}" ${checked ? 'checked' : ''} value="${value}">
+                    <label for="${id}" class="ml-1 text-sm font-medium text-gray-700">${label}</label>
                     ${help ? `<p class="${helpTextClass} ml-1">${help}</p>` : ''}
                 </div>`;
          };
+         const createRadio = (id, name, label, checked = false, help = '', value = id) => {
+             return `
+                <div class="flex items-center my-1">
+                    <input type="radio" id="${id}" name="${name}" class="${radioClass}" ${checked ? 'checked' : ''} value="${value}">
+                    <label for="${id}" class="ml-1 text-sm font-medium text-gray-700">${label}</label>
+                    ${help ? `<p class="${helpTextClass} ml-1">${help}</p>` : ''}
+                </div>`;
+         };
+         const createPowerCheckboxes = (idPrefix, gameData, includeMaster = true, includeObservers = true) => {
+             let checkboxesHtml = `<div class="grid grid-cols-2 gap-x-2 gap-y-1 border p-2 rounded bg-gray-50">`;
+             if (gameData?.players) {
+                 gameData.players.sort((a, b) => (a.power || '').localeCompare(b.power || '')).forEach(p => {
+                     const initial = p.power?.charAt(0).toUpperCase();
+                     if (initial) {
+                         checkboxesHtml += createCheckbox(`${idPrefix}-${initial}`, `${p.power} (${initial})`, false, '', initial, `${idPrefix}-power`);
+                     }
+                 });
+             }
+             if (includeMaster) checkboxesHtml += createCheckbox(`${idPrefix}-M`, `Master (M)`, false, '', 'M', `${idPrefix}-power`);
+             if (includeObservers) checkboxesHtml += createCheckbox(`${idPrefix}-O`, `Observers (O)`, false, '', 'O', `${idPrefix}-power`);
+             checkboxesHtml += `</div>`;
+             return checkboxesHtml;
+         };
          const createSeparator = () => '<hr class="my-3 border-gray-200">';
-         const createInfo = (text) => `<p class="text-sm text-gray-600">${text}</p>`;
-         const createWarning = (text) => `<p class="text-sm text-orange-600">${text}</p>`;
-         const createError = (text) => `<p class="text-sm text-red-600">${text}</p>`;
+         const createInfo = (text) => `<p class="text-sm text-gray-600 my-1">${text}</p>`;
+         const createWarning = (text) => `<p class="text-sm text-orange-600 my-1">${text}</p>`;
+         const createError = (text) => `<p class="text-sm text-red-600 my-1">${text}</p>`;
 
-        let content = '<div class="space-y-3">'; // Use consistent spacing
+        let content = '<div class="space-y-1">'; // Use tighter spacing for options
 
         // --- Add cases based on commands available in njudgedocs.txt ---
         switch (selectedCommand) {
             // --- General / Info ---
             case 'GET':
-                content += createInput('get-filename', 'text', 'Filename', 'e.g., info, rules, map, guide, form, flist', true, '', 'See GET flist for available files.');
+                content += createSelect('get-filename', 'Filename', [
+                    {value: '', text: '-- Select File --'},
+                    {value: 'info', text: 'info (General Help)'},
+                    {value: 'guide', text: 'guide (Newbie Guide)'},
+                    {value: 'index', text: 'index (Command Index)'},
+                    {value: 'syntax', text: 'syntax (Order Syntax)'},
+                    {value: 'deadlines', text: 'deadlines'},
+                    {value: 'rules', text: 'rules (Standard)'},
+                    {value: 'house.rules', text: 'house.rules'},
+                    {value: 'press', text: 'press'},
+                    {value: 'map', text: 'map (Standard Adjacencies)'},
+                    {value: 'form', text: 'form (Registration)'},
+                    {value: 'flist', text: 'flist (Full File List)'},
+                    // Add common variant info files if desired
+                    {value: 'info.gunboat', text: 'info.gunboat'},
+                    {value: 'info.chaos', text: 'info.chaos'},
+                    {value: 'info.machiavelli', text: 'info.machiavelli'},
+                    {value: 'rules.machiavelli', text: 'rules.machiavelli'},
+                ], true);
                 break;
             case 'HELP':
             case 'VERSION':
@@ -1282,11 +1330,12 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'HISTORY':
                 content += createInput('hist-game-name', 'text', 'Game Name', 'Game Name', true, targetGame !== '<game>' ? targetGame : '');
                 content += createSeparator();
+                content += createInfo('Retrieve by Date Range:');
                 content += createInput('hist-from', 'text', 'From Date (optional)', 'e.g., Jan 1 2023 or S1901M', false, '', 'Defaults to 1 week ago.');
                 content += createInput('hist-to', 'text', 'To Date (optional)', 'e.g., Dec 31 2023 or F1905B', false, '', 'Defaults to now.');
                 content += createInput('hist-lines', 'number', 'Max Lines (optional)', 'e.g., 5000', false, '', 'Defaults to 1000.');
                 content += createSeparator();
-                content += createInfo('OR Exclude Range:');
+                content += createInfo('OR Exclude Turn Range:');
                 content += createInput('hist-exclstart', 'text', 'EXCLSTART turnId', 'e.g., S1903M', false, '', 'Start of range to exclude.');
                 content += createInput('hist-exclend', 'text', 'EXCLEND turnId', 'e.g., F1905B', false, '', 'End of range to exclude (optional).');
                 content += createCheckbox('hist-broad', 'Include Broadcasts (with EXCL)?', false);
@@ -1350,17 +1399,58 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // --- In-Game Player Actions ---
             case 'ORDERS':
-                 content += createInfo('Enter orders directly into the text area below.');
+                 // More interactive order builder
+                 if (myUnits.length > 0) {
+                     const unitOptions = [{value:'', text:'-- Select Unit --'}, ...myUnits.map(u => ({value: `${u.type} ${u.location}`, text: `${u.type} ${u.location}`}))];
+                     content += createSelect('order-unit-select', 'Unit to Order', unitOptions, false, 'Select a unit to build its order.');
+                 } else {
+                     content += createInfo('No units found for your power in the current game state.');
+                 }
+                 content += `<div id="order-details-area" class="mt-2 border-t pt-2 hidden"></div>`; // Area for specific order options
+                 content += createInfo('Alternatively, enter orders directly into the text area below.');
                  content += createInfo('Example: <code class="bg-gray-100 px-1 py-0.5 rounded">A Par H</code>, <code class="bg-gray-100 px-1 py-0.5 rounded">F Lon - Nth</code>');
-                 content += createInfo('Separate multiple orders with newlines or commas.');
                  content += createWarning('Specify full convoy routes: <code class="bg-gray-100 px-1 py-0.5 rounded">A Lon-Nth-Nwy</code>');
-                 generatedCommandTextarea.placeholder = "Enter orders here...\ne.g., A PAR H\nF BRE - MAO";
+                 generatedCommandTextarea.placeholder = "Select unit above or enter orders here...\ne.g., A PAR H\nF BRE - MAO";
+                 // Add event listener to unit select
+                 setTimeout(() => {
+                     qs('#order-unit-select')?.addEventListener('change', handleUnitOrderSelection);
+                 }, 0);
                  break;
-            case 'PRESS': case 'BROADCAST': case 'POSTAL PRESS':
-                 content += createInput('press-options', 'text', 'Press Options', 'e.g., TO FRG, GREY, FAKE TO A', false, '', 'See docs for TO, GREY, FAKE, etc.');
+            case 'PRESS': case 'BROADCAST':
+                 // Press options
+                 content += `<fieldset class="border p-2 rounded"><legend class="text-sm font-medium px-1">Press Options</legend>`;
+                 // Color
+                 if (gameData?.settings?.press?.includes('/')) { // White/Grey or Grey/White
+                     const defaultColor = gameData.settings.press.startsWith('Grey') ? 'GREY' : 'WHITE';
+                     content += createRadio('press-color-default', 'press-color', `Default (${defaultColor})`, true);
+                     content += createRadio('press-color-white', 'press-color', 'White', defaultColor === 'GREY');
+                     content += createRadio('press-color-grey', 'press-color', 'Grey', defaultColor === 'WHITE');
+                 }
+                 // Delivery
+                 content += createRadio('press-delivery-all', 'press-delivery', 'To All (Broadcast)', selectedCommand === 'BROADCAST');
+                 content += createRadio('press-delivery-list', 'press-delivery', 'To List', selectedCommand === 'PRESS');
+                 content += createRadio('press-delivery-but', 'press-delivery', 'To All BUT List');
+                 content += `<div id="press-powerlist-div" class="${selectedCommand === 'BROADCAST' ? 'hidden' : ''}">${createPowerCheckboxes('press-to', gameData)}</div>`;
+                 // Fake
+                 if (gameData?.settings?.partialPress && !gameData?.settings?.press?.includes('No Fake')) {
+                     content += createCheckbox('press-fake-broadcast', 'Fake as Broadcast?', false);
+                     content += createCheckbox('press-fake-partial-cb', 'Fake as Partial?', false);
+                     content += `<div id="press-fakelist-div" class="hidden">Fake To/But: ${createPowerCheckboxes('press-fake-to', gameData)}</div>`;
+                 }
+                 content += `</fieldset>`;
                  content += createTextarea('press-body', 'Press Message Body', '', true, 4);
-                 content += createInfo(`Command will be: ${selectedCommand} [options]\\n[body]\\nENDPRESS`);
-                 if (selectedCommand === 'POSTAL PRESS') content += createWarning('Postal Press is broadcast-only and delivered after the turn processes.');
+                 content += createInfo(`Command will end with ENDPRESS.`);
+                 generatedCommandTextarea.placeholder = "Enter message body here...";
+                 // Add event listeners
+                 setTimeout(() => {
+                     optionsArea.querySelectorAll('input[name="press-delivery"]').forEach(el => el.addEventListener('change', handlePressDeliveryChange));
+                     qs('#press-fake-partial-cb')?.addEventListener('change', handlePressFakePartialChange);
+                 }, 0);
+                 break;
+            case 'POSTAL PRESS':
+                 content += createTextarea('press-body', 'Postal Press Message Body', '', true, 4);
+                 content += createWarning('Postal Press is broadcast-only and delivered after the turn processes.');
+                 content += createInfo(`Command will end with ENDPRESS.`);
                  generatedCommandTextarea.placeholder = "Enter message body here...";
                  break;
             case 'DIARY':
@@ -1387,7 +1477,7 @@ document.addEventListener('DOMContentLoaded', () => {
                          const bodyInput = bodyDiv.querySelector('#diary-body');
                          if (numInput) numInput.required = (action === 'READ' || action === 'DELETE');
                          if (bodyInput) bodyInput.required = (action === 'RECORD');
-                         updateGeneratedCommandText(); // Update command text when visibility changes
+                         updateGeneratedCommandText(gameData); // Update command text when visibility changes
                      };
                      actionSelect.addEventListener('change', updateDiaryFields);
                      updateDiaryFields(); // Initial setup
@@ -1409,13 +1499,20 @@ document.addEventListener('DOMContentLoaded', () => {
                  content += createInfo('Affects future deadlines, not the current one.');
                  break;
              case 'SET DRAW':
-                 content += createInput('draw-powers', 'text', 'Powers to include (optional)', 'e.g., AEFG (NoDIAS only)', false, '', 'Leave blank for DIAS or to include self only in NoDIAS.');
+                 content += createInfo('Vote for a draw this phase.');
+                 if (gameData?.settings?.dias === false) { // NoDIAS game
+                     content += createInfo('Game is NoDIAS. Select powers to include (optional):');
+                     content += createPowerCheckboxes('draw-powers', gameData, false, false); // No M or O in draw list
+                 } else {
+                     content += createInfo('Game is DIAS (Draw Includes All Survivors).');
+                 }
                  break;
              case 'SET CONCEDE':
-                 content += createInput('concede-power', 'text', 'Power Initial to Concede To', 'e.g., F', true, '', '', {size: 1, maxlength: 1});
+                 content += createInput('concede-power', 'text', 'Power Initial to Concede To', 'e.g., F', true, '', 'Must be the largest power. Check LIST output.', {size: 1, maxlength: 1});
                  break;
              case 'SET PREFERENCE':
                  content += createInput('preference-list', 'text', 'Preference List', 'e.g., E[FGR][TAI] or *', true, '', 'Only effective in forming games.');
+                 content += createInfo('Use initials (A,E,F,G,I,R,T for standard). Use * for random (if allowed).');
                  break;
              case 'PHASE':
                  content += createSelect('phase-season', 'Season', [
@@ -1493,7 +1590,7 @@ document.addEventListener('DOMContentLoaded', () => {
              // Add specific SET commands here if desired, or rely on generic SET / MANUAL
              case 'SET DEADLINE': case 'SET GRACE': case 'SET START':
                  content += createWarning('Master Only.');
-                 content += createInput(`set-${selectedCommand.toLowerCase()}-date`, 'text', 'Date/Time', 'e.g., Mon Jan 1 23:00 or +24h', true);
+                 content += createInput(`set-${selectedCommand.toLowerCase().substring(4)}-date`, 'text', 'Date/Time', 'e.g., Mon Jan 1 23:00 or +24h', true);
                  break;
              case 'SET COMMENT':
                  content += createWarning('Master Only.');
@@ -1544,7 +1641,21 @@ document.addEventListener('DOMContentLoaded', () => {
                   // Generic handler for simple SET commands
                   content += createWarning('Master Only.');
                   content += createInfo(`Applies setting: ${selectedCommand}. Check docs for specific value requirements if any.`);
-                  content += createInfo(`Enter value directly in text area if needed (e.g., SET LEVEL EXPERT).`);
+                  // Add specific inputs for common SET commands
+                  if (selectedCommand === 'SET LEVEL') {
+                      content += createSelect('set-level-value', 'Level', [
+                          {value: 'ANY', text: 'ANY'}, {value: 'NOVICE', text: 'NOVICE'}, {value: 'AMATEUR', text: 'AMATEUR'},
+                          {value: 'INTERMEDIATE', text: 'INTERMEDIATE'}, {value: 'ADVANCED', text: 'ADVANCED'}, {value: 'EXPERT', text: 'EXPERT'}
+                      ], true);
+                  } else if (selectedCommand === 'SET OBSERVER') {
+                      content += createSelect('set-observer-value', 'Observer Press', [
+                          {value: 'ANY', text: 'ANY'}, {value: 'WHITE', text: 'WHITE'}, {value: 'NO', text: 'NO'}
+                      ], true);
+                  } else if (selectedCommand === 'SET MAX ABSENCE') {
+                      content += createInput('set-max-absence-value', 'number', 'Max Days (0-31)', '15', true, '15', '', {min: 0, max: 31});
+                  } else {
+                      content += createInfo(`Enter value directly in text area if needed (e.g., SET LEVEL EXPERT, SET MOVE NEXT 48).`);
+                  }
                   generatedCommandTextarea.value = selectedCommand + ' '; // Start with command
                   break;
 
@@ -1557,30 +1668,32 @@ document.addEventListener('DOMContentLoaded', () => {
                  break;
             default:
                 content += createInfo(`Parameters for <strong>${selectedCommand}</strong> (if any) should be entered directly in the text area below.`);
-                content += createInfo(`Check <code class="bg-gray-100 px-1 py-0.5 rounded">HELP ${selectedCommand}</code> if unsure.`);
+                content += createInfo(`Check <code class="bg-gray-100 px-1 py-0.5 rounded">HELP ${selectedCommand}</code> or the docs if unsure.`);
                 generatedCommandTextarea.value = selectedCommand + ' '; // Start with the command verb
                 break;
         }
-        content += '</div>'; // Close space-y-3
+        content += '</div>'; // Close space-y-1
         optionsArea.innerHTML = content;
 
         // Attach listeners to new inputs/selects/textareas AFTER they are in the DOM
         setTimeout(() => {
             optionsArea.querySelectorAll('input, select, textarea').forEach(el => {
-                // Use 'input' for text fields, 'change' for select/checkbox
+                // Use 'input' for text fields, 'change' for select/checkbox/radio
                 const eventType = (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'radio') ? 'change' : 'input';
-                el.removeEventListener(eventType, updateGeneratedCommandText); // Remove old listener if any
-                el.addEventListener(eventType, updateGeneratedCommandText);
+                el.removeEventListener(eventType, () => updateGeneratedCommandText(gameData)); // Remove old listener if any
+                el.addEventListener(eventType, () => updateGeneratedCommandText(gameData));
             });
-            updateGeneratedCommandText(); // Update text area based on initial options
+            updateGeneratedCommandText(gameData); // Update text area based on initial options
         }, 0); // Timeout ensures DOM update is processed
     }
 
     // Helper function to query selector safely within optionsArea
     const qs = (selector) => optionsArea?.querySelector(selector); // Add check for optionsArea
+    const qsa = (selector) => optionsArea?.querySelectorAll(selector); // Add check for optionsArea
 
     // --- updateGeneratedCommandText: Updated for multi-line and complex commands ---
-    function updateGeneratedCommandText() {
+    // Pass gameData to this function
+    function updateGeneratedCommandText(gameData) {
         if (!commandTypeSelect || !generatedCommandTextarea || !optionsArea) return; // Check elements exist
 
         const selectedCommand = commandTypeSelect.value;
@@ -1595,7 +1708,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const currentText = generatedCommandTextarea.value; // Preserve user input if possible
 
         // Build the command string based on options
-        commandString = buildCommandStringFromOptions(selectedCommand);
+        commandString = buildCommandStringFromOptions(selectedCommand, gameData); // Pass gameData
 
         // Handle commands where the textarea is primarily for the body
         const commandsWithBodyInput = ['ORDERS', 'PRESS', 'BROADCAST', 'POSTAL PRESS', 'DIARY', 'PHASE', 'IF', 'BECOME', 'SET COMMENT BEGIN'];
@@ -1701,12 +1814,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Helper to build the command string from options (first line usually)
-    function buildCommandStringFromOptions(selectedCommand) {
+    // Pass gameData to this function
+    function buildCommandStringFromOptions(selectedCommand, gameData) {
         let commandString = selectedCommand;
-        // Use safe query selector helper 'qs' defined above
+        // Use safe query selector helper 'qs' and 'qsa' defined above
         const val = (selector, defaultValue = '') => qs(selector)?.value.trim() || defaultValue;
         const checked = (selector) => qs(selector)?.checked || false;
+        const radioVal = (name, defaultValue = '') => qs(`input[name="${name}"]:checked`)?.value || defaultValue;
         const rawVal = (selector, defaultValue = '') => qs(selector)?.value || defaultValue; // Don't trim passwords
+        const getCheckedValues = (name) => Array.from(qsa(`input[name="${name}"]:checked`)).map(el => el.value);
 
         switch (selectedCommand) {
             // --- General / Info ---
@@ -1733,18 +1849,44 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // --- In-Game Player Actions ---
             case 'ORDERS': commandString = ''; break; // Body is handled separately
-            case 'PRESS': case 'BROADCAST': case 'POSTAL PRESS': const pressOpts = val('#press-options'); commandString = selectedCommand; if (pressOpts) commandString += ` ${pressOpts}`; break; // Body handled separately
+            case 'PRESS': case 'BROADCAST':
+                commandString = selectedCommand;
+                const colorOption = radioVal('press-color', 'default');
+                if (colorOption !== 'default') commandString += ` ${colorOption}`;
+                const deliveryOption = radioVal('press-delivery', 'all');
+                const powerList = getCheckedValues('press-to-power').join('');
+                if (deliveryOption === 'list' && powerList) commandString += ` TO ${powerList}`;
+                else if (deliveryOption === 'but' && powerList) commandString += ` TO ALL BUT ${powerList}`;
+                else if (deliveryOption !== 'all' && selectedCommand === 'PRESS') { commandString += ' TO <list>'; /* Placeholder if list empty */ }
+                else if (deliveryOption === 'all' && selectedCommand === 'PRESS') { commandString += ' TO ALL'; } // Explicit TO ALL for PRESS
+
+                const fakeBroadcast = checked('#press-fake-broadcast');
+                const fakePartial = checked('#press-fake-partial-cb');
+                const fakePowerList = getCheckedValues('press-fake-to-power').join('');
+
+                if (fakeBroadcast) commandString += ' FAKE BROADCAST';
+                else if (fakePartial && fakePowerList) commandString += ` FAKE PARTIAL TO ${fakePowerList}`;
+                else if (fakePartial) commandString += ' FAKE PARTIAL TO <list>'; // Placeholder
+
+                break; // Body handled separately
+            case 'POSTAL PRESS': commandString = selectedCommand; break; // Body handled separately
             case 'DIARY': const diaryAction = val('#diary-action'); commandString = `DIARY ${diaryAction}`; if (diaryAction === 'READ' || diaryAction === 'DELETE') { commandString += ` ${val('#diary-entry-num', '<number>')}`; } break; // Body handled separately for RECORD
             case 'RESIGN': case 'WITHDRAW': commandString = selectedCommand; break;
 
             // --- In-Game Player Settings / Future Orders ---
              case 'SET WAIT': case 'SET NOWAIT': case 'SET NOABSENCE': case 'SET NODRAW': case 'SET NOCONCEDE': case 'CLEAR': commandString = selectedCommand; break;
              case 'SET ABSENCE': case 'SET HOLIDAY': case 'SET VACATION': const absStart = val('#absence-start', '<start_date>'); const absEnd = val('#absence-end'); commandString = `SET ABSENCE ${absStart}`; if (absEnd) commandString += ` TO ${absEnd}`; break;
-             case 'SET DRAW': const drawPowers = val('#draw-powers'); commandString = `SET DRAW`; if (drawPowers) commandString += ` ${drawPowers}`; break;
+             case 'SET DRAW':
+                 commandString = `SET DRAW`;
+                 if (gameData?.settings?.dias === false) { // NoDIAS
+                     const drawPowersList = getCheckedValues('draw-powers-power').join('');
+                     if (drawPowersList) commandString += ` ${drawPowersList}`;
+                 }
+                 break;
              case 'SET CONCEDE': commandString = `SET CONCEDE ${val('#concede-power', '<P>').toUpperCase()}`; break;
              case 'SET PREFERENCE': commandString = `SET PREFERENCE ${val('#preference-list', '<list_or_*>')}`; break;
              case 'PHASE': commandString = `PHASE ${val('#phase-season', '<Season>')} ${val('#phase-year', '<Year>')} ${val('#phase-type', '<Phase>')}`; break; // Body handled separately
-             case 'IF': commandString = `IF ${val('#if-condition', '<condition>')}`; break; // Body handled separately
+             case 'IF': commandString = `IF ${rawVal('#if-condition', '<condition>')}`; break; // Body handled separately
 
             // --- Master Commands ---
              case 'BECOME MASTER': case 'SET MODERATE': case 'SET UNMODERATE': case 'FORCE BEGIN': case 'PAUSE': case 'RESUME': case 'TERMINATE': case 'PREDICT': case 'UNSTART': commandString = selectedCommand; break;
@@ -1756,23 +1898,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // --- Master Settings ---
              case 'SET': commandString = `SET ${val('#set-option', '<option>')} ${rawVal('#set-value', '<value>')}`; break;
-             case 'SET DEADLINE': case 'SET GRACE': case 'SET START': commandString = `${selectedCommand} ${val(`set-${selectedCommand.toLowerCase()}-date`, '<date>')}`; break;
+             case 'SET DEADLINE': case 'SET GRACE': case 'SET START': commandString = `${selectedCommand} ${val(`set-${selectedCommand.toLowerCase().substring(4)}-date`, '<date>')}`; break;
              case 'SET COMMENT': commandString = `SET COMMENT ${val('#set-comment-text', '<text>')}`; break;
              case 'SET COMMENT BEGIN': commandString = `SET COMMENT BEGIN`; break; // Body handled separately
              // Add other specific SET commands if needed, otherwise use generic SET or MANUAL
              case 'SET NMR': case 'SET NO NMR': case 'SET CD': case 'SET NO CD': commandString = selectedCommand; break;
              case 'SET VARIANT': commandString = `SET VARIANT ${val('#set-variant-name', '<variant_or_option>')}`; break;
              case 'SET NOT VARIANT': commandString = `SET NOT VARIANT ${val('#set-not-variant-name', '<option>')}`; break;
+             case 'SET LEVEL': commandString = `SET LEVEL ${val('#set-level-value', 'ANY')}`; break;
+             case 'SET OBSERVER': commandString = `SET OBSERVER ${val('#set-observer-value', 'ANY')}`; break;
+             case 'SET MAX ABSENCE': commandString = `SET MAX ABSENCE ${val('#set-max-absence-value', '15')}`; break;
              // Generic handler for simple SET commands (most master settings)
              case 'SET ALL PRESS': case 'SET NORMAL PRESS': case 'SET QUIET': case 'SET NO QUIET':
              case 'SET WATCH ALL PRESS': case 'SET NO WATCH ALL PRESS': case 'SET ACCESS':
-             case 'SET ALLOW PLAYER': case 'SET DENY PLAYER': case 'SET LEVEL': case 'SET DEDICATION':
+             case 'SET ALLOW PLAYER': case 'SET DENY PLAYER': case 'SET DEDICATION':
              case 'SET ONTIMERAT': case 'SET RESRAT': case 'SET APPROVAL': case 'SET APPROVE': case 'SET NOT APPROVE':
              case 'SET BLANK PRESS': case 'SET BROADCAST': case 'SET NORMAL BROADCAST': case 'SET NO FAKE':
              case 'SET GREY': case 'SET NO WHITE': case 'SET GREY/WHITE': case 'SET LATE PRESS':
              case 'SET MINOR PRESS': case 'SET MUST ORDER': case 'SET NO PRESS': case 'SET NONE':
-             case 'SET OBSERVER': case 'SET PARTIAL': case 'SET PARTIAL FAKES BROADCAST': case 'SET PARTIAL MAY':
-             case 'SET POSTAL PRESS': case 'SET WHITE': case 'SET WHITE/GREY': case 'SET MAX ABSENCE':
+             case 'SET PARTIAL': case 'SET PARTIAL FAKES BROADCAST': case 'SET PARTIAL MAY':
+             case 'SET POSTAL PRESS': case 'SET WHITE': case 'SET WHITE/GREY':
              case 'SET LATE COUNT': case 'SET STRICT GRACE': case 'SET STRICT WAIT': case 'SET MOVE':
              case 'SET RETREAT': case 'SET ADJUST': case 'SET CONCESSIONS': case 'SET DIAS': case 'SET LIST':
              case 'SET PUBLIC': case 'SET PRIVATE': case 'SET AUTO PROCESS': case 'SET MANUAL PROCESS':
@@ -1796,14 +1941,13 @@ document.addEventListener('DOMContentLoaded', () => {
             // --- Default ---
             default: commandString = selectedCommand; break; // Default to just the command verb if no options defined
         }
-        return commandString;
+        return commandString.trim(); // Trim trailing space if no params added
     }
-
 
     // --- Event Listeners ---
     if (commandTypeSelect) {
         commandTypeSelect.addEventListener('change', () => {
-            generateCommandOptions(commandTypeSelect.value);
+            generateCommandOptions(commandTypeSelect.value, window.currentGameData); // Pass gameData
         });
     }
     if (gameSelector) {
@@ -2306,6 +2450,85 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+
+    // --- Helper functions for dynamic command options ---
+    function handlePressDeliveryChange() {
+        const deliveryType = radioVal('press-delivery');
+        const powerListDiv = qs('#press-powerlist-div');
+        if (powerListDiv) {
+            powerListDiv.classList.toggle('hidden', deliveryType === 'all');
+        }
+    }
+
+    function handlePressFakePartialChange() {
+        const fakePartialChecked = checked('#press-fake-partial-cb');
+        const fakeListDiv = qs('#press-fakelist-div');
+        if (fakeListDiv) {
+            fakeListDiv.classList.toggle('hidden', !fakePartialChecked);
+        }
+    }
+
+    function handleUnitOrderSelection() {
+        const selectedUnit = val('#order-unit-select');
+        const detailsArea = qs('#order-details-area');
+        if (!detailsArea) return;
+
+        detailsArea.innerHTML = ''; // Clear previous
+        detailsArea.classList.toggle('hidden', !selectedUnit);
+
+        if (selectedUnit) {
+            const [unitType, unitLocation] = selectedUnit.split(' ');
+            let orderOptionsHtml = `<strong class="block mb-1">Order for ${unitType} ${unitLocation}:</strong>`;
+            orderOptionsHtml += `<div class="flex flex-wrap gap-x-4 gap-y-1">`;
+            orderOptionsHtml += createRadio(`order-type-hold-${unitLocation}`, `order-type-${unitLocation}`, 'Hold', true);
+            orderOptionsHtml += createRadio(`order-type-move-${unitLocation}`, `order-type-${unitLocation}`, 'Move');
+            orderOptionsHtml += createRadio(`order-type-support-${unitLocation}`, `order-type-${unitLocation}`, 'Support');
+            if (unitType === 'F') { // Only fleets can convoy
+                orderOptionsHtml += createRadio(`order-type-convoy-${unitLocation}`, `order-type-${unitLocation}`, 'Convoy');
+            }
+            // Add Transform if applicable? (Requires checking game settings)
+            orderOptionsHtml += `</div>`;
+
+            // Add specific fields based on order type (initially hidden)
+            orderOptionsHtml += `<div id="order-move-details-${unitLocation}" class="mt-2 hidden">`;
+            orderOptionsHtml += createInput(`order-move-dest-${unitLocation}`, 'text', 'Destination Province', 'e.g., PAR', false, '', 'Enter 3-letter abbreviation.');
+            orderOptionsHtml += createInput(`order-move-coast-${unitLocation}`, 'text', 'Coast (if needed)', 'e.g., NC, SC', false, '', 'Specify /NC, /SC etc.');
+            orderOptionsHtml += createInput(`order-convoy-route-${unitLocation}`, 'text', 'Convoy Route (if Move)', 'e.g., NTH-NWY', false, '', 'Enter intermediate sea zones like PROV1-PROV2-DEST.');
+            orderOptionsHtml += `</div>`;
+
+            orderOptionsHtml += `<div id="order-support-details-${unitLocation}" class="mt-2 hidden">`;
+            orderOptionsHtml += createInput(`order-support-target-unit-${unitLocation}`, 'text', 'Unit Being Supported', 'e.g., A MAR or F BRE', false, '', 'Specify Type and Location.');
+            orderOptionsHtml += createInput(`order-support-target-action-${unitLocation}`, 'text', 'Action Being Supported (optional)', 'e.g., - PAR or H', false, '', 'Leave blank for Hold support.');
+            orderOptionsHtml += `</div>`;
+
+            orderOptionsHtml += `<div id="order-convoy-details-${unitLocation}" class="mt-2 hidden">`;
+            orderOptionsHtml += createInput(`order-convoy-army-${unitLocation}`, 'text', 'Army Being Convoyed', 'e.g., A LON', false, '', 'Specify Type and Location.');
+            orderOptionsHtml += createInput(`order-convoy-dest-${unitLocation}`, 'text', 'Army Destination', 'e.g., NWY', false, '', 'Final destination province.');
+            orderOptionsHtml += `</div>`;
+
+            detailsArea.innerHTML = orderOptionsHtml;
+
+            // Add listeners to the new radio buttons
+            detailsArea.querySelectorAll(`input[name="order-type-${unitLocation}"]`).forEach(radio => {
+                radio.addEventListener('change', () => handleOrderTypeChange(unitLocation));
+            });
+            // Add listeners to the new input fields to update the main command text
+             detailsArea.querySelectorAll('input').forEach(el => {
+                 el.addEventListener('input', () => updateGeneratedCommandText(window.currentGameData));
+             });
+            handleOrderTypeChange(unitLocation); // Set initial visibility
+        }
+        updateGeneratedCommandText(window.currentGameData); // Update main text area
+    }
+
+    function handleOrderTypeChange(unitLocation) {
+        const orderType = radioVal(`order-type-${unitLocation}`);
+        qs(`#order-move-details-${unitLocation}`)?.classList.toggle('hidden', orderType !== `order-type-move-${unitLocation}`);
+        qs(`#order-support-details-${unitLocation}`)?.classList.toggle('hidden', orderType !== `order-type-support-${unitLocation}`);
+        qs(`#order-convoy-details-${unitLocation}`)?.classList.toggle('hidden', orderType !== `order-type-convoy-${unitLocation}`);
+        updateGeneratedCommandText(window.currentGameData); // Update main text area
+    }
+
 
     // --- Initial Load ---
     initializeDashboard();
