@@ -531,7 +531,7 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
     const explicitDeadlineRegex = /::\s*Deadline:\s*([SFUW]\d{4}[MRBAX]?)\s+(.*)/i;
     const activeStatusLineRegex = /Status of the (\w+) phase for (Spring|Summer|Fall|Winter) of (\d{4})\./i;
     const variantRegex = /Variant:\s*(\S+)\s*(.*)/i;
-    const playerLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice)\s+\d+\s+([\w.-]+@[\w.-]+\.\w+).*$/i;
+    const playerLineRegex = /^\s*([a-zA-Z]+)\s+\S+\s+\S+\s+\S+\s+([\w.-]+@[\w.-]+\.\w+).*$/i;
     const masterLineRegex = /^\s*(?:Master|Moderator)\s+\d+\s+([\w.-]+@[\w.-]+\.\w+).*$/i;
     const observerLineRegex = /^\s*Observer\s*:\s*([\w.-]+@[\w.-]+\.\w+).*$/i;
     const statusRegex = /Game status:\s*(.*)/i;
@@ -1092,7 +1092,70 @@ app.get('/register', requireEmail, (req, res) => { res.render('register', { emai
 app.post('/register', requireEmail, async (req, res) => { const email = req.session.email; const { name, address, phone, country, level, site } = req.body; if (!name || !address || !phone || !country || !level || !site) return res.render('register', { email: email, error: 'All fields are required.', formData: req.body }); const registerCommand = `REGISTER\nname: ${name}\naddress: ${address}\nphone: ${phone}\ncountry: ${country}\nlevel: ${level}\ne-mail: ${email}\nsite: ${site}\npackage: yes\nEND`; try { const result = await executeDipCommand(email, registerCommand); const outputLower = result.stdout.trim().toLowerCase(); if (outputLower.includes("registration accepted") || outputLower.includes("updated registration") || outputLower.includes("already registered") || outputLower.includes("this is an update to an existing registration")) { await setUserRegistered(email); console.log(`[Register Success] User ${email} registered with judge.`); req.session.save(err => { if (err) console.error("Session save error after registration:", err); res.redirect('/dashboard'); }); } else { console.error(`[Register Fail] Judge rejected registration for ${email}. Output:\n${result.output}`); res.render('register', { email: email, error: `Judge rejected registration. Please check the output below and correct your details.`, judgeOutput: result.output, formData: req.body }); } } catch (error) { console.error(`[Register Error] Failed to execute REGISTER command for ${email}:`, error); res.render('register', { email: email, error: `Error communicating with the judge: ${error.output || error.message}`, judgeOutput: error.output, formData: req.body }); } });
 app.post('/signoff', (req, res) => { const email = req.session.email; console.log(`[Auth] User ${email} signing off.`); req.session.destroy((err) => { res.clearCookie('connect.sid'); res.clearCookie('targetGame'); Object.keys(req.cookies).forEach(cookieName => { if (cookieName.startsWith('targetPassword_') || cookieName.startsWith('targetVariant_')) res.clearCookie(cookieName); }); if (err) console.error("Session destruction error:", err); res.redirect('/'); }); });
 app.get('/api/games', requireEmail, async (req, res) => { try { const filters = { status: req.query.status, variant: req.query.variant, phase: req.query.phase, player: req.query.player }; Object.keys(filters).forEach(key => filters[key] === undefined && delete filters[key]); const gameStates = await getFilteredGameStates(filters); const gameList = Object.values(gameStates).map(g => ({ name: g.name, status: g.status, variant: g.variant, phase: g.currentPhase, players: g.players.map(p => p.email), masters: g.masters, nextDeadline: g.nextDeadline })); res.json({ success: true, games: gameList }); } catch (err) { console.error("[API Error] /api/games:", err); res.status(500).json({ success: false, message: "Failed to retrieve game list." }); } });
-app.get('/api/game/:gameName', requireEmail, async (req, res) => { const gameName = req.params.gameName; if (!gameName) return res.status(400).json({ success: false, message: "Game name is required." }); try { let gameState = await getGameState(gameName); if (!gameState) { await syncDipMaster(); gameState = await getGameState(gameName); if (!gameState) return res.status(404).json({ success: false, message: `Game '${gameName}' not found.` }); } const recommendedCommands = getRecommendedCommands(gameState, req.session.email); res.json({ success: true, gameState, recommendedCommands }); } catch (err) { console.error(`[API Error] /api/game/${gameName}:`, err); res.status(500).json({ success: false, message: `Failed to retrieve game state for ${gameName}.` }); } });
+app.get('/api/game/:gameName', requireEmail, async (req, res) => {
+    const gameName = req.params.gameName;
+    const userEmail = req.session.email;
+
+    if (!gameName) return res.status(400).json({ success: false, message: "Game name is required." });
+
+    try {
+        let refreshedGameState = null;
+        let recommendedCommands = {};
+        let errorOccurred = null;
+        let warningMessage = null;
+
+        // Attempt to fetch and parse fresh LIST data
+        try {
+            // We need targetPassword and targetVariant for executeDipCommand if it does SIGN ON.
+            // For a simple LIST, these might not be strictly necessary.
+            // Pass null, executeDipCommand will use judgeEmail if no specific role context.
+            const listResult = await executeDipCommand(userEmail, `LIST ${gameName}`, gameName, null, null);
+
+            if (listResult.success) {
+                // Determine variant for parsing. Fallback to 'Standard' if game not in DB yet or variant unknown.
+                const preliminaryGameState = await getGameState(gameName);
+                const variantForParsing = preliminaryGameState?.variant || 'Standard';
+                const { nameToAbbr } = await ensureMapDataParsed(variantForParsing);
+
+                refreshedGameState = parseListOutput(gameName, listResult.stdout, nameToAbbr);
+
+                if (refreshedGameState) {
+                    await saveGameState(gameName, refreshedGameState); // Save the fresh state
+                    recommendedCommands = getRecommendedCommands(refreshedGameState, userEmail);
+                } else {
+                    errorOccurred = `LIST command for '${gameName}' succeeded but parsing the output failed.`;
+                    console.error(`[API Error] /api/game/${gameName}: ${errorOccurred}`);
+                }
+            } else {
+                errorOccurred = `LIST command execution failed for '${gameName}'. Output: ${listResult.output}`;
+                console.error(`[API Error] /api/game/${gameName}: ${errorOccurred}`);
+            }
+        } catch (listRefreshError) {
+            errorOccurred = `Error during LIST refresh for '${gameName}': ${listRefreshError.message}`;
+            console.error(`[API Error] /api/game/${gameName} (LIST Refresh Catch):`, listRefreshError);
+        }
+
+        // If refresh failed, try to use stored data as a fallback
+        if (errorOccurred || !refreshedGameState) {
+            warningMessage = errorOccurred || "Could not obtain fresh game state.";
+            console.warn(`[API Warning] /api/game/${gameName}: ${warningMessage}. Attempting to use stored data.`);
+            const dbGameState = await getGameState(gameName);
+            if (dbGameState) {
+                refreshedGameState = dbGameState; // Use DB state
+                recommendedCommands = getRecommendedCommands(refreshedGameState, userEmail);
+            } else {
+                // If DB state also doesn't exist (e.g., game truly not found)
+                return res.status(404).json({ success: false, message: `Game '${gameName}' not found and live refresh failed. ${warningMessage}` });
+            }
+        }
+        
+        res.json({ success: true, gameState: refreshedGameState, recommendedCommands, warning: warningMessage });
+
+    } catch (outerErr) {
+        console.error(`[API Error] /api/game/${gameName} (Outer Catch):`, outerErr);
+        res.status(500).json({ success: false, message: `Critical error retrieving game state for ${gameName}: ${outerErr.message}` });
+    }
+});
 app.get('/api/user/search-bookmarks', requireAuth, async (req, res) => { try { const bookmarks = await getSavedSearches(req.session.email); res.json({ success: true, bookmarks }); } catch (err) { res.status(500).json({ success: false, message: "Failed to retrieve saved searches." }); } });
 app.post('/api/user/search-bookmarks', requireAuth, async (req, res) => { const { name, params } = req.body; if (!name || typeof name !== 'string' || name.trim().length === 0) return res.status(400).json({ success: false, message: "Bookmark name is required." }); if (!params || typeof params !== 'object') return res.status(400).json({ success: false, message: "Search parameters (params) object is required." }); try { await saveSavedSearch(req.session.email, name.trim(), params); res.json({ success: true, message: `Bookmark '${name.trim()}' saved successfully.` }); } catch (err) { res.status(500).json({ success: false, message: "Failed to save bookmark." }); } });
 app.delete('/api/user/search-bookmarks/:name', requireAuth, async (req, res) => { const bookmarkName = decodeURIComponent(req.params.name); if (!bookmarkName) return res.status(400).json({ success: false, message: "Bookmark name parameter is required." }); try { const deleted = await deleteSavedSearch(req.session.email, bookmarkName); if (deleted) res.json({ success: true, message: `Bookmark '${bookmarkName}' deleted successfully.` }); else res.status(404).json({ success: false, message: `Bookmark '${bookmarkName}' not found.` }); } catch (err) { res.status(500).json({ success: false, message: "Failed to delete bookmark." }); } });
@@ -1101,7 +1164,84 @@ app.post('/api/news', requireAuth, async (req, res) => { const { content } = req
 app.delete('/api/news/:id', requireAuth, async (req, res) => { const newsId = parseInt(req.params.id, 10); if (isNaN(newsId)) return res.status(400).json({ success: false, message: "Invalid news item ID." }); try { const deleted = await deleteNewsItem(newsId); if (deleted) res.json({ success: true, message: `News item ${newsId} deleted successfully.` }); else res.status(404).json({ success: false, message: `News item ${newsId} not found.` }); } catch (err) { res.status(500).json({ success: false, message: "Failed to delete news item." }); } });
 app.get('/dashboard', requireEmail, async (req, res) => { const email = req.session.email; let errorMessage = req.session.errorMessage || null; req.session.errorMessage = null; let registrationStatus = null; try { registrationStatus = await getUserRegistrationStatus(email); if (registrationStatus === null) { await ensureUserExists(email); registrationStatus = 0; } if (registrationStatus === 0) return res.redirect('/register'); const syncResult = await syncDipMaster(); if (syncResult.syncError && !errorMessage) errorMessage = syncResult.syncError; const allGameStates = await getAllGameStates(); const gameList = Object.values(allGameStates).map(g => ({ name: g.name, status: g.status })); const initialTargetGameName = req.cookies.targetGame; let initialGameState = null; let initialRecommendedCommands = {}; if (initialTargetGameName) { initialGameState = allGameStates[initialTargetGameName]; if (initialGameState) initialRecommendedCommands = getRecommendedCommands(initialGameState, email); else { res.clearCookie('targetGame'); res.clearCookie(`targetPassword_${initialTargetGameName}`); res.clearCookie(`targetVariant_${initialTargetGameName}`); } } if (!initialGameState) initialRecommendedCommands = getRecommendedCommands(null, email); res.render('dashboard', { email: email, allGames: gameList, initialTargetGame: initialGameState, initialRecommendedCommands: initialRecommendedCommands, error: errorMessage, layout: 'layout' }); } catch (err) { console.error(`[Dashboard Error] Failed to load dashboard data for ${email}:`, err); res.render('dashboard', { email: email, allGames: [], initialTargetGame: null, initialRecommendedCommands: getRecommendedCommands(null, email), error: `Error loading dashboard: ${err.message}`, layout: 'layout' }); } });
 app.post('/execute-dip', requireEmail, async (req, res) => { const { command, targetGame, targetPassword, targetVariant } = req.body; const email = req.session.email; if (!command) return res.status(400).json({ success: false, output: 'Error: Missing command.' }); const commandVerb = command.trim().split(/\s+/)[0].toUpperCase(); let actualTargetGame = targetGame; const commandParts = command.trim().split(/\s+/); const gameNameCommands = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'OBSERVE', 'WATCH', 'SIGN', 'CREATE', 'EJECT']; if (gameNameCommands.includes(commandVerb) && commandParts.length > 1) { let potentialGameName = commandParts[1]; if (commandVerb === 'SIGN' && command.toUpperCase().includes(' ON ') && !potentialGameName.startsWith('?')) { if (potentialGameName.length > 1 && /^[A-Z]$/i.test(potentialGameName[0])) potentialGameName = potentialGameName.substring(1); } else if ((commandVerb === 'SIGN' || commandVerb === 'CREATE') && potentialGameName.startsWith('?')) potentialGameName = potentialGameName.substring(1); else if (commandVerb === 'EJECT' && potentialGameName.includes('@')) potentialGameName = null; const keywords = ['FULL', 'FROM', 'TO', 'LINES', 'EXCLSTART', 'EXCLEND', 'BROAD', 'ON', '?', 'MASTER']; if (potentialGameName && /^[a-zA-Z0-9]{1,8}$/.test(potentialGameName) && !keywords.includes(potentialGameName.toUpperCase())) actualTargetGame = potentialGameName; } try { const result = await executeDipCommand(email, command, actualTargetGame, targetPassword, targetVariant); const stdoutData = result.stdout; let requiresGameRefresh = false; let isSignOnOrObserveSuccess = false; let newGameCreated = false; let signedOnGame = null; const signOnSuccessPattern = /signed on as (?:\w+)\s*(?:in game)?\s*'(\w+)'/i; const observeSuccessPattern = /(?:Observing|Watching) game '(\w+)'/i; const createSuccessPattern = /Game '(\w+)' created/i; let match; if ((match = stdoutData.match(signOnSuccessPattern)) && (commandVerb === 'SIGN' && command.toUpperCase().includes(' ON '))) { signedOnGame = match[1]; isSignOnOrObserveSuccess = true; } else if ((match = stdoutData.match(observeSuccessPattern)) && (commandVerb === 'OBSERVE' || commandVerb === 'WATCH')) { signedOnGame = match[1]; isSignOnOrObserveSuccess = true; } else if ((match = stdoutData.match(createSuccessPattern)) && commandVerb === 'CREATE') { signedOnGame = match[1]; isSignOnOrObserveSuccess = true; newGameCreated = true; syncDipMaster().catch(syncErr => console.error("Error during post-create sync:", syncErr)); } if (isSignOnOrObserveSuccess && signedOnGame) { actualTargetGame = signedOnGame; requiresGameRefresh = true; } const stateChangingCommands = ['PROCESS', 'SET', 'RESIGN', 'WITHDRAW', 'EJECT', 'TERMINATE', 'ROLLBACK', 'FORCE BEGIN', 'UNSTART', 'PROMOTE', 'PAUSE', 'RESUME', 'BECOME MASTER', 'SET MODERATE', 'SET UNMODERATE', 'CLEAR']; if (stateChangingCommands.includes(commandVerb) && result.success && actualTargetGame) { const outputLower = stdoutData.toLowerCase(); if (outputLower.includes('processed') || outputLower.includes('terminated') || outputLower.includes('resigned') || outputLower.includes('ejected') || outputLower.includes('rolled back') || outputLower.includes('set') || outputLower.includes('promoted') || outputLower.includes('paused') || outputLower.includes('resumed') || outputLower.includes('cleared') || outputLower.includes('moderated') || outputLower.includes('unmoderated')) requiresGameRefresh = true; } if (commandVerb === 'LIST' && result.success && actualTargetGame) requiresGameRefresh = true; let refreshedGameState = null; let updatedRecommendedCommands = null; if (requiresGameRefresh && actualTargetGame) { try { const { nameToAbbr } = await ensureMapDataParsed( (await getGameState(actualTargetGame))?.variant || 'Standard' ); const listResult = await executeDipCommand(email, `LIST ${actualTargetGame}`, actualTargetGame, targetPassword, targetVariant); if (listResult.success) { refreshedGameState = parseListOutput(actualTargetGame, listResult.stdout, nameToAbbr); await saveGameState(actualTargetGame, refreshedGameState); updatedRecommendedCommands = getRecommendedCommands(refreshedGameState, email); } } catch (refreshError) { console.error(`[Execute Refresh] Error during state refresh for ${actualTargetGame}:`, refreshError); } } res.json({ success: result.success, output: result.output, isSignOnOrObserveSuccess: isSignOnOrObserveSuccess, createdGameName: newGameCreated ? signedOnGame : null, refreshedGameState: refreshedGameState, updatedRecommendedCommands: updatedRecommendedCommands }); } catch (error) { console.error(`[Execute Error] Command "${commandVerb}" for ${email} failed:`, error); res.status(error.output?.includes('Spawn failed') ? 503 : 500).json({ success: false, output: error.output || 'Unknown execution error', isSignOnOrObserveSuccess: false }); } });
-app.post('/api/games', requireAuth, async (req, res) => { const { gameName, variant, password } = req.body; const userEmail = req.session.email; if (!gameName || !variant) return res.status(400).json({ success: false, message: 'Missing required parameters: gameName, variant' }); if (!password) return res.status(400).json({ success: false, message: 'Password is required for game creation via this API.' }); let commandParts = ['CREATE', `?${gameName}`, password, variant]; const command = commandParts.join(' '); try { const result = await executeDipCommand(userEmail, command); const createSuccessPattern = /Game '(\w+)' created/i; const match = result.stdout.match(createSuccessPattern); if (result.success && match && match[1] === gameName) { await syncDipMaster(); res.status(201).json({ success: true, message: `Game '${gameName}' created successfully.`, output: result.stdout }); } else { res.status(500).json({ success: false, message: `Failed to create game '${gameName}'. Judge response might indicate the issue.`, output: result.output }); } } catch (error) { const statusCode = error.output?.includes('Spawn failed') ? 503 : error.output?.includes('already exists') ? 409 : 500; res.status(statusCode).json({ success: false, message: `Failed to add game '${gameName}'.`, output: error.output || error.message || 'Unknown error' }); } });
+app.post('/api/games', requireAuth, async (req, res) => {
+    const { gameName, variant, password } = req.body;
+    const userEmail = req.session.email;
+
+    if (!gameName || !variant) {
+        return res.status(400).json({ success: false, message: 'Missing required parameters: gameName, variant' });
+    }
+    if (!password) { // Password might be optional for 'CREATE' command itself, but this API requires it.
+        return res.status(400).json({ success: false, message: 'Password is required for game creation via this API.' });
+    }
+
+    let commandParts = ['CREATE', `?${gameName}`, password, variant];
+    const command = commandParts.join(' ');
+
+    console.log(`[API /api/games POST] User: ${userEmail}, Attempting to create game: '${gameName}', Variant: '${variant}', Password: '${password ? "Provided" : "Not Provided"}'`);
+    console.log(`[API /api/games POST] Executing DIP command: ${command}`);
+
+    try {
+        const result = await executeDipCommand(userEmail, command);
+        // Log the full result from executeDipCommand
+        console.log(`[API /api/games POST] DIP command result for game '${gameName}':`, JSON.stringify(result, null, 2));
+
+        const createSuccessPattern = /Game '(\w+)' created/i;
+        const match = result.stdout.match(createSuccessPattern);
+        // Log the outcome of the regex match
+        console.log(`[API /api/games POST] DIP stdout match for game '${gameName}':`, match);
+
+        if (result.success && match && match[1] === gameName) {
+            await syncDipMaster(); // Ensure dip.master is updated
+            res.status(201).json({ success: true, message: `Game '${gameName}' created successfully.`, output: result.stdout });
+        } else {
+            let userMessage = `Failed to create game '${gameName}'. Judge response might indicate the issue.`;
+            let httpStatusCode = 500; // Default to internal server error
+
+            if (result.success && result.stdout) {
+                // Dip command ran successfully but didn't confirm game creation.
+                // Extract a more meaningful message from stdout.
+                const lines = result.stdout.split('\\n');
+                let meaningfulResponse = "";
+                for (const line of lines) {
+                    if (line.trim().startsWith("---- Original message follows:")) {
+                        break;
+                    }
+                    if (line.trim()) { // Add non-empty lines
+                        meaningfulResponse += line.trim() + " ";
+                    }
+                }
+                userMessage = meaningfulResponse.trim() || `Game '${gameName}' not created. Judge output: ${result.stdout.trim()}`;
+
+                // Set a more specific HTTP status code based on known judge responses
+                if (userMessage.toLowerCase().includes("minimum dedication")) {
+                    httpStatusCode = 403; // Forbidden
+                } else if (userMessage.toLowerCase().includes("already exists")) {
+                    httpStatusCode = 409; // Conflict
+                } else if (userMessage.toLowerCase().includes("invalid variant") || userMessage.toLowerCase().includes("invalid game name")) {
+                    httpStatusCode = 400; // Bad Request
+                } else {
+                    // If it's a successful dip execution but unknown non-creation reason
+                    httpStatusCode = 400; // Treat as a general bad request/rejection from the judge
+                }
+            }
+            
+            console.error(`[API /api/games POST Error] Game creation failed for '${gameName}'. DIP Success: ${result.success}, Stdout Match: ${match ? `found '${match[1]}'` : 'no match'}, Expected Name: '${gameName}'. User Message: "${userMessage}". Full DIP output: ${result.output}`);
+            res.status(httpStatusCode).json({ success: false, message: userMessage, output: result.output });
+        }
+    } catch (error) {
+        // Log the caught error object
+        console.error(`[API /api/games POST Exception] Error during game creation for '${gameName}':`, JSON.stringify(error, null, 2));
+        // Determine status code based on the nature of the error from executeDipCommand
+        let exceptionStatusCode = 500;
+        if (error.output?.includes('Spawn failed')) {
+            exceptionStatusCode = 503; // Service Unavailable (dip binary issue)
+        } else if (error.output?.includes('already exists')) {
+            exceptionStatusCode = 409; // Conflict (though ideally caught by the block above)
+        }
+        res.status(exceptionStatusCode).json({ success: false, message: `Failed to add game '${gameName}'.`, output: error.output || error.message || 'Unknown error' });
+    }
+});
 app.delete('/api/games/:gameName', requireAuth, async (req, res) => { const { gameName } = req.params; const { password } = req.body; const userEmail = req.session.email; if (!gameName) return res.status(400).json({ success: false, message: 'Missing gameName in path parameter.' }); const command = `TERMINATE`; try { const result = await executeDipCommand(userEmail, command, gameName, password); const terminateSuccessPattern = /Game terminated/i; if (result.success && terminateSuccessPattern.test(result.stdout)) { const currentState = await getGameState(gameName); if (currentState) { currentState.status = 'Terminated'; currentState.lastUpdated = Math.floor(Date.now() / 1000); await saveGameState(gameName, currentState); } await syncDipMaster(); res.status(200).json({ success: true, message: `Game '${gameName}' terminated successfully.`, output: result.stdout }); } else { res.status(500).json({ success: false, message: `Failed to terminate game '${gameName}'. Judge response might indicate the issue.`, output: result.output }); } } catch (error) { const statusCode = error.output?.includes('Spawn failed') ? 503 : error.output?.includes('No such game') ? 404 : error.output?.includes('incorrect password') ? 401 : error.output?.includes('only be issued by a Master') ? 403 : 500; res.status(statusCode).json({ success: false, message: `Failed to terminate game '${gameName}'.`, output: error.output || error.message || 'Unknown error' }); } });
 
 console.log(`[Route Definition Check] Defining GET /api/map/:gameName/:phase?`);

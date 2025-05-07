@@ -33,6 +33,13 @@ function eraseCookie(name) {
 }
 
 
+// --- Global UI Constants ---
+const NJUDGE_INPUT_CLASS = 'input text-sm';
+const NJUDGE_LABEL_CLASS = 'block text-sm font-medium text-gray-700 mb-1';
+const NJUDGE_HELP_TEXT_CLASS = 'text-xs text-gray-500 mt-1';
+const NJUDGE_CHECKBOX_CLASS = 'rounded border-gray-300 text-primary focus:ring-primary mr-2';
+const NJUDGE_RADIO_CLASS = 'rounded-full border-gray-300 text-primary focus:ring-primary mr-1';
+
 // --- User Preferences ---
 const defaultPreferences = {
     sort_order: 'name_asc', // e.g., 'name_asc', 'name_desc', 'status_asc', 'status_desc'
@@ -330,7 +337,7 @@ function renderPreferenceControls() {
     sortDiv.innerHTML = `<label for="pref-sort-order" class="block text-sm font-medium text-gray-700 mb-1">Game List Sort Order:</label>`;
     const sortSelect = document.createElement('select');
     sortSelect.id = 'pref-sort-order';
-    sortSelect.className = 'input text-sm';
+    sortSelect.className = NJUDGE_INPUT_CLASS;
     const sortOptions = [
         { value: 'name_asc', text: 'Name (A-Z)' },
         { value: 'name_desc', text: 'Name (Z-A)' },
@@ -367,7 +374,7 @@ function renderPreferenceControls() {
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.id = `pref-vis-${key}`;
-        checkbox.className = 'rounded border-gray-300 text-primary focus:ring-primary mr-2';
+        checkbox.className = NJUDGE_CHECKBOX_CLASS;
         // Ensure userPreferences.column_visibility exists before accessing key
         checkbox.checked = userPreferences.column_visibility ? userPreferences.column_visibility[key] : defaultPreferences.column_visibility[key];
         checkbox.addEventListener('change', (e) => {
@@ -544,6 +551,37 @@ document.addEventListener('DOMContentLoaded', () => {
     window.currentUserEmail = currentUserEmail; // Also store globally for easy check
     let currentFilters = {}; // Store the currently applied filters
     let savedBookmarks = []; // Store fetched bookmarks
+
+    // --- Command Option Helper Functions (Moved to broader scope) ---
+    // Helper function to query selector safely within optionsArea
+    const qs = (selector) => optionsArea?.querySelector(selector); // Add check for optionsArea
+    const qsa = (selector) => optionsArea?.querySelectorAll(selector); // Add check for optionsArea
+
+    // Helper to get value of selected radio button
+    const radioVal = (name, defaultValue = '') => qs(`input[name="${name}"]:checked`)?.value || defaultValue;
+
+    // Helper to create form elements
+    const createInput = (id, type, label, placeholder = '', required = false, value = '', help = '', otherAttrs = {}) => {
+        let attrsString = '';
+        for (const [key, val] of Object.entries(otherAttrs)) {
+            attrsString += ` ${key}="${String(val).replace(/"/g, '&amp;quot;')}"`; // Escape quotes in attributes
+        }
+        return `
+            <div class="my-2">
+                <label for="${id}" class="${NJUDGE_LABEL_CLASS}">${label}${required ? '<span class="text-red-500">*</span>' : ''}</label>
+                <input type="${type}" id="${id}" name="${id}" class="${NJUDGE_INPUT_CLASS}" placeholder="${placeholder}" ${required ? 'required' : ''} value="${String(value).replace(/"/g, '"')}" ${attrsString}>
+                ${help ? `<p class="${NJUDGE_HELP_TEXT_CLASS}">${help}</p>` : ''}
+            </div>`;
+    };
+    const createRadio = (id, name, label, checked = false, help = '', value = id) => {
+         return `
+            <div class="flex items-center my-1">
+                <input type="radio" id="${id}" name="${name}" class="${NJUDGE_RADIO_CLASS}" ${checked ? 'checked' : ''} value="${value}">
+                <label for="${id}" class="ml-1 text-sm font-medium text-gray-700">${label}</label>
+                ${help ? `<p class="${NJUDGE_HELP_TEXT_CLASS} ml-1">${help}</p>` : ''}
+            </div>`;
+     };
+    // --- End Command Option Helper Functions ---
 
     // --- Initial Setup ---
     async function initializeDashboard() { // Make async for await fetchUserPreferences
@@ -1214,11 +1252,6 @@ document.addEventListener('DOMContentLoaded', () => {
         generatedCommandTextarea.placeholder = "Configure options above or type command here directly. Do NOT include SIGN OFF."; // Reset placeholder
 
         const targetGame = targetGameInput?.value || '<game>'; // Use selected game or placeholder
-        const inputClass = 'input text-sm'; // Consistent input styling
-        const labelClass = 'block text-sm font-medium text-gray-700 mb-1';
-        const helpTextClass = 'text-xs text-gray-500 mt-1';
-        const checkboxClass = 'rounded border-gray-300 text-primary focus:ring-primary mr-2';
-        const radioClass = 'rounded-full border-gray-300 text-primary focus:ring-primary mr-1';
         const powerInitials = gameData?.players?.map(p => p.power?.charAt(0).toUpperCase()).filter(Boolean) || [];
         const myPlayerInfo = gameData?.players?.find(p => p.email === currentUserEmail);
         const myPowerInitial = myPlayerInfo?.power?.charAt(0).toUpperCase();
@@ -1240,36 +1273,29 @@ document.addEventListener('DOMContentLoaded', () => {
         const createTextarea = (id, label, placeholder = '', required = false, rows = 3, help = '') => {
              return `
                 <div class="my-2">
-                    <label for="${id}" class="${labelClass}">${label}${required ? '<span class="text-red-500">*</span>' : ''}</label>
-                    <textarea id="${id}" name="${id}" class="${inputClass} font-mono min-h-[${rows * 1.5}rem] resize-y" placeholder="${placeholder}" ${required ? 'required' : ''} rows="${rows}"></textarea>
-                    ${help ? `<p class="${helpTextClass}">${help}</p>` : ''}
+                    <label for="${id}" class="${NJUDGE_LABEL_CLASS}">${label}${required ? '<span class="text-red-500">*</span>' : ''}</label>
+                    <textarea id="${id}" name="${id}" class="${NJUDGE_INPUT_CLASS} font-mono min-h-[${rows * 1.5}rem] resize-y" placeholder="${placeholder}" ${required ? 'required' : ''} rows="${rows}"></textarea>
+                    ${help ? `<p class="${NJUDGE_HELP_TEXT_CLASS}">${help}</p>` : ''}
                 </div>`;
         };
         const createSelect = (id, label, options, required = false, help = '', multiple = false, size = 1) => {
             const optionsHtml = options.map(opt => `<option value="${opt.value}" ${opt.selected ? 'selected' : ''} ${opt.disabled ? 'disabled' : ''}>${opt.text}</option>`).join('');
             return `
                 <div class="my-2">
-                    <label for="${id}" class="${labelClass}">${label}${required ? '<span class="text-red-500">*</span>' : ''}</label>
-                    <select id="${id}" name="${id}" class="${inputClass}" ${required ? 'required' : ''} ${multiple ? 'multiple' : ''} size="${multiple ? Math.max(size, options.length, 3) : 1}">${optionsHtml}</select>
-                    ${help ? `<p class="${helpTextClass}">${help}</p>` : ''}
+                    <label for="${id}" class="${NJUDGE_LABEL_CLASS}">${label}${required ? '<span class="text-red-500">*</span>' : ''}</label>
+                    <select id="${id}" name="${id}" class="${NJUDGE_INPUT_CLASS}" ${required ? 'required' : ''} ${multiple ? 'multiple' : ''} size="${multiple ? Math.max(size, options.length, 3) : 1}">${optionsHtml}</select>
+                    ${help ? `<p class="${NJUDGE_HELP_TEXT_CLASS}">${help}</p>` : ''}
                 </div>`;
         };
          const createCheckbox = (id, label, checked = false, help = '', value = 'true', name = id) => {
              return `
                 <div class="flex items-center my-1">
-                    <input type="checkbox" id="${id}" name="${name}" class="${checkboxClass}" ${checked ? 'checked' : ''} value="${value}">
+                    <input type="checkbox" id="${id}" name="${name}" class="${NJUDGE_CHECKBOX_CLASS}" ${checked ? 'checked' : ''} value="${value}">
                     <label for="${id}" class="ml-1 text-sm font-medium text-gray-700">${label}</label>
-                    ${help ? `<p class="${helpTextClass} ml-1">${help}</p>` : ''}
+                    ${help ? `<p class="${NJUDGE_HELP_TEXT_CLASS} ml-1">${help}</p>` : ''}
                 </div>`;
          };
-         const createRadio = (id, name, label, checked = false, help = '', value = id) => {
-             return `
-                <div class="flex items-center my-1">
-                    <input type="radio" id="${id}" name="${name}" class="${radioClass}" ${checked ? 'checked' : ''} value="${value}">
-                    <label for="${id}" class="ml-1 text-sm font-medium text-gray-700">${label}</label>
-                    ${help ? `<p class="${helpTextClass} ml-1">${help}</p>` : ''}
-                </div>`;
-         };
+         // const createRadio = ... (Moved to DOMContentLoaded scope)
          const createPowerCheckboxes = (idPrefix, gameData, includeMaster = true, includeObservers = true) => {
              let checkboxesHtml = `<div class="grid grid-cols-2 gap-x-2 gap-y-1 border p-2 rounded bg-gray-50">`;
              if (gameData?.players) {
@@ -1687,9 +1713,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 0); // Timeout ensures DOM update is processed
     }
 
-    // Helper function to query selector safely within optionsArea
-    const qs = (selector) => optionsArea?.querySelector(selector); // Add check for optionsArea
-    const qsa = (selector) => optionsArea?.querySelectorAll(selector); // Add check for optionsArea
+    // qs and qsa helpers moved to DOMContentLoaded scope
 
     // --- updateGeneratedCommandText: Updated for multi-line and complex commands ---
     // Pass gameData to this function
@@ -1820,7 +1844,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Use safe query selector helper 'qs' and 'qsa' defined above
         const val = (selector, defaultValue = '') => qs(selector)?.value.trim() || defaultValue;
         const checked = (selector) => qs(selector)?.checked || false;
-        const radioVal = (name, defaultValue = '') => qs(`input[name="${name}"]:checked`)?.value || defaultValue;
+        // const radioVal = ... (Moved to DOMContentLoaded scope)
         const rawVal = (selector, defaultValue = '') => qs(selector)?.value || defaultValue; // Don't trim passwords
         const getCheckedValues = (name) => Array.from(qsa(`input[name="${name}"]:checked`)).map(el => el.value);
 
@@ -2178,15 +2202,37 @@ document.addEventListener('DOMContentLoaded', () => {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body)
                 });
-                const result = await response.json();
 
-                if (response.ok && result.success) {
-                    displayGameManagementFeedback(`Game '${gameName}' added successfully. Refreshing list...`, false);
+                let result;
+                let responseTextForError = ''; // Store raw text in case JSON parsing fails
+                try {
+                    // Clone the response to read its text body in case of JSON error,
+                    // as response.json() consumes the body.
+                    const responseClone = response.clone();
+                    result = await response.json();
+                } catch (jsonError) {
+                    console.error('Failed to parse server response as JSON:', jsonError);
+                    // Attempt to get the raw text from the cloned response if JSON parsing failed
+                    try {
+                        responseTextForError = await responseClone.text();
+                    } catch (textError) {
+                        console.error('Failed to read response text after JSON parsing error:', textError);
+                        responseTextForError = 'Could not read response body.';
+                    }
+                    result = {
+                        message: `Server returned non-JSON response (Status: ${response.status}). Body: ${responseTextForError}`,
+                        success: false // Assume failure if JSON parsing fails
+                    };
+                }
+
+                if (response.ok) { // HTTP status 200-299 indicates success
+                    // Use result.message directly for the success notification.
+                    // This message comes from the backend and could be the judge's detailed success message.
+                    displayGameManagementFeedback(result.message || `Game '${gameName}' created successfully. Refreshing list...`, false);
                     addGameForm.reset(); // Clear the form fields
                     await fetchAndPopulateGames(); // Refresh the game list
                     // Attempt to select the newly added game in the dropdown
                     if(gameSelector) {
-                        // Need a slight delay for the list to potentially repopulate? Or trust fetchAndPopulateGames handles it.
                         setTimeout(() => {
                              if (Array.from(gameSelector.options).some(opt => opt.value === gameName)) {
                                 gameSelector.value = gameName;
@@ -2199,12 +2245,16 @@ document.addEventListener('DOMContentLoaded', () => {
                         }, 100); // Small delay
                     }
                 } else {
-                    // Use the error message from the backend if available
-                    throw new Error(result.message || `Failed to add game (Status: ${response.status})`);
+                    // Server indicated an error via HTTP status code (4xx, 5xx).
+                    // result.message should contain the error details from the backend.
+                    const errorMessage = result.message || `Failed to add game (Status: ${response.status}, no specific message from server). Response: ${responseTextForError}`;
+                    console.error('Error adding game (server response):', errorMessage, 'Full result:', result);
+                    displayGameManagementFeedback(errorMessage, true); // Display as error, using server's message
                 }
-            } catch (error) {
-                console.error('Error adding game:', error);
-                displayGameManagementFeedback(`Error adding game: ${error.message}`, true);
+            } catch (error) { // This catch handles network errors or if the fetch itself fails (e.g., DNS resolution)
+                console.error('Network or client-side error adding game:', error);
+                // For network errors, a generic message is appropriate.
+                displayGameManagementFeedback(`Network or client error adding game: ${error.message}`, true);
             }
         });
     }
@@ -2469,7 +2519,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function handleUnitOrderSelection() {
-        const selectedUnit = val('#order-unit-select');
+        const selectedUnit = this.value;
         const detailsArea = qs('#order-details-area');
         if (!detailsArea) return;
 
