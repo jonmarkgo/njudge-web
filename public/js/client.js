@@ -491,6 +491,61 @@ async function renderMap(gameName, phase) {
 // --- End Map Rendering ---
 
 
+function initializeTabSwitching() {
+    const tabLinks = document.querySelectorAll('a[data-tab]');
+    const primaryTabContent = document.getElementById('primary-tab-content');
+    const secondaryTabContent = document.getElementById('secondary-tab-content');
+
+    // If essential elements for tabbing aren't on this page, don't proceed.
+    if (!primaryTabContent || !secondaryTabContent || tabLinks.length === 0) {
+        // console.log('Dashboard Tab Switcher: Required elements not found. Tab functionality not initialized.');
+        return;
+    }
+
+    function switchTab(targetTabName) {
+        primaryTabContent.classList.add('hidden');
+        secondaryTabContent.classList.add('hidden');
+
+        const activeTabClasses = ['bg-white', 'text-primary', 'border-l', 'border-t', 'border-r'];
+        const inactiveTabClasses = ['bg-gray-100', 'text-gray-600', 'hover:text-primary'];
+
+        tabLinks.forEach(link => {
+            const linkTabName = link.getAttribute('data-tab');
+            link.classList.remove(...activeTabClasses);
+            link.classList.remove(...inactiveTabClasses);
+
+            if (linkTabName === targetTabName) {
+                link.classList.add(...activeTabClasses);
+            } else {
+                link.classList.add(...inactiveTabClasses);
+            }
+        });
+
+        if (targetTabName === 'primary') {
+            primaryTabContent.classList.remove('hidden');
+        } else if (targetTabName === 'secondary') {
+            secondaryTabContent.classList.remove('hidden');
+        } else {
+            console.error('Dashboard Tab Switcher: Unknown targetTabName in switchTab:', targetTabName);
+        }
+    }
+
+    tabLinks.forEach(tab => {
+        tab.addEventListener('click', (event) => {
+            event.preventDefault();
+            const targetTabName = event.currentTarget.getAttribute('data-tab');
+            if (targetTabName) {
+                switchTab(targetTabName);
+            } else {
+                console.error('Dashboard Tab Switcher: Clicked tab has no data-tab attribute or its value is null/empty.');
+            }
+        });
+    });
+
+    // Initialize with the primary tab active by default.
+    switchTab('primary');
+    console.log('Dashboard tab switching initialized.'); // Confirmation log
+}
 // --- DOM Ready ---
 document.addEventListener('DOMContentLoaded', () => {
     // --- Global Elements ---
@@ -592,6 +647,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Initial Setup ---
     async function initializeDashboard() { // Make async for await fetchUserPreferences
+        initializeTabSwitching(); // Initialize tab switching for the dashboard
         // Fetch preferences first if logged in
         if (window.currentUserEmail) {
             await fetchUserPreferences(); // Wait for prefs before fetching games

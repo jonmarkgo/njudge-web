@@ -10,337 +10,334 @@
     </div>
 <% } %>
 
-
-<!-- News System -->
-<div id="news-section-container" class="card mb-6">
-    <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">System News</h2>
-
-    <!-- Add News Form (Initially hidden, shown for admins) -->
-    <form id="add-news-form" class="mb-4 hidden">
-        <label for="news-content" class="block text-sm font-medium text-gray-700 mb-1">Add New Announcement:</label>
-        <textarea id="news-content" name="content" rows="3" required class="input text-sm w-full mb-2" placeholder="Enter news content here..."></textarea>
-        <button type="submit" class="btn btn-primary text-sm">Add News</button>
-        <div id="add-news-feedback" class="text-sm mt-2"></div> <!-- Feedback area -->
-    </form>
-
-    <!-- News Display Area -->
-    <div id="news-section" class="space-y-3">
-        <p class="text-gray-500 italic">Loading news...</p> <%# Placeholder while loading %>
-    </div>
-    <div id="news-error" class="text-red-600 text-sm mt-2"></div> <!-- Error display area -->
+<!-- Tab Navigation -->
+<div class="mb-6">
+    <ul class="flex border-b -mb-px">
+        <li class="mr-1">
+            <a class="inline-block py-2 px-4 font-semibold cursor-pointer rounded-t bg-white text-primary border-l border-t border-r" data-tab="primary">Main Interface</a>
+        </li>
+        <li class="mr-1">
+            <a class="inline-block py-2 px-4 font-semibold cursor-pointer rounded-t bg-gray-100 text-gray-600 hover:text-primary" data-tab="secondary">Game Setup & Info</a>
+        </li>
+    </ul>
 </div>
 
-<!-- Filter and Bookmarks Bar -->
-<div class="card mb-6">
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <!-- Filters -->
-        <div>
-            <h3 class="text-lg font-semibold text-gray-800 mb-3 border-b pb-2">Filter Games</h3>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                    <label for="filter-status" class="block text-sm font-medium text-gray-700 mb-1">Status:</label>
-                    <select id="filter-status" class="input text-sm">
-                        <option value="">All</option>
-                        <option value="active">Active</option>
-                        <option value="finished">Finished</option>
-                        <%# Add other relevant statuses if needed %>
+<!-- Tab Content -->
+<div id="tab-content-container">
+    <!-- Primary Tab Content -->
+    <div id="primary-tab-content">
+        <!-- Top Control Bar: Game Selection, Password, Variant -->
+        <div class="card mb-6">
+            <div class="flex flex-wrap items-center gap-4">
+                <div class="flex-grow sm:flex-grow-0">
+                    <label for="game-selector" class="block text-sm font-medium text-gray-700 mb-1">Target Game:</label>
+                    <select id="game-selector" class="input text-sm">
+                        <option value="">-- Select Target Game --</option>
+                        <% if (typeof allGames !== 'undefined' && allGames.length > 0) { %>
+                            <% allGames.forEach(function(game) { %>
+                                <option value="<%= game.name %>" <%= (typeof initialTargetGame !== 'undefined' && initialTargetGame && initialTargetGame.name === game.name) ? 'selected' : '' %>>
+                                    <%= game.name %> (<%= game.status || 'Unknown' %>)
+                                </option>
+                            <% }); %>
+                        <% } else { %>
+                            <option value="" disabled>No games found</option>
+                        <% } %>
                     </select>
+                    <input type="hidden" id="target-game-input" value="<%= (typeof initialTargetGame !== 'undefined' && initialTargetGame) ? initialTargetGame.name : '' %>">
                 </div>
-                <div>
-                    <label for="filter-variant" class="block text-sm font-medium text-gray-700 mb-1">Variant:</label>
-                    <input type="text" id="filter-variant" placeholder="e.g., standard, chaos" class="input text-sm">
+                <div class="flex-grow sm:flex-grow-0">
+                    <label for="target-password" class="block text-sm font-medium text-gray-700 mb-1">Game Password:</label>
+                    <input type="password" id="target-password" placeholder="Enter password" class="input text-sm">
+                    <p class="text-xs text-gray-500 mt-1">Needed for game-specific commands.</p>
                 </div>
-                <div>
-                    <label for="filter-player-email" class="block text-sm font-medium text-gray-700 mb-1">Player Email:</label>
-                    <input type="text" id="filter-player-email" placeholder="player@example.com" class="input text-sm">
+                <div class="flex-grow sm:flex-grow-0">
+                    <label for="target-variant" class="block text-sm font-medium text-gray-700 mb-1">Variant/Options:</label>
+                    <input type="text" id="target-variant" placeholder="e.g., chaos gunboat" class="input text-sm">
+                    <p class="text-xs text-gray-500 mt-1">Specify if needed for SIGN ON.</p>
                 </div>
-                <div>
-                    <label for="filter-phase" class="block text-sm font-medium text-gray-700 mb-1">Phase:</label>
-                    <input type="text" id="filter-phase" placeholder="e.g., S1901M, F1901M" class="input text-sm">
+                <div class="flex items-end space-x-2 mt-2 sm:mt-0">
+                     <button id="refresh-game-state" title="Refresh selected game state (Runs LIST command)" class="btn btn-secondary text-sm py-1.5 px-3">Refresh State</button>
+                     <button id="clear-credentials" title="Clear selected game and stored password/variant" class="btn btn-secondary text-sm py-1.5 px-3 bg-red-600 hover:bg-red-700 text-white">Clear Target</button>
                 </div>
             </div>
-            <div class="mt-4">
-                <button id="apply-filters-btn" class="btn btn-primary text-sm">Apply Filters</button>
-                 <button id="clear-filters-btn" class="btn btn-secondary text-sm ml-2">Clear Filters</button> <%# Added Clear Button %>
-            </div>
+             <p class="text-xs text-orange-600 mt-2">Warning: Game password and variant stored in browser cookies for convenience. Clear target/sign out to remove.</p>
         </div>
 
-        <!-- Saved Searches (Bookmarks) -->
-        <div>
-            <h3 class="text-lg font-semibold text-gray-800 mb-3 border-b pb-2">Saved Searches</h3>
-            <div class="space-y-3">
-                <div>
-                    <label for="saved-search-select" class="block text-sm font-medium text-gray-700 mb-1">Load Saved Search:</label>
-                    <div class="flex gap-2">
-                        <select id="saved-search-select" class="input text-sm flex-grow">
-                            <option value="">-- Select Bookmark --</option>
-                            <%# Options populated by JS %>
-                        </select>
-                        <button id="apply-bookmark-btn" class="btn btn-secondary text-sm flex-shrink-0">Apply</button>
-                        <%# Added btn-danger class for styling %>
-                        <button id="delete-bookmark-btn" class="btn bg-red-600 hover:bg-red-700 text-white text-sm flex-shrink-0" title="Delete Selected Bookmark">Delete</button>
+        <!-- Main Grid: Command Generator, Output, Map, Game State -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <!-- Generator Controls (Left Column) -->
+            <div class="lg:col-span-3">
+                <div class="card">
+                    <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Command Generator</h2>
+                    <label for="command-type" class="block text-sm font-medium text-gray-700 mb-2">Action:</label>
+                    <select id="command-type" class="input mb-4 text-sm">
+                        <option value="">-- Select Action --</option>
+                        <% if (typeof initialRecommendedCommands !== 'undefined') { %>
+                            <% const commands = initialRecommendedCommands; %>
+                            <% if (commands.recommended && commands.recommended.length > 0) { %>
+                            <optgroup label="Recommended" class="font-semibold bg-gray-100">
+                                <% commands.recommended.forEach(function(cmd) { %><option value="<%= cmd %>"><%= cmd %></option><% }); %>
+                            </optgroup>
+                            <% } %>
+                            <% if (commands.playerActions && commands.playerActions.length > 0) { %>
+                            <optgroup label="Player Actions" class="font-semibold bg-gray-100">
+                                <% commands.playerActions.forEach(function(cmd) { %><option value="<%= cmd %>"><%= cmd %></option><% }); %>
+                            </optgroup>
+                            <% } %>
+                             <% if (commands.settings && commands.settings.length > 0) { %>
+                            <optgroup label="Settings & Future Orders" class="font-semibold bg-gray-100">
+                                <% commands.settings.forEach(function(cmd) { %><option value="<%= cmd %>"><%= cmd %></option><% }); %>
+                            </optgroup>
+                            <% } %>
+                            <% if (commands.gameInfo && commands.gameInfo.length > 0) { %>
+                            <optgroup label="Game Info" class="font-semibold bg-gray-100">
+                                <% commands.gameInfo.forEach(function(cmd) { %><option value="<%= cmd %>"><%= cmd %></option><% }); %>
+                            </optgroup>
+                            <% } %>
+                            <% if (commands.master && commands.master.length > 0) { %>
+                            <optgroup label="Master Only" class="font-semibold bg-gray-100">
+                                <% commands.master.forEach(function(cmd) { %><option value="<%= cmd %>"><%= cmd %></option><% }); %>
+                            </optgroup>
+                            <% } %>
+                            <% if (commands.general && commands.general.length > 0) { %>
+                            <optgroup label="General" class="font-semibold bg-gray-100">
+                                <% commands.general.forEach(function(cmd) { %><option value="<%= cmd %>"><%= cmd %></option><% }); %>
+                            </optgroup>
+                            <% } %>
+                        <% } %>
+                    </select>
+                    <div id="command-options-area" class="border-t border-gray-200 pt-4 mt-4 min-h-[50px]">
+                         <p class="text-sm text-gray-500 italic">Select an action above to see options.</p>
                     </div>
                 </div>
-                <div>
-                    <label for="new-bookmark-name" class="block text-sm font-medium text-gray-700 mb-1">Save Current Filters As:</label>
-                     <div class="flex gap-2">
-                        <input type="text" id="new-bookmark-name" placeholder="Enter bookmark name" class="input text-sm flex-grow">
-                        <button id="save-bookmark-btn" class="btn btn-secondary text-sm flex-shrink-0">Save</button>
+            </div>
+
+            <!-- Main Content (Center Column) -->
+            <div class="lg:col-span-6">
+                <div class="card">
+                    <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Manual Command / Generated Output</h2>
+                    <label for="generated-command" class="block text-sm font-medium text-gray-700 mb-2">Command Text (Press Enter to Send):</label>
+                    <textarea id="generated-command" placeholder="Select action or type command manually. Do NOT include SIGN OFF."
+                              class="input font-mono text-sm min-h-[150px] mb-4 resize-y"></textarea>
+                    <button id="send-command" class="btn btn-primary">Send Command</button>
+                </div>
+                <div class="card mt-6">
+                    <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Adjudicator Output</h2>
+                    <div id="output" class="bg-gray-50 border border-gray-200 rounded-md p-4 font-mono text-sm min-h-[250px] max-h-[600px] overflow-y-auto whitespace-pre-wrap break-words text-gray-700">
+                        Output will appear here... Select a target game and try the LIST command.
+                    </div>
+                </div>
+                <div class="card mt-6">
+                    <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Game Map</h2>
+                    <div id="map-container" style="width: 100%; height: 600px; border: 1px solid #e5e7eb; overflow: auto; position: relative;">
+                         <p class="text-gray-500 italic p-4">Select a game and phase to view the map.</p>
                     </div>
                 </div>
             </div>
-        </div>
-    </div>
-</div>
 
-<!-- User Preferences Section -->
-<div id="preference-controls-container" class="card mb-6">
-    <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">User Preferences</h2>
-    <p class="text-gray-500 italic">Loading preferences...</p> <%# Placeholder until JS renders controls %>
-</div>
+            <!-- Sidebar (Right Column) -->
+            <div class="lg:col-span-3">
+                <div class="card min-h-[300px]">
+                    <div id="game-state-sidebar">
+                         <% if (typeof initialTargetGame !== 'undefined' && initialTargetGame) { %>
+                            <% const gameState = initialTargetGame; %>
+                            <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Game State: <%= gameState.name %></h2>
+                            <div class="space-y-2 text-sm">
+                                <div><strong class="text-primary w-24 inline-block">Status:</strong> <%= gameState.status || 'Unknown' %></div>
+                                <div><strong class="text-primary w-24 inline-block">Phase:</strong> <%= gameState.currentPhase || 'Unknown' %></div>
+                                <div>
+                                    <strong class="text-primary w-24 inline-block">Deadline:</strong>
+                                    <% if (gameState.nextDeadline) { %>
+                                        <% try { const date = new Date(gameState.nextDeadline); %>
+                                            <% if (!isNaN(date) && date.getTime() !== 0) { %> <%= date.toLocaleString() %> <% } else { %> <%= gameState.nextDeadline %> <% } %>
+                                        <% } catch (e) { %> <%= gameState.nextDeadline %> <% } %>
+                                    <% } else { %> N/A <% } %>
+                                </div>
+                                <div><strong class="text-primary w-24 inline-block">Variant:</strong> <%= gameState.variant || 'Standard' %> <% if (gameState.options && gameState.options.length > 0) { %>(<%= gameState.options.join(', ') %>)<% } %></div>
+                                <div><strong class="text-primary w-24 inline-block">Masters:</strong> <%= gameState.masters && gameState.masters.length > 0 ? gameState.masters.join(', ') : 'N/A' %></div>
+                                <div><strong class="text-primary w-24 inline-block">Observers:</strong> <%= gameState.observers ? gameState.observers.length : 'N/A' %></div>
 
-<!-- Top Control Bar: Game Selection, Password, Variant -->
-<div class="card mb-6">
-    <div class="flex flex-wrap items-center gap-4">
-        <div class="flex-grow sm:flex-grow-0">
-            <label for="game-selector" class="block text-sm font-medium text-gray-700 mb-1">Target Game:</label>
-            <select id="game-selector" class="input text-sm"> <%# Made text smaller %>
-                <option value="">-- Select Target Game --</option>
-                <% if (typeof allGames !== 'undefined' && allGames.length > 0) { %>
-                    <% allGames.forEach(function(game) { %>
-                        <option value="<%= game.name %>" <%= (typeof initialTargetGame !== 'undefined' && initialTargetGame && initialTargetGame.name === game.name) ? 'selected' : '' %>>
-                            <%= game.name %> (<%= game.status || 'Unknown' %>)
-                        </option>
-                    <% }); %>
-                <% } else { %>
-                    <option value="" disabled>No games found</option>
-                <% } %>
-            </select>
-            <input type="hidden" id="target-game-input" value="<%= (typeof initialTargetGame !== 'undefined' && initialTargetGame) ? initialTargetGame.name : '' %>">
-        </div>
-        <div class="flex-grow sm:flex-grow-0">
-            <label for="target-password" class="block text-sm font-medium text-gray-700 mb-1">Game Password:</label>
-            <input type="password" id="target-password" placeholder="Enter password" class="input text-sm"> <%# Made text smaller %>
-            <p class="text-xs text-gray-500 mt-1">Needed for game-specific commands.</p>
-        </div>
-        <div class="flex-grow sm:flex-grow-0"> <%# New Variant Field %>
-            <label for="target-variant" class="block text-sm font-medium text-gray-700 mb-1">Variant/Options:</label>
-            <input type="text" id="target-variant" placeholder="e.g., chaos gunboat" class="input text-sm"> <%# Made text smaller %>
-            <p class="text-xs text-gray-500 mt-1">Specify if needed for SIGN ON.</p>
-        </div>
-        <div class="flex items-end space-x-2 mt-2 sm:mt-0">
-             <button id="refresh-game-state" title="Refresh selected game state (Runs LIST command)" class="btn btn-secondary text-sm py-1.5 px-3">Refresh State</button>
-             <button id="clear-credentials" title="Clear selected game and stored password/variant" class="btn btn-secondary text-sm py-1.5 px-3 bg-red-600 hover:bg-red-700 text-white">Clear Target</button>
-        </div>
-    </div>
-     <p class="text-xs text-orange-600 mt-2">Warning: Game password and variant stored in browser cookies for convenience. Clear target/sign out to remove.</p>
-</div>
+                                <% if (gameState.players && gameState.players.length > 0) { %>
+                                    <div class="pt-2 mt-2 border-t border-gray-200">
+                                        <strong class="text-primary block mb-1">Players (<%= gameState.players.length %>):</strong>
+                                        <ul class="space-y-1 pl-2">
+                                            <% gameState.players.sort((a,b) => (a.power || '').localeCompare(b.power || '')).forEach(p => { %>
+                                                <li class="<%= p.email === email ? 'font-semibold text-blue-700' : '' %>">
+                                                    <%= p.power || '???' %>:
+                                                    <% if (p.status && p.status !== 'Playing' && p.status !== 'Waiting') { %>
+                                                        <span class="<%= ['CD', 'Resigned', 'Abandoned', 'Eliminated'].includes(p.status) ? 'text-red-600' : 'text-gray-600' %>">(<%= p.status %>)</span>
+                                                    <% } else if (p.status === 'Waiting') { %>
+                                                        <span class="text-orange-600">(Waiting)</span>
+                                                    <% } %>
+                                                    <% if (p.email && (!gameState.settings || !gameState.settings.gunboat)) { %>
+                                                        <span class="text-gray-500 text-xs ml-1">(<%= p.email %>)</span>
+                                                    <% } %>
+                                                </li>
+                                            <% }); %>
+                                        </ul>
+                                    </div>
+                                <% } else { %> <div><strong class="text-primary w-24 inline-block">Players:</strong> N/A</div> <% } %>
 
-
-<!-- Game Management -->
-<div class="card mb-6">
-    <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Game Management</h2>
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <!-- Add Game Form -->
-        <div>
-            <h3 class="text-lg font-semibold text-gray-800 mb-3">Add New Game</h3>
-            <form id="add-game-form" class="space-y-3">
-                <div>
-                    <label for="add-game-name" class="block text-sm font-medium text-gray-700 mb-1">Game Name:</label>
-                    <input type="text" id="add-game-name" name="gameName" required class="input text-sm" placeholder="e.g., my_new_game">
-                </div>
-                <div>
-                    <label for="add-game-variant" class="block text-sm font-medium text-gray-700 mb-1">Variant:</label>
-                    <input type="text" id="add-game-variant" name="variant" required class="input text-sm" placeholder="e.g., standard">
-                    <p class="text-xs text-gray-500 mt-1">Specify the game variant (e.g., standard, chaos).</p>
-                </div>
-                 <div>
-                    <label for="add-game-password" class="block text-sm font-medium text-gray-700 mb-1">Master Password:</label>
-                    <input type="password" id="add-game-password" name="password" required class="input text-sm" placeholder="Required for game creation">
-                     <p class="text-xs text-gray-500 mt-1">Required for game creation via API.</p>
-                </div>
-                <button type="submit" id="add-game-btn" class="btn btn-primary text-sm">Create Game</button>
-            </form>
-        </div>
-
-        <!-- Remove Game Section -->
-        <div>
-            <h3 class="text-lg font-semibold text-gray-800 mb-3">Remove Game</h3>
-            <p class="text-sm text-gray-600 mb-3">Select a game from the "Target Game" dropdown above, then click remove.</p>
-            <div>
-                 <label for="remove-game-password" class="block text-sm font-medium text-gray-700 mb-1">Master Password:</label>
-                 <input type="password" id="remove-game-password" required class="input text-sm mb-3" placeholder="Required for game removal">
-                 <p class="text-xs text-gray-500 mt-1">Required for game removal via API.</p>
-            </div>
-            <%# Added btn-danger class for styling %>
-            <button id="remove-game-btn" class="btn bg-red-600 hover:bg-red-700 text-white text-sm">Remove Selected Game</button>
-            <p class="text-xs text-orange-600 mt-2">Warning: This action is irreversible.</p>
-        </div>
-    </div>
-    <!-- Area for displaying add/remove feedback -->
-    <div id="game-management-feedback" class="mt-4 text-sm"></div>
-</div>
-
-
-<!-- Statistics Section -->
-<div class="card mb-6">
-    <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Game Statistics</h2>
-    <div class="max-w-md mx-auto">
-        <canvas id="gameStatusChart"></canvas>
-    </div>
-    <div id="chart-error" class="text-red-600 text-sm mt-2 text-center"></div> <!-- Error display area for chart -->
-</div>
-
-
-
-
-<div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-    <!-- Generator Controls (Left Column) -->
-    <div class="lg:col-span-3">
-        <div class="card">
-            <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Command Generator</h2>
-            <label for="command-type" class="block text-sm font-medium text-gray-700 mb-2">Action:</label>
-            <select id="command-type" class="input mb-4 text-sm"> <%# Made text smaller %>
-                <option value="">-- Select Action --</option>
-                <%# Options will be populated by client.js based on recommendations %>
-                <%# Keep initial server-side rendering as fallback/initial state %>
-                <% if (typeof initialRecommendedCommands !== 'undefined') { %>
-                    <% const commands = initialRecommendedCommands; %>
-                    <% if (commands.recommended && commands.recommended.length > 0) { %>
-                    <optgroup label="Recommended" class="font-semibold bg-gray-100">
-                        <% commands.recommended.forEach(function(cmd) { %><option value="<%= cmd %>"><%= cmd %></option><% }); %>
-                    </optgroup>
-                    <% } %>
-                    <% if (commands.playerActions && commands.playerActions.length > 0) { %>
-                    <optgroup label="Player Actions" class="font-semibold bg-gray-100">
-                        <% commands.playerActions.forEach(function(cmd) { %><option value="<%= cmd %>"><%= cmd %></option><% }); %>
-                    </optgroup>
-                    <% } %>
-                     <% if (commands.settings && commands.settings.length > 0) { %>
-                    <optgroup label="Settings & Future Orders" class="font-semibold bg-gray-100">
-                        <% commands.settings.forEach(function(cmd) { %><option value="<%= cmd %>"><%= cmd %></option><% }); %>
-                    </optgroup>
-                    <% } %>
-                    <% if (commands.gameInfo && commands.gameInfo.length > 0) { %>
-                    <optgroup label="Game Info" class="font-semibold bg-gray-100">
-                        <% commands.gameInfo.forEach(function(cmd) { %><option value="<%= cmd %>"><%= cmd %></option><% }); %>
-                    </optgroup>
-                    <% } %>
-                    <% if (commands.master && commands.master.length > 0) { %>
-                    <optgroup label="Master Only" class="font-semibold bg-gray-100">
-                        <% commands.master.forEach(function(cmd) { %><option value="<%= cmd %>"><%= cmd %></option><% }); %>
-                    </optgroup>
-                    <% } %>
-                    <% if (commands.general && commands.general.length > 0) { %>
-                    <optgroup label="General" class="font-semibold bg-gray-100">
-                        <% commands.general.forEach(function(cmd) { %><option value="<%= cmd %>"><%= cmd %></option><% }); %>
-                    </optgroup>
-                    <% } %>
-                <% } %>
-            </select>
-
-            <!-- Dynamic Options Area -->
-            <div id="command-options-area" class="border-t border-gray-200 pt-4 mt-4 min-h-[50px]">
-                 <p class="text-sm text-gray-500 italic">Select an action above to see options.</p>
-            </div>
-        </div>
-    </div>
-
-    <!-- Main Content (Center Column) -->
-    <div class="lg:col-span-6">
-        <div class="card">
-            <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Manual Command / Generated Output</h2>
-            <label for="generated-command" class="block text-sm font-medium text-gray-700 mb-2">Command Text (Press Enter to Send):</label>
-            <textarea id="generated-command" placeholder="Select action or type command manually. Do NOT include SIGN OFF."
-                      class="input font-mono text-sm min-h-[150px] mb-4 resize-y"></textarea>
-            <button id="send-command" class="btn btn-primary">Send Command</button>
-        </div>
-
-        <div class="card mt-6">
-            <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Adjudicator Output</h2>
-            <div id="output" class="bg-gray-50 border border-gray-200 rounded-md p-4 font-mono text-sm min-h-[250px] max-h-[600px] overflow-y-auto whitespace-pre-wrap break-words text-gray-700">
-                Output will appear here... Select a target game and try the LIST command.
-            </div>
-        </div>
-        <!-- Map Display -->
-        <div class="card mt-6">
-            <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Game Map</h2>
-            <div id="map-container" style="width: 100%; height: 600px; border: 1px solid #e5e7eb; overflow: auto; position: relative;">
-                 <p class="text-gray-500 italic p-4">Select a game and phase to view the map.</p> <%# Placeholder %>
-            </div>
-        </div>
-
-    </div>
-
-    <!-- Sidebar (Right Column) -->
-    <div class="lg:col-span-3">
-        <div class="card min-h-[300px]">
-            <div id="game-state-sidebar">
-                 <%# Initial state rendered server-side, updated client-side %>
-                 <% if (typeof initialTargetGame !== 'undefined' && initialTargetGame) { %>
-                    <% const gameState = initialTargetGame; %>
-                    <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Game State: <%= gameState.name %></h2>
-                    <div class="space-y-2 text-sm">
-                        <div><strong class="text-primary w-24 inline-block">Status:</strong> <%= gameState.status || 'Unknown' %></div>
-                        <div><strong class="text-primary w-24 inline-block">Phase:</strong> <%= gameState.currentPhase || 'Unknown' %></div>
-                        <div>
-                            <strong class="text-primary w-24 inline-block">Deadline:</strong>
-                            <% if (gameState.nextDeadline) { %>
-                                <% try { const date = new Date(gameState.nextDeadline); %>
-                                    <% if (!isNaN(date) && date.getTime() !== 0) { %> <%= date.toLocaleString() %> <% } else { %> <%= gameState.nextDeadline %> <% } %>
-                                <% } catch (e) { %> <%= gameState.nextDeadline %> <% } %>
-                            <% } else { %> N/A <% } %>
-                        </div>
-                        <div><strong class="text-primary w-24 inline-block">Variant:</strong> <%= gameState.variant || 'Standard' %> <% if (gameState.options && gameState.options.length > 0) { %>(<%= gameState.options.join(', ') %>)<% } %></div>
-                        <div><strong class="text-primary w-24 inline-block">Masters:</strong> <%= gameState.masters && gameState.masters.length > 0 ? gameState.masters.join(', ') : 'N/A' %></div>
-                        <div><strong class="text-primary w-24 inline-block">Observers:</strong> <%= gameState.observers ? gameState.observers.length : 'N/A' %></div>
-
-                        <% if (gameState.players && gameState.players.length > 0) { %>
-                            <div class="pt-2 mt-2 border-t border-gray-200">
-                                <strong class="text-primary block mb-1">Players (<%= gameState.players.length %>):</strong>
-                                <ul class="space-y-1 pl-2">
-                                    <% gameState.players.sort((a,b) => (a.power || '').localeCompare(b.power || '')).forEach(p => { %>
-                                        <li class="<%= p.email === email ? 'font-semibold text-blue-700' : '' %>">
-                                            <%= p.power || '???' %>:
-                                            <%# Display detailed player status %>
-                                            <% if (p.status && p.status !== 'Playing' && p.status !== 'Waiting') { %>
-                                                <span class="<%= ['CD', 'Resigned', 'Abandoned', 'Eliminated'].includes(p.status) ? 'text-red-600' : 'text-gray-600' %>">(<%= p.status %>)</span>
-                                            <% } else if (p.status === 'Waiting') { %>
-                                                <span class="text-orange-600">(Waiting)</span>
-                                            <% } %>
-                                            <%# Show email only if not gunboat %>
-                                            <% if (p.email && (!gameState.settings || !gameState.settings.gunboat)) { %>
-                                                <span class="text-gray-500 text-xs ml-1">(<%= p.email %>)</span>
-                                            <% } %>
-                                        </li>
-                                    <% }); %>
-                                </ul>
+                                 <% if (gameState.settings && Object.keys(gameState.settings).length > 0) { %>
+                                    <div class="pt-2 mt-2 border-t border-gray-200">
+                                        <strong class="text-primary block mb-1">Settings:</strong>
+                                        <ul class="space-y-1 pl-2 text-xs">
+                                             <% Object.entries(gameState.settings).sort(([keyA], [keyB]) => keyA.localeCompare(keyB)).forEach(([key, value]) => { %>
+                                                <% let displayValue = value; %>
+                                                <% if (typeof value === 'boolean') displayValue = value ? 'Yes' : 'No'; %>
+                                                <% const displayKey = key.charAt(0).toUpperCase() + key.slice(1); %>
+                                                <li><%= displayKey %>: <%= displayValue %></li>
+                                             <% }); %>
+                                        </ul>
+                                    </div>
+                                 <% } %>
                             </div>
-                        <% } else { %> <div><strong class="text-primary w-24 inline-block">Players:</strong> N/A</div> <% } %>
-
-                         <%# Display detailed game settings %>
-                         <% if (gameState.settings && Object.keys(gameState.settings).length > 0) { %>
-                            <div class="pt-2 mt-2 border-t border-gray-200">
-                                <strong class="text-primary block mb-1">Settings:</strong>
-                                <ul class="space-y-1 pl-2 text-xs">
-                                     <% Object.entries(gameState.settings).sort(([keyA], [keyB]) => keyA.localeCompare(keyB)).forEach(([key, value]) => { %>
-                                        <% let displayValue = value; %>
-                                        <% if (typeof value === 'boolean') displayValue = value ? 'Yes' : 'No'; %>
-                                        <% const displayKey = key.charAt(0).toUpperCase() + key.slice(1); %>
-                                        <li><%= displayKey %>: <%= displayValue %></li>
-                                     <% }); %>
-                                </ul>
-                            </div>
+                             <p class="text-xs text-gray-500 mt-4">(State last updated: <%= gameState.lastUpdated ? new Date(gameState.lastUpdated * 1000).toLocaleString() : 'N/A' %>)</p>
+                         <% } else { %>
+                             <p class="text-gray-600 italic">Select a target game to view its state.</p>
                          <% } %>
                     </div>
-                     <p class="text-xs text-gray-500 mt-4">(State last updated: <%= gameState.lastUpdated ? new Date(gameState.lastUpdated * 1000).toLocaleString() : 'N/A' %>)</p>
-                 <% } else { %>
-                     <p class="text-gray-600 italic">Select a target game to view its state.</p>
-                 <% } %>
+                </div>
             </div>
         </div>
     </div>
+
+    <!-- Secondary Tab Content (initially hidden) -->
+    <div id="secondary-tab-content" class="hidden">
+        <!-- News System -->
+        <div id="news-section-container" class="card mb-6">
+            <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">System News</h2>
+            <form id="add-news-form" class="mb-4 hidden">
+                <label for="news-content" class="block text-sm font-medium text-gray-700 mb-1">Add New Announcement:</label>
+                <textarea id="news-content" name="content" rows="3" required class="input text-sm w-full mb-2" placeholder="Enter news content here..."></textarea>
+                <button type="submit" class="btn btn-primary text-sm">Add News</button>
+                <div id="add-news-feedback" class="text-sm mt-2"></div>
+            </form>
+            <div id="news-section" class="space-y-3">
+                <p class="text-gray-500 italic">Loading news...</p> <%# Placeholder while loading %>
+            </div>
+            <div id="news-error" class="text-red-600 text-sm mt-2"></div>
+        </div>
+
+        <!-- Filter and Bookmarks Bar -->
+        <div class="card mb-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- Filters -->
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800 mb-3 border-b pb-2">Filter Games</h3>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label for="filter-status" class="block text-sm font-medium text-gray-700 mb-1">Status:</label>
+                            <select id="filter-status" class="input text-sm">
+                                <option value="">All</option>
+                                <option value="active">Active</option>
+                                <option value="finished">Finished</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="filter-variant" class="block text-sm font-medium text-gray-700 mb-1">Variant:</label>
+                            <input type="text" id="filter-variant" placeholder="e.g., standard, chaos" class="input text-sm">
+                        </div>
+                        <div>
+                            <label for="filter-player-email" class="block text-sm font-medium text-gray-700 mb-1">Player Email:</label>
+                            <input type="text" id="filter-player-email" placeholder="player@example.com" class="input text-sm">
+                        </div>
+                        <div>
+                            <label for="filter-phase" class="block text-sm font-medium text-gray-700 mb-1">Phase:</label>
+                            <input type="text" id="filter-phase" placeholder="e.g., S1901M, F1901M" class="input text-sm">
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        <button id="apply-filters-btn" class="btn btn-primary text-sm">Apply Filters</button>
+                         <button id="clear-filters-btn" class="btn btn-secondary text-sm ml-2">Clear Filters</button>
+                    </div>
+                </div>
+
+                <!-- Saved Searches (Bookmarks) -->
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800 mb-3 border-b pb-2">Saved Searches</h3>
+                    <div class="space-y-3">
+                        <div>
+                            <label for="saved-search-select" class="block text-sm font-medium text-gray-700 mb-1">Load Saved Search:</label>
+                            <div class="flex gap-2">
+                                <select id="saved-search-select" class="input text-sm flex-grow">
+                                    <option value="">-- Select Bookmark --</option>
+                                </select>
+                                <button id="apply-bookmark-btn" class="btn btn-secondary text-sm flex-shrink-0">Apply</button>
+                                <button id="delete-bookmark-btn" class="btn bg-red-600 hover:bg-red-700 text-white text-sm flex-shrink-0" title="Delete Selected Bookmark">Delete</button>
+                            </div>
+                        </div>
+                        <div>
+                            <label for="new-bookmark-name" class="block text-sm font-medium text-gray-700 mb-1">Save Current Filters As:</label>
+                             <div class="flex gap-2">
+                                <input type="text" id="new-bookmark-name" placeholder="Enter bookmark name" class="input text-sm flex-grow">
+                                <button id="save-bookmark-btn" class="btn btn-secondary text-sm flex-shrink-0">Save</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- User Preferences Section -->
+        <div id="preference-controls-container" class="card mb-6">
+            <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">User Preferences</h2>
+            <p class="text-gray-500 italic">Loading preferences...</p> <%# Placeholder until JS renders controls (e.g. game list sort order) %>
+        </div>
+
+        <!-- Game Management -->
+        <div class="card mb-6">
+            <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Game Management</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- Add Game Form -->
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800 mb-3">Add New Game</h3>
+                    <form id="add-game-form" class="space-y-3">
+                        <div>
+                            <label for="add-game-name" class="block text-sm font-medium text-gray-700 mb-1">Game Name:</label>
+                            <input type="text" id="add-game-name" name="gameName" required class="input text-sm" placeholder="e.g., my_new_game">
+                        </div>
+                        <div>
+                            <label for="add-game-variant" class="block text-sm font-medium text-gray-700 mb-1">Variant:</label>
+                            <input type="text" id="add-game-variant" name="variant" required class="input text-sm" placeholder="e.g., standard">
+                            <p class="text-xs text-gray-500 mt-1">Specify the game variant (e.g., standard, chaos).</p>
+                        </div>
+                         <div>
+                            <label for="add-game-password" class="block text-sm font-medium text-gray-700 mb-1">Master Password:</label>
+                            <input type="password" id="add-game-password" name="password" required class="input text-sm" placeholder="Required for game creation">
+                             <p class="text-xs text-gray-500 mt-1">Required for game creation via API.</p>
+                        </div>
+                        <button type="submit" id="add-game-btn" class="btn btn-primary text-sm">Create Game</button>
+                    </form>
+                </div>
+
+                <!-- Remove Game Section -->
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-800 mb-3">Remove Game</h3>
+                    <p class="text-sm text-gray-600 mb-3">Select a game from the "Target Game" dropdown above, then click remove.</p>
+                    <div>
+                         <label for="remove-game-password" class="block text-sm font-medium text-gray-700 mb-1">Master Password:</label>
+                         <input type="password" id="remove-game-password" required class="input text-sm mb-3" placeholder="Required for game removal">
+                         <p class="text-xs text-gray-500 mt-1">Required for game removal via API.</p>
+                    </div>
+                    <button id="remove-game-btn" class="btn bg-red-600 hover:bg-red-700 text-white text-sm">Remove Selected Game</button>
+                    <p class="text-xs text-orange-600 mt-2">Warning: This action is irreversible.</p>
+                </div>
+            </div>
+            <div id="game-management-feedback" class="mt-4 text-sm"></div>
+        </div>
+
+        <!-- Statistics Section -->
+        <div class="card mb-6">
+            <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Game Statistics</h2>
+            <div class="max-w-md mx-auto">
+                <canvas id="gameStatusChart"></canvas>
+            </div>
+            <div id="chart-error" class="text-red-600 text-sm mt-2 text-center"></div>
+        </div>
+    </div>
 </div>
+
 
 <%# Client-side script specific to this page is now handled globally in client.js %>
 <%# Chart.js is now included globally in layout.ejs %>
