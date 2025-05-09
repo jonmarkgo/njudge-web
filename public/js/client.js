@@ -557,6 +557,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const qs = (selector) => optionsArea?.querySelector(selector); // Add check for optionsArea
     const qsa = (selector) => optionsArea?.querySelectorAll(selector); // Add check for optionsArea
 
+    // Helper to get trimmed value from input, or default
+    const val = (selector, defaultValue = '') => qs(selector)?.value.trim() || defaultValue;
+    // Helper to get raw value (no trim, for passwords etc.)
+    const rawVal = (selector, defaultValue = '') => qs(selector)?.value || defaultValue;
+    // Helper to check if a checkbox is checked
+    const checked = (selector) => qs(selector)?.checked || false;
+
     // Helper to get value of selected radio button
     const radioVal = (name, defaultValue = '') => qs(`input[name="${name}"]:checked`)?.value || defaultValue;
 
@@ -1721,119 +1728,105 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!commandTypeSelect || !generatedCommandTextarea || !optionsArea) return; // Check elements exist
 
         const selectedCommand = commandTypeSelect.value;
-        if (!selectedCommand) {
-            // Don't clear if user might be typing manually
-            // generatedCommandTextarea.value = '';
+        const currentText = generatedCommandTextarea.value; // Preserve user input if possible
+
+        if (!selectedCommand && selectedCommand !== 'ORDERS') { // Allow ORDERS to proceed even if dropdown is "" but unit selected
+            // If no command type is selected (e.g. "-- Select Action --")
+            // and it's not the special ORDERS case (which might be driven by unit selection),
+            // we generally don't want to auto-generate or clear the textarea,
+            // allowing for manual input.
             return;
         }
 
-        let commandString = '';
-        let commandBody = '';
-        const currentText = generatedCommandTextarea.value; // Preserve user input if possible
+        let commandString = ''; // Will be set by buildCommandStringFromOptions or be empty for ORDERS/MANUAL
+        let commandBody = '';   // Will be set for multi-line commands or by buildSingleOrderStringFromUI
 
-        // Build the command string based on options
+        // Build the command string based on options (usually the first line)
         commandString = buildCommandStringFromOptions(selectedCommand, gameData); // Pass gameData
 
-        // Handle commands where the textarea is primarily for the body
-        const commandsWithBodyInput = ['ORDERS', 'PRESS', 'BROADCAST', 'POSTAL PRESS', 'DIARY', 'PHASE', 'IF', 'BECOME', 'SET COMMENT BEGIN'];
-        if (commandsWithBodyInput.includes(selectedCommand)) {
+        const commandsWithBodyInput = ['PRESS', 'BROADCAST', 'POSTAL PRESS', 'DIARY', 'PHASE', 'IF', 'BECOME', 'SET COMMENT BEGIN'];
+
+        if (selectedCommand === 'ORDERS') {
+            commandString = ''; // No "ORDERS" prefix in the textarea
+            commandBody = buildSingleOrderStringFromUI(gameData, currentText);
+        } else if (selectedCommand === 'MANUAL') {
+            commandString = '';
+            commandBody = currentText; // Manual is purely user input
+        } else if (commandsWithBodyInput.includes(selectedCommand)) {
             // Try to preserve existing body if user was editing it
             const lines = currentText.split('\n');
             let potentialBodyStartLine = 0;
 
-            // Find where the generated command string ends
             const generatedLines = commandString.split('\n');
             potentialBodyStartLine = generatedLines.length;
 
-            // Special case: If commandString is empty (ORDERS, MANUAL), body is everything
-            if (!commandString) {
-                 potentialBodyStartLine = 0;
-            }
-
-            // Check if the current text seems to contain the generated command prefix
             let prefixMatches = true;
             if (potentialBodyStartLine > 0) {
-                for(let i = 0; i < potentialBodyStartLine; i++) {
-                    // Allow for potential whitespace differences when comparing prefix
+                for (let i = 0; i < potentialBodyStartLine; i++) {
                     if (i >= lines.length || lines[i].trim() !== generatedLines[i].trim()) {
                         prefixMatches = false;
                         break;
                     }
                 }
             } else {
-                 prefixMatches = false; // No prefix generated, assume body is new or full content
+                prefixMatches = false;
             }
 
-
-            if (prefixMatches && lines.length >= potentialBodyStartLine) { // Use >= to handle case where body is empty
-                 // Assume lines after the generated command are the user's body input
-                 commandBody = lines.slice(potentialBodyStartLine).join('\n');
-            } else if (selectedCommand === 'ORDERS' || selectedCommand === 'MANUAL') {
-                 // For these, the entire textarea is the command/body
-                 commandBody = currentText;
-                 commandString = ''; // No prefix
+            if (prefixMatches && lines.length >= potentialBodyStartLine) {
+                commandBody = lines.slice(potentialBodyStartLine).join('\n');
             } else {
-                 // Generate default/placeholder body if needed
-                 if (['PRESS', 'BROADCAST', 'POSTAL PRESS'].includes(selectedCommand)) {
-                     commandBody = qs('#press-body')?.value || ''; // Get value from textarea if exists
-                     if (!commandBody && currentText.includes('ENDPRESS')) commandBody = ''; // Keep empty if user cleared it
-                     else if (!commandBody) commandBody = '<message body>'; // Placeholder
-                     commandBody += '\nENDPRESS';
-                 } else if (selectedCommand === 'DIARY' && qs('#diary-action')?.value === 'RECORD') {
-                     commandBody = qs('#diary-body')?.value || '';
-                     if (!commandBody && currentText.includes('ENDPRESS')) commandBody = '';
-                     else if (!commandBody) commandBody = '<diary entry>';
-                     commandBody += '\nENDPRESS';
-                 } else if (['PHASE', 'IF', 'BECOME'].includes(selectedCommand)) {
-                     commandBody = '<orders/commands>'; // Placeholder
-                 } else if (selectedCommand === 'SET COMMENT BEGIN') {
-                     commandBody = qs('#set-comment-begin-text')?.value || '<long comment text>';
-                 }
-                 // If prefix didn't match, reset body unless it's ORDERS/MANUAL
-                 if (!prefixMatches && selectedCommand !== 'ORDERS' && selectedCommand !== 'MANUAL') {
-                      // Use generated placeholder body
-                 } else if (!prefixMatches && (selectedCommand === 'ORDERS' || selectedCommand === 'MANUAL')) {
-                      commandBody = currentText; // Keep user's text
-                 }
+                // Generate default/placeholder body if needed (prefix didn't match or no body yet)
+                if (['PRESS', 'BROADCAST', 'POSTAL PRESS'].includes(selectedCommand)) {
+                    commandBody = qs('#press-body')?.value || '';
+                    if (!commandBody && currentText.includes('ENDPRESS')) commandBody = '';
+                    else if (!commandBody) commandBody = '<message body>';
+                    commandBody += '\nENDPRESS';
+                } else if (selectedCommand === 'DIARY' && qs('#diary-action')?.value === 'RECORD') {
+                    commandBody = qs('#diary-body')?.value || '';
+                    if (!commandBody && currentText.includes('ENDPRESS')) commandBody = '';
+                    else if (!commandBody) commandBody = '<diary entry>';
+                    commandBody += '\nENDPRESS';
+                } else if (['PHASE', 'IF', 'BECOME'].includes(selectedCommand)) {
+                    commandBody = '<orders/commands>';
+                } else if (selectedCommand === 'SET COMMENT BEGIN') {
+                    commandBody = qs('#set-comment-begin-text')?.value || '<long comment text>';
+                }
             }
         }
+        // For commands not in commandsWithBodyInput and not ORDERS/MANUAL, commandBody remains empty.
+        // commandString will hold the generated command.
 
         // Construct final output
         let finalOutput = commandString;
-        if (commandBody && commandsWithBodyInput.includes(selectedCommand)) {
+        // Append commandBody if it exists (for ORDERS or commandsWithBodyInput)
+        if (commandBody) {
             if (finalOutput.length > 0 && !finalOutput.endsWith('\n')) {
                 finalOutput += '\n';
             }
             finalOutput += commandBody;
-        } else if (!commandString && (selectedCommand === 'ORDERS' || selectedCommand === 'MANUAL')) {
-             finalOutput = commandBody; // Body is the whole command
         }
+
 
         // Only update if the generated text is different from current text,
         // to avoid cursor jumping during manual edits in body section.
+        // Also, if selectedCommand is empty but it's not ORDERS, we might have returned early.
+        // If selectedCommand is empty AND it IS orders (because a unit is selected), we proceed.
         if (generatedCommandTextarea.value !== finalOutput) {
-             const cursorPos = generatedCommandTextarea.selectionStart;
-             const oldLength = generatedCommandTextarea.value.length;
-             generatedCommandTextarea.value = finalOutput;
-             // Try to restore cursor position intelligently
-             try {
-                 // If cursor was at the end, keep it at the end
-                 if (cursorPos === oldLength) {
-                     generatedCommandTextarea.setSelectionRange(finalOutput.length, finalOutput.length);
-                 }
-                 // If cursor was within the text, try to keep it there
-                 else if (cursorPos <= finalOutput.length) {
-                     generatedCommandTextarea.setSelectionRange(cursorPos, cursorPos);
-                 }
-                 // Otherwise, default to end
-                 else {
-                      generatedCommandTextarea.setSelectionRange(finalOutput.length, finalOutput.length);
-                 }
-             } catch (e) {
-                 console.warn("Could not restore cursor position:", e);
-                 // Fallback: place cursor at the end
-                 generatedCommandTextarea.setSelectionRange(finalOutput.length, finalOutput.length);
-             }
+            const cursorPos = generatedCommandTextarea.selectionStart;
+            const oldLength = generatedCommandTextarea.value.length;
+            generatedCommandTextarea.value = finalOutput;
+            try {
+                if (cursorPos === oldLength) {
+                    generatedCommandTextarea.setSelectionRange(finalOutput.length, finalOutput.length);
+                } else if (cursorPos <= finalOutput.length) {
+                    generatedCommandTextarea.setSelectionRange(cursorPos, cursorPos);
+                } else {
+                    generatedCommandTextarea.setSelectionRange(finalOutput.length, finalOutput.length);
+                }
+            } catch (e) {
+                console.warn("Could not restore cursor position:", e);
+                generatedCommandTextarea.setSelectionRange(finalOutput.length, finalOutput.length);
+            }
         }
     }
 
@@ -1841,11 +1834,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Pass gameData to this function
     function buildCommandStringFromOptions(selectedCommand, gameData) {
         let commandString = selectedCommand;
-        // Use safe query selector helper 'qs' and 'qsa' defined above
-        const val = (selector, defaultValue = '') => qs(selector)?.value.trim() || defaultValue;
-        const checked = (selector) => qs(selector)?.checked || false;
-        // const radioVal = ... (Moved to DOMContentLoaded scope)
-        const rawVal = (selector, defaultValue = '') => qs(selector)?.value || defaultValue; // Don't trim passwords
+        // Helpers val, rawVal, checked are now in DOMContentLoaded scope
         const getCheckedValues = (name) => Array.from(qsa(`input[name="${name}"]:checked`)).map(el => el.value);
 
         switch (selectedCommand) {
@@ -2501,7 +2490,84 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // --- Helper functions for dynamic command options ---
+
+    // --- Helper function to build a single order string from UI fields ---
+    function buildSingleOrderStringFromUI(gameData, currentTextareaValue) {
+        const unitSelect = qs('#order-unit-select');
+        // If no unit is selected in the dropdown, return the current textarea value
+        // to allow manual typing and not wipe it out.
+        if (!unitSelect || !unitSelect.value) {
+            return currentTextareaValue;
+        }
+
+        const selectedUnitFull = unitSelect.value; // e.g., "A PAR"
+        const [unitType, unitLocation] = selectedUnitFull.split(' ');
+
+        const orderTypeRadioName = `order-type-${unitLocation}`;
+        const selectedOrderTypeFull = radioVal(orderTypeRadioName); // radioVal is in DOMContentLoaded scope
+
+        if (!selectedOrderTypeFull) {
+            // If no order type (Hold, Move etc.) is selected for the unit,
+            // represent as incomplete or return current text.
+            // For now, let's indicate it's for this unit but incomplete.
+            // Or, to be less intrusive if user is mid-typing other orders: return currentTextareaValue;
+            return `${unitType} ${unitLocation} ...`;
+        }
+
+        const typeParts = selectedOrderTypeFull.split('-'); // e.g., "order-type-move-PAR" -> ["order", "type", "move", "PAR"]
+        const orderActionType = typeParts[2]; // "move", "hold", "support", "convoy"
+
+        let command = `${unitType} ${unitLocation}`;
+
+        switch (orderActionType) {
+            case 'hold':
+                command += ' H';
+                break;
+            case 'move':
+                const dest = val(`#order-move-dest-${unitLocation}`); // val is now in DOMContentLoaded scope
+                const coast = val(`#order-move-coast-${unitLocation}`);
+                const convoyRoute = val(`#order-convoy-route-${unitLocation}`); // VIA part
+
+                if (!dest) return `${command} - ...`; // Incomplete move
+
+                command += ` - ${dest.toUpperCase()}`;
+                if (coast) {
+                    command += coast.startsWith('/') ? coast.toUpperCase() : `/${coast.toUpperCase()}`;
+                }
+                if (convoyRoute) {
+                    command += ` VIA ${convoyRoute.toUpperCase()}`;
+                }
+                break;
+            case 'support':
+                const supportTargetUnit = val(`#order-support-target-unit-${unitLocation}`);
+                let supportTargetAction = val(`#order-support-target-action-${unitLocation}`);
+
+                if (!supportTargetUnit) return `${command} S ...`; // Incomplete support
+
+                command += ` S ${supportTargetUnit.toUpperCase()}`;
+                if (supportTargetAction) {
+                    // Ensure action like "- PROV" or "H" is uppercase
+                    command += ` ${supportTargetAction.toUpperCase()}`;
+                } else {
+                    command += ' H'; // Default to support hold if action field is empty
+                }
+                break;
+            case 'convoy':
+                const convoyArmy = val(`#order-convoy-army-${unitLocation}`);
+                const convoyDest = val(`#order-convoy-dest-${unitLocation}`);
+
+                if (!convoyArmy || !convoyDest) return `${command} C ...`; // Incomplete convoy
+
+                command += ` C ${convoyArmy.toUpperCase()} - ${convoyDest.toUpperCase()}`;
+                break;
+            default:
+                // Unknown order type, should not happen if radios are set up correctly
+                return `${unitType} ${unitLocation} ...`;
+        }
+        return command;
+    }
+
+    // --- Helper functions for dynamic command options (PRESS, ORDERS UI) ---
     function handlePressDeliveryChange() {
         const deliveryType = radioVal('press-delivery');
         const powerListDiv = qs('#press-powerlist-div');
