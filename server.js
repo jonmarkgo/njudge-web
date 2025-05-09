@@ -1,3 +1,4 @@
+
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
@@ -521,7 +522,7 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
         currentPhase: 'Unknown', nextDeadline: null, players: [], masters: [],
         observers: [], settings: {}, rawListOutput: output,
         lastUpdated: Math.floor(Date.now() / 1000),
-        units: [], supplyCenters: []
+        units: [], supplyCenters: [] // Ensure these are initialized
     };
     const lines = output.split('\n');
     let currentSection = 'header';
@@ -535,25 +536,27 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
     const masterLineRegex = /^\s*(?:Master|Moderator)\s+\d+\s+([\w.-]+@[\w.-]+\.\w+).*$/i;
     const observerLineRegex = /^\s*Observer\s*:\s*([\w.-]+@[\w.-]+\.\w+).*$/i;
     const statusRegex = /Game status:\s*(.*)/i;
-    const settingsHeaderRegex = /The parameters for .*? are as follows:|Game settings:/i;
+    const settingsHeaderRegex = /The parameters for .*? are as follows:|Game settings:|flags:/i; // Added "flags:"
     const pressSettingRegex = /Press:\s*(.*?)(?:,|\s*$)/i;
     const diasSettingRegex = /\b(NoDIAS|DIAS)\b/i;
     const nmrSettingRegex = /\b(NMR|NoNMR)\b/i;
     const concessionSettingRegex = /\b(Concessions|No Concessions)\b/i;
     const emailRegex = /[\w.-]+@[\w.-]+\.\w+/;
+    // Updated unitHeaderRegex and unitLineRegex to include G and W
     const unitHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s*$/i;
-    const unitLineRegex = /^\s+(A|F|W|R|G)\s+([A-Z]{3}(?:\/[NESW]C)?)\s*(?:\(([^)]+)\))?/i; // Assumes abbr in LIST output
+    const unitLineRegex = /^\s+(A|F|W|G|R)\s+([A-Z]{3}(?:\/[NESW]C)?)\s*(?:\(([^)]+)\))?/i; // Added G, W, R
     const scHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous)\s+\(\d+\):\s*$/i;
     const directUnitLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s+(Army|Fleet|Garrison|Wing|Artillery)\s+(.+)\.\s*$/i;
     const citiesControlledHeaderRegex = /^Cities Controlled:/i;
     const playerListHeader = "The following players are signed up for game";
+    const flagsLineRegex = /^flags:\s*(.*)/i; // For Machiavelli flags
 
     lines.forEach(line => {
         const trimmedLine = line.trim();
         let match;
 
         if (trimmedLine.startsWith(playerListHeader)) { currentSection = 'players'; return; }
-        if (settingsHeaderRegex.test(trimmedLine)) { currentSection = 'settings'; return; }
+        if (settingsHeaderRegex.test(trimmedLine)) { currentSection = 'settings'; } // Don't return, process flags line
         match = trimmedLine.match(unitHeaderRegex); if (match) { currentSection = 'units'; currentPowerForUnits = match[1]; return; }
         match = trimmedLine.match(scHeaderRegex); if (match) { currentSection = 'scs'; currentPowerForSCs = match[1]; return; }
         if (citiesControlledHeaderRegex.test(trimmedLine)) { currentSection = 'cities_controlled'; return; }
@@ -563,7 +566,10 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
         if (match) {
             const power = match[1]; const unitTypeFull = match[2];
             let unitTypeChar = unitTypeFull.charAt(0).toUpperCase();
-            if (unitTypeFull.toUpperCase() === 'ARTILLERY') unitTypeChar = 'R'; // Handle specific type for Artillery
+            if (unitTypeFull.toUpperCase() === 'ARTILLERY') unitTypeChar = 'R';
+            else if (unitTypeFull.toUpperCase() === 'GARRISON') unitTypeChar = 'G';
+            else if (unitTypeFull.toUpperCase() === 'WING') unitTypeChar = 'W';
+
 
             const locationName = match[3].trim();
             let locationAbbr = locationName.toUpperCase().substring(0,3); // Default fallback
@@ -587,7 +593,7 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
                 match = line.match(explicitDeadlineRegex); if (match) { gameState.currentPhase = match[1].trim().toUpperCase(); gameState.nextDeadline = match[2].trim(); if (gameState.status === 'Unknown' || gameState.status === 'Forming') gameState.status = 'Active'; break; }
                 match = line.match(activeStatusLineRegex); if (match) { const [, phaseTypeStr, seasonStr, year] = match; let seasonCode = 'S'; if (seasonStr.toLowerCase() === 'fall') seasonCode = 'F'; else if (seasonStr.toLowerCase() === 'winter') seasonCode = 'W'; else if (seasonStr.toLowerCase() === 'summer') seasonCode = 'U'; let phaseCode = 'M'; if (phaseTypeStr.toLowerCase() === 'retreat') phaseCode = 'R'; else if (phaseTypeStr.toLowerCase() === 'adjustment' || phaseTypeStr.toLowerCase() === 'builds') phaseCode = 'A'; gameState.currentPhase = `${seasonCode}${year}${phaseCode}`; gameState.status = 'Active'; break; }
                 match = line.match(statusRegex); if (match) { const explicitStatus = match[1].trim(); if (explicitStatus !== 'Active' || gameState.status === 'Unknown') gameState.status = explicitStatus; break; }
-                match = line.match(variantRegex); if (match) { gameState.variant = match[1].trim(); const optionsStr = match[2].replace(/,/g, ' ').trim(); gameState.options = optionsStr.split(/\s+/).filter(opt => opt && opt !== 'Variant:'); if (gameState.options.includes('Gunboat')) gameState.settings.gunboat = true; if (gameState.options.includes('NMR')) gameState.settings.nmr = true; else gameState.settings.nmr = false; if (gameState.options.includes('Chaos')) gameState.settings.chaos = true; break; }
+                match = line.match(variantRegex); if (match) { gameState.variant = match[1].trim(); const optionsStr = match[2].replace(/,/g, ' ').trim(); gameState.options = optionsStr.split(/\s+/).filter(opt => opt && opt !== 'Variant:'); if (gameState.options.includes('Gunboat')) gameState.settings.gunboat = true; if (gameState.options.includes('NMR')) gameState.settings.nmr = true; else gameState.settings.nmr = false; if (gameState.options.includes('Chaos')) gameState.settings.chaos = true; if (gameState.variant.toLowerCase().includes('machiavelli')) gameState.settings.isMachiavelli = true; break; }
                 break;
             case 'players':
                 const playerMatch = line.match(playerLineRegex); const masterMatch = line.match(masterLineRegex); const observerMatch = line.match(observerLineRegex);
@@ -604,6 +610,39 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
                 if (line.toLowerCase().includes('partial allowed')) gameState.settings.partialPress = true; if (line.toLowerCase().includes('no partial')) gameState.settings.partialPress = false;
                 if (line.toLowerCase().includes('observer any')) gameState.settings.observerPress = 'any'; if (line.toLowerCase().includes('observer white')) gameState.settings.observerPress = 'white'; if (line.toLowerCase().includes('observer none')) gameState.settings.observerPress = 'none';
                 if (line.toLowerCase().includes('strict convoy')) gameState.settings.strictConvoy = true; if (line.toLowerCase().includes('strict wait')) gameState.settings.strictWait = true; if (line.toLowerCase().includes('strict grace')) gameState.settings.strictGrace = true;
+
+                // Parse Machiavelli flags
+                const flagsMatch = trimmedLine.match(flagsLineRegex);
+                if (flagsMatch) {
+                    const flagsString = flagsMatch[1];
+                    const flagsArray = flagsString.split(/\s+/);
+                    flagsArray.forEach(flag => {
+                        if (flag.startsWith('no')) {
+                            gameState.settings[flag.substring(2)] = false;
+                        } else if (flag.includes(':')) { // e.g., transform:MOVE:HOMECENTRE,BUILD:ANYWHERE
+                            const [key, ...values] = flag.split(':');
+                            if (key === 'transform') {
+                                gameState.settings.transform = {};
+                                values.join(':').split(',').forEach(tv => {
+                                    const [tWhen, tWhere] = tv.split(':');
+                                    if (tWhen && tWhere) {
+                                        gameState.settings.transform[tWhen.toLowerCase()] = tWhere;
+                                    } else if (tWhen) { // e.g. SET TRANSFORM MOVE (defaults to HOMECENTRE)
+                                        gameState.settings.transform[tWhen.toLowerCase()] = 'HOMECENTRE';
+                                    }
+                                });
+                            } else {
+                                gameState.settings[key] = values.join(':'); // Store as string if not 'transform'
+                            }
+                        } else {
+                            gameState.settings[flag] = true;
+                        }
+                    });
+                    if (gameState.settings.mach2 === undefined && (gameState.variant?.toLowerCase().includes('machiavelli') || gameState.settings.isMachiavelli)) {
+                         // If it's a Machiavelli game and mach2 flag isn't explicitly set, assume Mach1 (mach2=false)
+                         if (gameState.settings.mach2 !== false) gameState.settings.mach2 = false;
+                    }
+                }
                 break;
             case 'units':
                 if (!currentPowerForUnits) break;
@@ -669,6 +708,7 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
         if (gameState.currentPhase.toUpperCase() === 'FORMING') gameState.status = 'Forming';
         else gameState.status = 'Active';
     }
+    // Default settings if not found in flags
     if (gameState.settings.nmr === undefined) gameState.settings.nmr = false;
     if (gameState.settings.dias === undefined) gameState.settings.dias = true;
     if (gameState.settings.concessions === undefined) gameState.settings.concessions = true;
@@ -676,14 +716,22 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
     if (gameState.settings.press === undefined) gameState.settings.press = 'White';
     if (gameState.settings.partialPress === undefined) gameState.settings.partialPress = true;
     if (gameState.settings.observerPress === undefined) gameState.settings.observerPress = 'any';
+    if (gameState.variant?.toLowerCase().includes('machiavelli') && gameState.settings.isMachiavelli === undefined) {
+        gameState.settings.isMachiavelli = true;
+    }
+    if (gameState.settings.isMachiavelli && gameState.settings.mach2 === undefined) {
+        gameState.settings.mach2 = false; // Default to Mach1 if Machiavelli variant
+    }
+
+
     return gameState;
 };
 
 // --- Command Recommendation Logic ---
 const getRecommendedCommands = (gameState, userEmail) => {
-    // console.log(`[getRecommendedCommands] Generating for user: ${userEmail}, Game State:`, gameState ? { name: gameState.name, status: gameState.status, phase: gameState.currentPhase, masters: gameState.masters } : null);
+    // console.log(`[getRecommendedCommands] Generating for user: ${userEmail}, Game State:`, gameState ? { name: gameState.name, status: gameState.status, phase: gameState.currentPhase, masters: gameState.masters, settings: gameState.settings } : null);
 
-    const recommendations = { recommended: [], playerActions: [], settings: [], gameInfo: [], master: [], general: [] };
+    const recommendations = { recommended: [], playerActions: [], settings: [], gameInfo: [], master: [], general: [], machiavelli: [] };
     const generalCmds = ['GET', 'HELP', 'VERSION', 'WHOIS', 'LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'MAP', 'GET DEDICATION', 'INFO PLAYER', 'MANUAL'];
     const playerAccountCmds = ['REGISTER', 'I AM ALSO', 'SET PASSWORD', 'SET ADDRESS'];
     const joiningCmds = ['CREATE ?', 'SIGN ON ?', 'SIGN ON ?game', 'SIGN ON power', 'OBSERVE', 'WATCH'];
@@ -704,21 +752,22 @@ const getRecommendedCommands = (gameState, userEmail) => {
         'SET NOT APPROVE', 'SET BLANK PRESS', 'SET BROADCAST', 'SET NORMAL BROADCAST', 'SET NO FAKE', 'SET GREY',
         'SET NO WHITE', 'SET GREY/WHITE', 'SET LATE PRESS', 'SET MINOR PRESS', 'SET MUST ORDER', 'SET NO PRESS',
         'SET NONE', 'SET OBSERVER', 'SET PARTIAL', 'SET PARTIAL FAKES BROADCAST', 'SET PARTIAL MAY', 'SET POSTAL PRESS',
-        'SET WHITE', 'SET WHITE/GREY', 'SET VARIANT', 'SET NOT VARIANT', 'SET ANY CENTER', 'SET ANY DISBAND',
-        'SET ATTACK TRANSFORM', 'SET AUTO DISBAND', 'SET BCENTERS', 'SET BLANK BOARD', 'SET EMPTY BOARD', 'SET CENTERS',
-        'SET COASTAL CONVOYS', 'SET DISBAND', 'SET DUALITY', 'SET GATEWAYS', 'SET HOME CENTER', 'SET HONG KONG',
-        'SET NORMAL DISBAND', 'SET ONE CENTER', 'SET PLAYERS', 'SET PORTAGE', 'SET POWERS', 'SET PROXY', 'SET RAILWAYS',
-        'SET REVEAL', 'SET SECRET', 'SET SHOW', 'SET SUMMER', 'SET TOUCH PRESS', 'SET TRANSFORM', 'SET TRAFO',
-        'SET ADJACENT', 'SET ADJACENCY', 'SET ASSASSINS', 'SET ASSASSINATION', 'SET BANK', 'SET BANKERS', 'SET LOANS',
-        'SET DICE', 'SET FAMINE', 'SET FORT', 'SET FORTRESS', 'SET GARRISON', 'SET MACH2', 'SET MONEY', 'SET PLAGUE',
-        'SET SPECIAL', 'SET STORM'
+        'SET WHITE', 'SET WHITE/GREY', 'SET VARIANT', 'SET NOT VARIANT',
+        // Machiavelli specific SET commands (for master)
+        'SET MACH2', 'SET SUMMER', 'SET MONEY', 'SET DICE', 'SET LOANS', 'SET BANK', 'SET BANKERS',
+        'SET FAMINE', 'SET PLAGUE', 'SET STORM', 'SET ASSASSINS', 'SET ASSASSINATION', 'SET GARRISONS',
+        'SET SPECIAL', 'SET FORTRESSES', 'SET FORTS', 'SET ADJACENCY', 'SET ADJACENT',
+        'SET COASTAL CONVOYS', 'SET DISBAND', 'SET TRANSFORM', 'SET ATTACKTRANSFORM'
     ];
+    const machiavelliPlayerCmds = ['BORROW', 'GIVE', 'PAY', 'ALLY', 'EXPENSE'];
+
 
     recommendations.general = [...generalCmds, ...playerAccountCmds];
     recommendations.gameInfo = [...joiningCmds];
     recommendations.playerActions = [...playerActionCmds];
     recommendations.settings = [...playerSettingCmds];
     recommendations.master = [...masterCmds];
+    recommendations.machiavelli = []; // Will be populated based on game settings
 
     if (!gameState || !userEmail) {
         recommendations.recommended = ['SIGN ON ?', 'SIGN ON ?game', 'SIGN ON power', 'OBSERVE', 'LIST', 'CREATE ?'];
@@ -732,6 +781,17 @@ const getRecommendedCommands = (gameState, userEmail) => {
         const playerStatus = myPlayerInfo?.status?.toUpperCase() || 'UNKNOWN';
         const isActivePlayer = userIsPlayer && !['CD', 'RESIGNED', 'ABANDONED', 'ELIMINATED'].includes(playerStatus);
 
+        // Machiavelli specific recommendations
+        if (gameState.settings?.isMachiavelli || gameState.variant?.toLowerCase().includes('machiavelli')) {
+            if (gameState.settings?.money) { // Check if money is enabled
+                recommendations.machiavelli.push(...machiavelliPlayerCmds);
+            }
+            // Add other Machiavelli commands to playerActions or settings if they fit better
+            // e.g., 'MAINTAIN' could be part of 'ORDERS' during adjustment.
+            // 'CONVERT', 'BESIEGE', 'LIFT SIEGE' are also part of 'ORDERS'.
+        }
+
+
         if (status === 'FORMING') {
             if (userIsPlayer) recommendations.recommended.push('SET PREFERENCE');
             else if (!userIsMaster && !userIsObserver) recommendations.recommended.push('SIGN ON ?game');
@@ -741,10 +801,16 @@ const getRecommendedCommands = (gameState, userEmail) => {
             if (isActivePlayer) {
                 if (phase.endsWith('M') || phase.endsWith('R') || phase.endsWith('B') || phase.endsWith('A')) recommendations.recommended.push('ORDERS');
                 if (gameState.settings?.press !== 'None') recommendations.recommended.push('PRESS', 'BROADCAST');
-                if (gameState.settings?.wait !== false) recommendations.recommended.push('SET WAIT');
+                if (gameState.settings?.wait !== false) recommendations.recommended.push('SET WAIT'); // Standard
                 if (gameState.settings?.dias !== false || gameState.settings?.dias === undefined) recommendations.recommended.push('SET DRAW');
                 if (gameState.settings?.concessions !== false) recommendations.recommended.push('SET CONCEDE');
                 recommendations.recommended.push('DIARY');
+
+                // Add Machiavelli active phase commands to recommended
+                if (recommendations.machiavelli.length > 0) {
+                    recommendations.recommended.push(...recommendations.machiavelli.filter(cmd => ['BORROW', 'GIVE', 'PAY', 'ALLY', 'EXPENSE'].includes(cmd)));
+                }
+
             } else if (userIsObserver && gameState.settings?.observerPress !== 'none' && gameState.settings?.press !== 'None') {
                  recommendations.recommended.push('PRESS', 'BROADCAST');
             } else if (!userIsPlayer && !userIsMaster && !userIsObserver) {
@@ -768,10 +834,10 @@ const getRecommendedCommands = (gameState, userEmail) => {
         if (userIsPlayer || userIsMaster || userIsObserver) recommendations.gameInfo = recommendations.gameInfo.filter(cmd => !joiningCmds.includes(cmd));
         recommendations.gameInfo.push('LIST', 'HISTORY', 'SUMMARY', 'WHOGAME');
         if (!userIsMaster) recommendations.master = [];
-        if (!userIsPlayer && !userIsObserver && !userIsMaster) { recommendations.playerActions = []; recommendations.settings = []; }
-        else if (userIsObserver && !userIsMaster) { recommendations.playerActions = recommendations.playerActions.filter(cmd => ['RESIGN', 'WITHDRAW', 'PRESS', 'BROADCAST'].includes(cmd)); recommendations.settings = []; }
+        if (!userIsPlayer && !userIsObserver && !userIsMaster) { recommendations.playerActions = []; recommendations.settings = []; recommendations.machiavelli = []; }
+        else if (userIsObserver && !userIsMaster) { recommendations.playerActions = recommendations.playerActions.filter(cmd => ['RESIGN', 'WITHDRAW', 'PRESS', 'BROADCAST'].includes(cmd)); recommendations.settings = []; recommendations.machiavelli = []; }
     }
-    if (!new Set([...recommendations.recommended, ...recommendations.playerActions, ...recommendations.settings, ...recommendations.gameInfo, ...recommendations.master, ...recommendations.general]).has('MANUAL')) {
+    if (!new Set([...recommendations.recommended, ...recommendations.playerActions, ...recommendations.settings, ...recommendations.gameInfo, ...recommendations.master, ...recommendations.general, ...recommendations.machiavelli]).has('MANUAL')) {
         recommendations.general.push('MANUAL');
     }
     const uniqueCommands = new Set();
@@ -990,7 +1056,7 @@ async function getMapData(gameName, phase) {
                 console.error(`[getMapData PNG Error] Unit coordinate data missing or invalid for province '${unitLocationAbbr}' (Unit: ${unit.type} ${unit.location} by ${unit.power}). UnitX: ${provinceData.unitX}, UnitY: ${provinceData.unitY}. Label coords: ${provinceData.labelX},${provinceData.labelY}. SC coords: ${provinceData.scX},${provinceData.scY}`);
                 coordinateError = true; return;
             }
-            const drawFunc = psDrawFunctions[unit.type] || 'DrawArmySymbol';
+            const drawFunc = psDrawFunctions[unit.type.toUpperCase()] || 'DrawArmySymbol'; // Ensure unit.type is uppercase
             const x = provinceData.unitX;
             const y = provinceData.unitY;
             const powerIndex = powerToIndexMap[unit.power.toUpperCase()];
@@ -1148,7 +1214,7 @@ app.get('/api/game/:gameName', requireEmail, async (req, res) => {
                 return res.status(404).json({ success: false, message: `Game '${gameName}' not found and live refresh failed. ${warningMessage}` });
             }
         }
-        
+
         res.json({ success: true, gameState: refreshedGameState, recommendedCommands, warning: warningMessage });
 
     } catch (outerErr) {
@@ -1163,7 +1229,7 @@ app.get('/api/news', async (req, res) => { try { const newsItems = await getAllN
 app.post('/api/news', requireAuth, async (req, res) => { const { content } = req.body; if (!content) return res.status(400).json({ success: false, message: "Missing 'content' in request body." }); try { const newNewsId = await addNewsItem(content); res.status(201).json({ success: true, message: "News item added successfully.", newsId: newNewsId }); } catch (err) { res.status(500).json({ success: false, message: err.message || "Failed to add news item." }); } });
 app.delete('/api/news/:id', requireAuth, async (req, res) => { const newsId = parseInt(req.params.id, 10); if (isNaN(newsId)) return res.status(400).json({ success: false, message: "Invalid news item ID." }); try { const deleted = await deleteNewsItem(newsId); if (deleted) res.json({ success: true, message: `News item ${newsId} deleted successfully.` }); else res.status(404).json({ success: false, message: `News item ${newsId} not found.` }); } catch (err) { res.status(500).json({ success: false, message: "Failed to delete news item." }); } });
 app.get('/dashboard', requireEmail, async (req, res) => { const email = req.session.email; let errorMessage = req.session.errorMessage || null; req.session.errorMessage = null; let registrationStatus = null; try { registrationStatus = await getUserRegistrationStatus(email); if (registrationStatus === null) { await ensureUserExists(email); registrationStatus = 0; } if (registrationStatus === 0) return res.redirect('/register'); const syncResult = await syncDipMaster(); if (syncResult.syncError && !errorMessage) errorMessage = syncResult.syncError; const allGameStates = await getAllGameStates(); const gameList = Object.values(allGameStates).map(g => ({ name: g.name, status: g.status })); const initialTargetGameName = req.cookies.targetGame; let initialGameState = null; let initialRecommendedCommands = {}; if (initialTargetGameName) { initialGameState = allGameStates[initialTargetGameName]; if (initialGameState) initialRecommendedCommands = getRecommendedCommands(initialGameState, email); else { res.clearCookie('targetGame'); res.clearCookie(`targetPassword_${initialTargetGameName}`); res.clearCookie(`targetVariant_${initialTargetGameName}`); } } if (!initialGameState) initialRecommendedCommands = getRecommendedCommands(null, email); res.render('dashboard', { email: email, allGames: gameList, initialTargetGame: initialGameState, initialRecommendedCommands: initialRecommendedCommands, error: errorMessage, layout: 'layout' }); } catch (err) { console.error(`[Dashboard Error] Failed to load dashboard data for ${email}:`, err); res.render('dashboard', { email: email, allGames: [], initialTargetGame: null, initialRecommendedCommands: getRecommendedCommands(null, email), error: `Error loading dashboard: ${err.message}`, layout: 'layout' }); } });
-app.post('/execute-dip', requireEmail, async (req, res) => { const { command, targetGame, targetPassword, targetVariant } = req.body; const email = req.session.email; if (!command) return res.status(400).json({ success: false, output: 'Error: Missing command.' }); const commandVerb = command.trim().split(/\s+/)[0].toUpperCase(); let actualTargetGame = targetGame; const commandParts = command.trim().split(/\s+/); const gameNameCommands = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'OBSERVE', 'WATCH', 'SIGN', 'CREATE', 'EJECT']; if (gameNameCommands.includes(commandVerb) && commandParts.length > 1) { let potentialGameName = commandParts[1]; if (commandVerb === 'SIGN' && command.toUpperCase().includes(' ON ') && !potentialGameName.startsWith('?')) { if (potentialGameName.length > 1 && /^[A-Z]$/i.test(potentialGameName[0])) potentialGameName = potentialGameName.substring(1); } else if ((commandVerb === 'SIGN' || commandVerb === 'CREATE') && potentialGameName.startsWith('?')) potentialGameName = potentialGameName.substring(1); else if (commandVerb === 'EJECT' && potentialGameName.includes('@')) potentialGameName = null; const keywords = ['FULL', 'FROM', 'TO', 'LINES', 'EXCLSTART', 'EXCLEND', 'BROAD', 'ON', '?', 'MASTER']; if (potentialGameName && /^[a-zA-Z0-9]{1,8}$/.test(potentialGameName) && !keywords.includes(potentialGameName.toUpperCase())) actualTargetGame = potentialGameName; } try { const result = await executeDipCommand(email, command, actualTargetGame, targetPassword, targetVariant); const stdoutData = result.stdout; let requiresGameRefresh = false; let isSignOnOrObserveSuccess = false; let newGameCreated = false; let signedOnGame = null; const signOnSuccessPattern = /signed on as (?:\w+)\s*(?:in game)?\s*'(\w+)'/i; const observeSuccessPattern = /(?:Observing|Watching) game '(\w+)'/i; const createSuccessPattern = /Game '(\w+)' created/i; let match; if ((match = stdoutData.match(signOnSuccessPattern)) && (commandVerb === 'SIGN' && command.toUpperCase().includes(' ON '))) { signedOnGame = match[1]; isSignOnOrObserveSuccess = true; } else if ((match = stdoutData.match(observeSuccessPattern)) && (commandVerb === 'OBSERVE' || commandVerb === 'WATCH')) { signedOnGame = match[1]; isSignOnOrObserveSuccess = true; } else if ((match = stdoutData.match(createSuccessPattern)) && commandVerb === 'CREATE') { signedOnGame = match[1]; isSignOnOrObserveSuccess = true; newGameCreated = true; syncDipMaster().catch(syncErr => console.error("Error during post-create sync:", syncErr)); } if (isSignOnOrObserveSuccess && signedOnGame) { actualTargetGame = signedOnGame; requiresGameRefresh = true; } const stateChangingCommands = ['PROCESS', 'SET', 'RESIGN', 'WITHDRAW', 'EJECT', 'TERMINATE', 'ROLLBACK', 'FORCE BEGIN', 'UNSTART', 'PROMOTE', 'PAUSE', 'RESUME', 'BECOME MASTER', 'SET MODERATE', 'SET UNMODERATE', 'CLEAR']; if (stateChangingCommands.includes(commandVerb) && result.success && actualTargetGame) { const outputLower = stdoutData.toLowerCase(); if (outputLower.includes('processed') || outputLower.includes('terminated') || outputLower.includes('resigned') || outputLower.includes('ejected') || outputLower.includes('rolled back') || outputLower.includes('set') || outputLower.includes('promoted') || outputLower.includes('paused') || outputLower.includes('resumed') || outputLower.includes('cleared') || outputLower.includes('moderated') || outputLower.includes('unmoderated')) requiresGameRefresh = true; } if (commandVerb === 'LIST' && result.success && actualTargetGame) requiresGameRefresh = true; let refreshedGameState = null; let updatedRecommendedCommands = null; if (requiresGameRefresh && actualTargetGame) { try { const { nameToAbbr } = await ensureMapDataParsed( (await getGameState(actualTargetGame))?.variant || 'Standard' ); const listResult = await executeDipCommand(email, `LIST ${actualTargetGame}`, actualTargetGame, targetPassword, targetVariant); if (listResult.success) { refreshedGameState = parseListOutput(actualTargetGame, listResult.stdout, nameToAbbr); await saveGameState(actualTargetGame, refreshedGameState); updatedRecommendedCommands = getRecommendedCommands(refreshedGameState, email); } } catch (refreshError) { console.error(`[Execute Refresh] Error during state refresh for ${actualTargetGame}:`, refreshError); } } res.json({ success: result.success, output: result.output, isSignOnOrObserveSuccess: isSignOnOrObserveSuccess, createdGameName: newGameCreated ? signedOnGame : null, refreshedGameState: refreshedGameState, updatedRecommendedCommands: updatedRecommendedCommands }); } catch (error) { console.error(`[Execute Error] Command "${commandVerb}" for ${email} failed:`, error); res.status(error.output?.includes('Spawn failed') ? 503 : 500).json({ success: false, output: error.output || 'Unknown execution error', isSignOnOrObserveSuccess: false }); } });
+app.post('/execute-dip', requireEmail, async (req, res) => { const { command, targetGame, targetPassword, targetVariant } = req.body; const email = req.session.email; if (!command) return res.status(400).json({ success: false, output: 'Error: Missing command.' }); const commandVerb = command.trim().split(/\s+/)[0].toUpperCase(); let actualTargetGame = targetGame; const commandParts = command.trim().split(/\s+/); const gameNameCommands = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'OBSERVE', 'WATCH', 'SIGN', 'CREATE', 'EJECT']; if (gameNameCommands.includes(commandVerb) && commandParts.length > 1) { let potentialGameName = commandParts[1]; if (commandVerb === 'SIGN' && command.toUpperCase().includes(' ON ') && !potentialGameName.startsWith('?')) { if (potentialGameName.length > 1 && /^[A-Z]$/i.test(potentialGameName[0])) potentialGameName = potentialGameName.substring(1); } else if ((commandVerb === 'SIGN' || commandVerb === 'CREATE') && potentialGameName.startsWith('?')) potentialGameName = potentialGameName.substring(1); else if (commandVerb === 'EJECT' && potentialGameName.includes('@')) potentialGameName = null; const keywords = ['FULL', 'FROM', 'TO', 'LINES', 'EXCLSTART', 'EXCLEND', 'BROAD', 'ON', '?', 'MASTER']; if (potentialGameName && /^[a-zA-Z0-9]{1,8}$/.test(potentialGameName) && !keywords.includes(potentialGameName.toUpperCase())) actualTargetGame = potentialGameName; } try { const result = await executeDipCommand(email, command, actualTargetGame, targetPassword, targetVariant); const stdoutData = result.stdout; let requiresGameRefresh = false; let isSignOnOrObserveSuccess = false; let newGameCreated = false; let signedOnGame = null; const signOnSuccessPattern = /signed on as (?:\w+)\s*(?:in game)?\s*'(\w+)'/i; const observeSuccessPattern = /(?:Observing|Watching) game '(\w+)'/i; const createSuccessPattern = /Game '(\w+)' created/i; let match; if ((match = stdoutData.match(signOnSuccessPattern)) && (commandVerb === 'SIGN' && command.toUpperCase().includes(' ON '))) { signedOnGame = match[1]; isSignOnOrObserveSuccess = true; } else if ((match = stdoutData.match(observeSuccessPattern)) && (commandVerb === 'OBSERVE' || commandVerb === 'WATCH')) { signedOnGame = match[1]; isSignOnOrObserveSuccess = true; } else if ((match = stdoutData.match(createSuccessPattern)) && commandVerb === 'CREATE') { signedOnGame = match[1]; isSignOnOrObserveSuccess = true; newGameCreated = true; syncDipMaster().catch(syncErr => console.error("Error during post-create sync:", syncErr)); } if (isSignOnOrObserveSuccess && signedOnGame) { actualTargetGame = signedOnGame; requiresGameRefresh = true; } const stateChangingCommands = ['PROCESS', 'SET', 'RESIGN', 'WITHDRAW', 'EJECT', 'TERMINATE', 'ROLLBACK', 'FORCE BEGIN', 'UNSTART', 'PROMOTE', 'PAUSE', 'RESUME', 'BECOME MASTER', 'SET MODERATE', 'SET UNMODERATE', 'CLEAR', 'BORROW', 'GIVE', 'PAY', 'ALLY', 'EXPENSE', 'ORDERS']; if (stateChangingCommands.includes(commandVerb) && result.success && actualTargetGame) { const outputLower = stdoutData.toLowerCase(); if (outputLower.includes('processed') || outputLower.includes('terminated') || outputLower.includes('resigned') || outputLower.includes('ejected') || outputLower.includes('rolled back') || outputLower.includes('set') || outputLower.includes('promoted') || outputLower.includes('paused') || outputLower.includes('resumed') || outputLower.includes('cleared') || outputLower.includes('moderated') || outputLower.includes('unmoderated') || outputLower.includes('accepted') || outputLower.includes('order received') || outputLower.includes('borrowed') || outputLower.includes('paid') || outputLower.includes('loaned') || outputLower.includes('allied') || outputLower.includes('expense recorded')) requiresGameRefresh = true; } if (commandVerb === 'LIST' && result.success && actualTargetGame) requiresGameRefresh = true; let refreshedGameState = null; let updatedRecommendedCommands = null; if (requiresGameRefresh && actualTargetGame) { try { const { nameToAbbr } = await ensureMapDataParsed( (await getGameState(actualTargetGame))?.variant || 'Standard' ); const listResult = await executeDipCommand(email, `LIST ${actualTargetGame}`, actualTargetGame, targetPassword, targetVariant); if (listResult.success) { refreshedGameState = parseListOutput(actualTargetGame, listResult.stdout, nameToAbbr); await saveGameState(actualTargetGame, refreshedGameState); updatedRecommendedCommands = getRecommendedCommands(refreshedGameState, email); } } catch (refreshError) { console.error(`[Execute Refresh] Error during state refresh for ${actualTargetGame}:`, refreshError); } } res.json({ success: result.success, output: result.output, isSignOnOrObserveSuccess: isSignOnOrObserveSuccess, createdGameName: newGameCreated ? signedOnGame : null, refreshedGameState: refreshedGameState, updatedRecommendedCommands: updatedRecommendedCommands }); } catch (error) { console.error(`[Execute Error] Command "${commandVerb}" for ${email} failed:`, error); res.status(error.output?.includes('Spawn failed') ? 503 : 500).json({ success: false, output: error.output || 'Unknown execution error', isSignOnOrObserveSuccess: false }); } });
 app.post('/api/games', requireAuth, async (req, res) => {
     const { gameName, variant, password } = req.body;
     const userEmail = req.session.email;
@@ -1225,11 +1291,11 @@ app.post('/api/games', requireAuth, async (req, res) => {
                     httpStatusCode = 400; // Treat as a general bad request/rejection from the judge
                 }
             }
-            
+
             console.error(`[API /api/games POST Error] Game creation failed for '${gameName}'. DIP Success: ${result.success}, Stdout Match: ${match ? `found '${match[1]}'` : 'no match'}, Expected Name: '${gameName}'. User Message: "${userMessage}". Full DIP output: ${result.output}`);
             res.status(httpStatusCode).json({ success: false, message: userMessage, output: result.output });
         }
-    } catch (error) {
+    } catch (error) { // This catch handles network errors or if the fetch itself fails (e.g., DNS resolution)
         // Log the caught error object
         console.error(`[API /api/games POST Exception] Error during game creation for '${gameName}':`, JSON.stringify(error, null, 2));
         // Determine status code based on the nature of the error from executeDipCommand

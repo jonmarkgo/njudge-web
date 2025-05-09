@@ -149,6 +149,7 @@ function updateGameStateSidebar(gameState) {
                 // Simple formatting for boolean/string/number
                 let displayValue = value;
                 if (typeof value === 'boolean') displayValue = value ? 'Yes' : 'No';
+                else if (typeof value === 'object' && value !== null) displayValue = JSON.stringify(value); // Display Machiavelli transform object
                 // Capitalize key
                 const displayKey = key.charAt(0).toUpperCase() + key.slice(1);
                 return `<li>${displayKey}: ${displayValue}</li>`;
@@ -546,6 +547,7 @@ function initializeTabSwitching() {
     switchTab('primary');
     console.log('Dashboard tab switching initialized.'); // Confirmation log
 }
+
 // --- DOM Ready ---
 document.addEventListener('DOMContentLoaded', () => {
     // --- Global Elements ---
@@ -631,11 +633,36 @@ document.addEventListener('DOMContentLoaded', () => {
         return `
             <div class="my-2">
                 <label for="${id}" class="${NJUDGE_LABEL_CLASS}">${label}${required ? '<span class="text-red-500">*</span>' : ''}</label>
-                <input type="${type}" id="${id}" name="${id}" class="${NJUDGE_INPUT_CLASS}" placeholder="${placeholder}" ${required ? 'required' : ''} value="${String(value).replace(/"/g, '"')}" ${attrsString}>
+                <input type="${type}" id="${id}" name="${id}" class="${NJUDGE_INPUT_CLASS}" placeholder="${placeholder}" ${required ? 'required' : ''} value="${String(value).replace(/"/g, '&quot;')}" ${attrsString}>
                 ${help ? `<p class="${NJUDGE_HELP_TEXT_CLASS}">${help}</p>` : ''}
             </div>`;
     };
-    const createRadio = (id, name, label, checked = false, help = '', value = id) => {
+    const createTextarea = (id, label, placeholder = '', required = false, rows = 3, help = '') => {
+         return `
+            <div class="my-2">
+                <label for="${id}" class="${NJUDGE_LABEL_CLASS}">${label}${required ? '<span class="text-red-500">*</span>' : ''}</label>
+                <textarea id="${id}" name="${id}" class="${NJUDGE_INPUT_CLASS} font-mono min-h-[${rows * 1.5}rem] resize-y" placeholder="${placeholder}" ${required ? 'required' : ''} rows="${rows}"></textarea>
+                ${help ? `<p class="${NJUDGE_HELP_TEXT_CLASS}">${help}</p>` : ''}
+            </div>`;
+    };
+    const createSelect = (id, label, options, required = false, help = '', multiple = false, size = 1) => {
+        const optionsHtml = options.map(opt => `<option value="${opt.value}" ${opt.selected ? 'selected' : ''} ${opt.disabled ? 'disabled' : ''}>${opt.text}</option>`).join('');
+        return `
+            <div class="my-2">
+                <label for="${id}" class="${NJUDGE_LABEL_CLASS}">${label}${required ? '<span class="text-red-500">*</span>' : ''}</label>
+                <select id="${id}" name="${id}" class="${NJUDGE_INPUT_CLASS}" ${required ? 'required' : ''} ${multiple ? 'multiple' : ''} size="${multiple ? Math.max(size, options.length, 3) : 1}">${optionsHtml}</select>
+                ${help ? `<p class="${NJUDGE_HELP_TEXT_CLASS}">${help}</p>` : ''}
+            </div>`;
+    };
+     const createCheckbox = (id, label, checked = false, help = '', value = 'true', name = id) => {
+         return `
+            <div class="flex items-center my-1">
+                <input type="checkbox" id="${id}" name="${name}" class="${NJUDGE_CHECKBOX_CLASS}" ${checked ? 'checked' : ''} value="${value}">
+                <label for="${id}" class="ml-1 text-sm font-medium text-gray-700">${label}</label>
+                ${help ? `<p class="${NJUDGE_HELP_TEXT_CLASS} ml-1">${help}</p>` : ''}
+            </div>`;
+     };
+     const createRadio = (id, name, label, checked = false, help = '', value = id) => { // Added value param
          return `
             <div class="flex items-center my-1">
                 <input type="radio" id="${id}" name="${name}" class="${NJUDGE_RADIO_CLASS}" ${checked ? 'checked' : ''} value="${value}">
@@ -643,6 +670,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 ${help ? `<p class="${NJUDGE_HELP_TEXT_CLASS} ml-1">${help}</p>` : ''}
             </div>`;
      };
+     const createPowerCheckboxes = (idPrefix, gameData, includeMaster = true, includeObservers = true) => {
+         let checkboxesHtml = `<div class="grid grid-cols-2 gap-x-2 gap-y-1 border p-2 rounded bg-gray-50">`;
+         if (gameData?.players) {
+             gameData.players.sort((a, b) => (a.power || '').localeCompare(b.power || '')).forEach(p => {
+                 const initial = p.power?.charAt(0).toUpperCase();
+                 if (initial) {
+                     checkboxesHtml += createCheckbox(`${idPrefix}-${initial}`, `${p.power} (${initial})`, false, '', initial, `${idPrefix}-power`);
+                 }
+             });
+         }
+         if (includeMaster) checkboxesHtml += createCheckbox(`${idPrefix}-M`, `Master (M)`, false, '', 'M', `${idPrefix}-power`);
+         if (includeObservers) checkboxesHtml += createCheckbox(`${idPrefix}-O`, `Observers (O)`, false, '', 'O', `${idPrefix}-power`);
+         checkboxesHtml += `</div>`;
+         return checkboxesHtml;
+     };
+     const createSeparator = () => '<hr class="my-3 border-gray-200">';
+     const createInfo = (text) => `<p class="text-sm text-gray-600 my-1">${text}</p>`;
+     const createWarning = (text) => `<p class="text-sm text-orange-600 my-1">${text}</p>`;
+     const createError = (text) => `<p class="text-sm text-red-600 my-1">${text}</p>`;
+
     // --- End Command Option Helper Functions ---
 
     // --- Initial Setup ---
@@ -1254,7 +1301,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Use fetched recommendations or a very basic default
         const commands = recommendedCommands || {
-             recommended: [], gameInfo: ['LIST'], playerActions: [], settings: [], general: ['HELP', 'VERSION', 'MANUAL'], master: []
+             recommended: [], gameInfo: ['LIST'], playerActions: [], settings: [], general: ['HELP', 'VERSION', 'MANUAL'], master: [], machiavelli: []
         };
 
         const addOptGroup = (label, commandList) => {
@@ -1280,10 +1327,14 @@ document.addEventListener('DOMContentLoaded', () => {
         // Add groups in a logical order
         addOptGroup('Recommended', commands.recommended);
         addOptGroup('Player Actions', commands.playerActions);
+        if (commands.machiavelli && commands.machiavelli.length > 0) { // Add Machiavelli group if present
+            addOptGroup('Machiavelli Actions', commands.machiavelli);
+        }
         addOptGroup('Settings & Future Orders', commands.settings);
         addOptGroup('Game Info', commands.gameInfo);
         addOptGroup('Master Only', commands.master);
         addOptGroup('General', commands.general);
+
 
         // Try to restore previous selection
         if (currentSelection && commandTypeSelect.querySelector(`option[value="${currentSelection}"]`)) {
@@ -1319,65 +1370,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const myPlayerInfo = gameData?.players?.find(p => p.email === currentUserEmail);
         const myPowerInitial = myPlayerInfo?.power?.charAt(0).toUpperCase();
         const myUnits = myPlayerInfo?.units || [];
+        const isMachiavelliGame = gameData?.settings?.isMachiavelli || gameData?.variant?.toLowerCase().includes('machiavelli');
+        const currentPhaseType = gameData?.currentPhase?.slice(-1).toUpperCase(); // M, R, A/B
 
-        // Helper to create form elements
-        const createInput = (id, type, label, placeholder = '', required = false, value = '', help = '', otherAttrs = {}) => {
-            let attrsString = '';
-            for (const [key, val] of Object.entries(otherAttrs)) {
-                attrsString += ` ${key}="${String(val).replace(/"/g, '&quot;')}"`; // Escape quotes in attributes
-            }
-            return `
-                <div class="my-2">
-                    <label for="${id}" class="${labelClass}">${label}${required ? '<span class="text-red-500">*</span>' : ''}</label>
-                    <input type="${type}" id="${id}" name="${id}" class="${inputClass}" placeholder="${placeholder}" ${required ? 'required' : ''} value="${String(value).replace(/"/g, '&quot;')}" ${attrsString}>
-                    ${help ? `<p class="${helpTextClass}">${help}</p>` : ''}
-                </div>`;
-        };
-        const createTextarea = (id, label, placeholder = '', required = false, rows = 3, help = '') => {
-             return `
-                <div class="my-2">
-                    <label for="${id}" class="${NJUDGE_LABEL_CLASS}">${label}${required ? '<span class="text-red-500">*</span>' : ''}</label>
-                    <textarea id="${id}" name="${id}" class="${NJUDGE_INPUT_CLASS} font-mono min-h-[${rows * 1.5}rem] resize-y" placeholder="${placeholder}" ${required ? 'required' : ''} rows="${rows}"></textarea>
-                    ${help ? `<p class="${NJUDGE_HELP_TEXT_CLASS}">${help}</p>` : ''}
-                </div>`;
-        };
-        const createSelect = (id, label, options, required = false, help = '', multiple = false, size = 1) => {
-            const optionsHtml = options.map(opt => `<option value="${opt.value}" ${opt.selected ? 'selected' : ''} ${opt.disabled ? 'disabled' : ''}>${opt.text}</option>`).join('');
-            return `
-                <div class="my-2">
-                    <label for="${id}" class="${NJUDGE_LABEL_CLASS}">${label}${required ? '<span class="text-red-500">*</span>' : ''}</label>
-                    <select id="${id}" name="${id}" class="${NJUDGE_INPUT_CLASS}" ${required ? 'required' : ''} ${multiple ? 'multiple' : ''} size="${multiple ? Math.max(size, options.length, 3) : 1}">${optionsHtml}</select>
-                    ${help ? `<p class="${NJUDGE_HELP_TEXT_CLASS}">${help}</p>` : ''}
-                </div>`;
-        };
-         const createCheckbox = (id, label, checked = false, help = '', value = 'true', name = id) => {
-             return `
-                <div class="flex items-center my-1">
-                    <input type="checkbox" id="${id}" name="${name}" class="${NJUDGE_CHECKBOX_CLASS}" ${checked ? 'checked' : ''} value="${value}">
-                    <label for="${id}" class="ml-1 text-sm font-medium text-gray-700">${label}</label>
-                    ${help ? `<p class="${NJUDGE_HELP_TEXT_CLASS} ml-1">${help}</p>` : ''}
-                </div>`;
-         };
-         // const createRadio = ... (Moved to DOMContentLoaded scope)
-         const createPowerCheckboxes = (idPrefix, gameData, includeMaster = true, includeObservers = true) => {
-             let checkboxesHtml = `<div class="grid grid-cols-2 gap-x-2 gap-y-1 border p-2 rounded bg-gray-50">`;
-             if (gameData?.players) {
-                 gameData.players.sort((a, b) => (a.power || '').localeCompare(b.power || '')).forEach(p => {
-                     const initial = p.power?.charAt(0).toUpperCase();
-                     if (initial) {
-                         checkboxesHtml += createCheckbox(`${idPrefix}-${initial}`, `${p.power} (${initial})`, false, '', initial, `${idPrefix}-power`);
-                     }
-                 });
-             }
-             if (includeMaster) checkboxesHtml += createCheckbox(`${idPrefix}-M`, `Master (M)`, false, '', 'M', `${idPrefix}-power`);
-             if (includeObservers) checkboxesHtml += createCheckbox(`${idPrefix}-O`, `Observers (O)`, false, '', 'O', `${idPrefix}-power`);
-             checkboxesHtml += `</div>`;
-             return checkboxesHtml;
-         };
-         const createSeparator = () => '<hr class="my-3 border-gray-200">';
-         const createInfo = (text) => `<p class="text-sm text-gray-600 my-1">${text}</p>`;
-         const createWarning = (text) => `<p class="text-sm text-orange-600 my-1">${text}</p>`;
-         const createError = (text) => `<p class="text-sm text-red-600 my-1">${text}</p>`;
+        // Helper to create form elements (using NJUDGE_ prefixed constants)
+        // createInput, createTextarea, createSelect, createCheckbox, createRadio, createPowerCheckboxes, createSeparator, createInfo, createWarning, createError
+        // These are already defined above in the global scope of DOMContentLoaded
 
         let content = '<div class="space-y-1">'; // Use tighter spacing for options
 
@@ -1403,6 +1401,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     {value: 'info.chaos', text: 'info.chaos'},
                     {value: 'info.machiavelli', text: 'info.machiavelli'},
                     {value: 'rules.machiavelli', text: 'rules.machiavelli'},
+                    {value: 'map.machiavelli', text: 'map.machiavelli'},
                 ], true);
                 break;
             case 'HELP':
@@ -1465,7 +1464,7 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'CREATE ?':
                  content += createInput('create-game-name', 'text', 'New Game Name', 'e.g., newgame', true, '', 'Max 8 alphanumeric chars.', {maxlength: 8});
                  content += createInput('create-password', 'password', 'Password', '', true);
-                 content += createInput('create-variant', 'text', 'Variant/Options (optional)', 'e.g., Chaos Gunboat', false, '', 'Separate multiple options with spaces.');
+                 content += createInput('create-variant', 'text', 'Variant/Options (optional)', 'e.g., Chaos Gunboat machiavelli', false, '', 'Separate multiple options with spaces.');
                  content += createCheckbox('create-become-master', 'Become Master?', false, 'Adds BECOME MASTER command.');
                  break;
             case 'SIGN ON ?':
@@ -1502,7 +1501,7 @@ document.addEventListener('DOMContentLoaded', () => {
                  generatedCommandTextarea.placeholder = "Select unit above or enter orders here...\ne.g., A PAR H\nF BRE - MAO";
                  // Add event listener to unit select
                  setTimeout(() => {
-                     qs('#order-unit-select')?.addEventListener('change', handleUnitOrderSelection);
+                     qs('#order-unit-select')?.addEventListener('change', () => handleUnitOrderSelection(gameData));
                  }, 0);
                  break;
             case 'PRESS': case 'BROADCAST':
@@ -1622,6 +1621,49 @@ document.addEventListener('DOMContentLoaded', () => {
                  generatedCommandTextarea.placeholder = "IF condition\n  Order1\nELSE\n  Order2\nENDIF";
                  break;
 
+            // --- Machiavelli Specific Player Commands ---
+            case 'BORROW':
+                if (!isMachiavelliGame || !gameData?.settings?.money) { content += createError('BORROW command only available in Machiavelli games with money enabled.'); break; }
+                content += createInput('borrow-amount', 'number', 'Amount (Ducats)', 'e.g., 10', true, '', '', {min: 1});
+                content += createSelect('borrow-duration', 'Duration', [
+                    {value: 'FOR 1 YEAR', text: 'For 1 Year (20% interest)'},
+                    {value: 'FOR 2 YEARS', text: 'For 2 Years (50% interest)'}
+                ], true);
+                break;
+            case 'GIVE': case 'PAY': // PAY is often used for "GIVE ... TO BANK"
+                if (!isMachiavelliGame || !gameData?.settings?.money) { content += createError(`${selectedCommand} command only available in Machiavelli games with money enabled.`); break; }
+                content += createInput('give-amount', 'number', 'Amount (Ducats)', 'e.g., 5', true, '', '', {min: 1});
+                content += createInput('give-recipient', 'text', 'Recipient (Power Name/Abbr or "BANK")', 'e.g., Milan or BANK', true);
+                content += createInfo('Use "GIVE <power_chit> TO <power>" for assassination chits.');
+                break;
+            case 'ALLY':
+                if (!isMachiavelliGame) { content += createError('ALLY command is typically for Machiavelli games (strait control).'); break; }
+                content += createInput('ally-power', 'text', 'Power to Ally/Unally', 'e.g., Naples', true);
+                content += createInfo('Use ALLY to allow passage, UNALLY to revoke.');
+                break;
+            case 'EXPENSE':
+                if (!isMachiavelliGame || !gameData?.settings?.money) { content += createError('EXPENSE command only available in Machiavelli games with money enabled.'); break; }
+                content += createSelect('expense-number', 'Expense #', [{value:1,text:'1'},{value:2,text:'2'},{value:3,text:'3'},{value:4,text:'4'}], true);
+                content += createInput('expense-amount', 'number', 'Amount (Ducats)', 'e.g., 12', true, '', '', {min:0});
+                content += createSelect('expense-type', 'Expense Type (etype)', [
+                    {value: '', text: '-- Select Type --'},
+                    {value: 'FAMINE RELIEF', text: 'Famine Relief (fr)'},
+                    {value: 'PACIFY REBELLION', text: 'Pacify Rebellion (pr)'},
+                    {value: 'COUNTER-BRIBE', text: 'Counter-Bribe (cb)'},
+                    {value: 'DISBAND', text: 'Disband Unit (d)'},
+                    {value: 'BUY', text: 'Buy Unit (b)'},
+                    {value: 'GARRISON TO AUTONOMOUS', text: 'Garrison to Autonomous (gta)'},
+                    {value: 'CAUSE REBELLION', text: 'Cause Rebellion (cr)'},
+                    {value: 'ASSASSINATE', text: 'Assassinate (a)'},
+                    {value: 'NONE', text: 'None (remove expense)'}
+                ], true);
+                content += `<div id="expense-details-area" class="mt-2 border-t pt-2 hidden"></div>`;
+                setTimeout(() => {
+                    qs('#expense-type')?.addEventListener('change', () => handleExpenseTypeChange(gameData));
+                    handleExpenseTypeChange(gameData); // Initial call
+                },0);
+                break;
+
             // --- Master Commands ---
              case 'BECOME MASTER':
                  content += createWarning('Master Only (usually used with CREATE).');
@@ -1697,7 +1739,7 @@ document.addEventListener('DOMContentLoaded', () => {
              // Example: SET VARIANT
              case 'SET VARIANT':
                  content += createWarning('Master Only (before game start).');
-                 content += createInput('set-variant-name', 'text', 'Variant/Option Name', 'e.g., Chaos or Gunboat', true);
+                 content += createInput('set-variant-name', 'text', 'Variant/Option Name', 'e.g., Chaos or Gunboat machiavelli', true);
                  break;
              case 'SET NOT VARIANT':
                   content += createWarning('Master Only (before game start).');
@@ -1717,36 +1759,23 @@ document.addEventListener('DOMContentLoaded', () => {
              case 'SET RETREAT': case 'SET ADJUST': case 'SET CONCESSIONS': case 'SET DIAS': case 'SET LIST':
              case 'SET PUBLIC': case 'SET PRIVATE': case 'SET AUTO PROCESS': case 'SET MANUAL PROCESS':
              case 'SET AUTO START': case 'SET MANUAL START': case 'SET RATED': case 'SET UNRATED':
-             case 'SET ANY CENTER': case 'SET ANY DISBAND': case 'SET ATTACK TRANSFORM': case 'SET AUTO DISBAND':
-             case 'SET BCENTERS': case 'SET BLANK BOARD': case 'SET EMPTY BOARD': case 'SET CENTERS':
-             case 'SET COASTAL CONVOYS': case 'SET DISBAND': case 'SET DUALITY': case 'SET GATEWAYS':
-             case 'SET HOME CENTER': case 'SET HONG KONG': case 'SET NORMAL DISBAND': case 'SET ONE CENTER':
-             case 'SET PLAYERS': case 'SET PORTAGE': case 'SET POWERS': case 'SET PROXY': case 'SET RAILWAYS':
-             case 'SET REVEAL': case 'SET SECRET': case 'SET SHOW': case 'SET SUMMER': case 'SET TOUCH PRESS':
-             case 'SET TRANSFORM': case 'SET TRAFO': case 'SET ADJACENT': case 'SET ADJACENCY':
-             case 'SET ASSASSINS': case 'SET ASSASSINATION': case 'SET BANK': case 'SET BANKERS': case 'SET LOANS':
-             case 'SET DICE': case 'SET FAMINE': case 'SET FORT': case 'SET FORTRESS': case 'SET GARRISON':
-             case 'SET MACH2': case 'SET MONEY': case 'SET PLAGUE': case 'SET SPECIAL': case 'SET STORM':
-                  // Generic handler for simple SET commands
+             // Machiavelli specific SET commands
+             case 'SET MACH2': case 'SET SUMMER': case 'SET MONEY': case 'SET DICE':
+             case 'SET LOANS': case 'SET BANK': case 'SET BANKERS':
+             case 'SET FAMINE': case 'SET PLAGUE': case 'SET STORM':
+             case 'SET ASSASSINS': case 'SET ASSASSINATION': case 'SET GARRISONS':
+             case 'SET SPECIAL': case 'SET FORTRESSES': case 'SET FORTS':
+             case 'SET ADJACENCY': case 'SET ADJACENT': case 'SET COASTAL CONVOYS': case 'SET DISBAND':
+             case 'SET ATTACKTRANSFORM':
                   content += createWarning('Master Only.');
                   content += createInfo(`Applies setting: ${selectedCommand}. Check docs for specific value requirements if any.`);
-                  // Add specific inputs for common SET commands
-                  if (selectedCommand === 'SET LEVEL') {
-                      content += createSelect('set-level-value', 'Level', [
-                          {value: 'ANY', text: 'ANY'}, {value: 'NOVICE', text: 'NOVICE'}, {value: 'AMATEUR', text: 'AMATEUR'},
-                          {value: 'INTERMEDIATE', text: 'INTERMEDIATE'}, {value: 'ADVANCED', text: 'ADVANCED'}, {value: 'EXPERT', text: 'EXPERT'}
-                      ], true);
-                  } else if (selectedCommand === 'SET OBSERVER') {
-                      content += createSelect('set-observer-value', 'Observer Press', [
-                          {value: 'ANY', text: 'ANY'}, {value: 'WHITE', text: 'WHITE'}, {value: 'NO', text: 'NO'}
-                      ], true);
-                  } else if (selectedCommand === 'SET MAX ABSENCE') {
-                      content += createInput('set-max-absence-value', 'number', 'Max Days (0-31)', '15', true, '15', '', {min: 0, max: 31});
-                  } else {
-                      content += createInfo(`Enter value directly in text area if needed (e.g., SET LEVEL EXPERT, SET MOVE NEXT 48).`);
-                  }
                   generatedCommandTextarea.value = selectedCommand + ' '; // Start with command
                   break;
+            case 'SET TRANSFORM':
+                content += createWarning('Master Only.');
+                content += createInfo('Example: SET TRANSFORM MOVE:HOMECENTRE BUILD:ANYWHERE or SET TRANSFORM NONE');
+                content += createInput('set-transform-value', 'text', 'Transform Setting', 'e.g., MOVE:ANYWHERE or NONE', true);
+                break;
 
 
             // --- Manual / Default ---
@@ -1804,7 +1833,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (selectedCommand === 'ORDERS') {
             commandString = ''; // No "ORDERS" prefix in the textarea
-            commandBody = buildSingleOrderStringFromUI(gameData, currentText);
+            commandBody = buildOrderLinesFromUI(gameData, currentText); // Use new helper for potentially multiple order lines
         } else if (selectedCommand === 'MANUAL') {
             commandString = '';
             commandBody = currentText; // Manual is purely user input
@@ -1892,6 +1921,9 @@ document.addEventListener('DOMContentLoaded', () => {
         let commandString = selectedCommand;
         // Helpers val, rawVal, checked are now in DOMContentLoaded scope
         const getCheckedValues = (name) => Array.from(qsa(`input[name="${name}"]:checked`)).map(el => el.value);
+        const isMachiavelliGame = gameData?.settings?.isMachiavelli || gameData?.variant?.toLowerCase().includes('machiavelli');
+        const currentPhaseType = gameData?.currentPhase?.slice(-1).toUpperCase();
+
 
         switch (selectedCommand) {
             // --- General / Info ---
@@ -1957,6 +1989,33 @@ document.addEventListener('DOMContentLoaded', () => {
              case 'PHASE': commandString = `PHASE ${val('#phase-season', '<Season>')} ${val('#phase-year', '<Year>')} ${val('#phase-type', '<Phase>')}`; break; // Body handled separately
              case 'IF': commandString = `IF ${rawVal('#if-condition', '<condition>')}`; break; // Body handled separately
 
+            // --- Machiavelli Specific Player Commands ---
+            case 'BORROW':
+                commandString = `BORROW ${val('#borrow-amount', '0')} DUCATS ${val('#borrow-duration', 'FOR 1 YEAR')}`;
+                break;
+            case 'GIVE': case 'PAY':
+                commandString = `${selectedCommand.toUpperCase()} ${val('#give-amount', '0')} DUCATS TO ${val('#give-recipient', '<RECIPIENT>')}`;
+                break;
+            case 'ALLY':
+                commandString = `ALLY ${val('#ally-power', '<POWER>')}`;
+                break;
+            case 'EXPENSE':
+                const expenseNum = val('#expense-number', '1');
+                const expenseAmt = val('#expense-amount', '0');
+                const expenseType = val('#expense-type', '<ETYPE>');
+                commandString = `EXPENSE ${expenseNum}: ${expenseAmt} DUCATS ${expenseType}`;
+                if (expenseType !== 'NONE' && expenseType !== 'ASSASSINATE' && expenseType !== 'FAMINE RELIEF' && expenseType !== 'PACIFY REBELLION') {
+                    const unitType = val('#expense-unit-type', '');
+                    const province = val('#expense-province', '<PROVINCE>');
+                    if (unitType) commandString += ` ${unitType.toUpperCase()}`;
+                    commandString += ` ${province.toUpperCase()}`;
+                } else if (expenseType === 'ASSASSINATE') {
+                    commandString += ` ${val('#expense-target-power', '<POWER>')}`;
+                } else if (expenseType === 'FAMINE RELIEF' || expenseType === 'PACIFY REBELLION') {
+                    commandString += ` ${val('#expense-province', '<PROVINCE>')}`;
+                }
+                break;
+
             // --- Master Commands ---
              case 'BECOME MASTER': case 'SET MODERATE': case 'SET UNMODERATE': case 'FORCE BEGIN': case 'PAUSE': case 'RESUME': case 'TERMINATE': case 'PREDICT': case 'UNSTART': commandString = selectedCommand; break;
              case 'BECOME': commandString = `BECOME ${val('#become-power', '<power>')}`; break; // Body handled separately
@@ -1991,18 +2050,19 @@ document.addEventListener('DOMContentLoaded', () => {
              case 'SET RETREAT': case 'SET ADJUST': case 'SET CONCESSIONS': case 'SET DIAS': case 'SET LIST':
              case 'SET PUBLIC': case 'SET PRIVATE': case 'SET AUTO PROCESS': case 'SET MANUAL PROCESS':
              case 'SET AUTO START': case 'SET MANUAL START': case 'SET RATED': case 'SET UNRATED':
-             case 'SET ANY CENTER': case 'SET ANY DISBAND': case 'SET ATTACK TRANSFORM': case 'SET AUTO DISBAND':
-             case 'SET BCENTERS': case 'SET BLANK BOARD': case 'SET EMPTY BOARD': case 'SET CENTERS':
-             case 'SET COASTAL CONVOYS': case 'SET DISBAND': case 'SET DUALITY': case 'SET GATEWAYS':
-             case 'SET HOME CENTER': case 'SET HONG KONG': case 'SET NORMAL DISBAND': case 'SET ONE CENTER':
-             case 'SET PLAYERS': case 'SET PORTAGE': case 'SET POWERS': case 'SET PROXY': case 'SET RAILWAYS':
-             case 'SET REVEAL': case 'SET SECRET': case 'SET SHOW': case 'SET SUMMER': case 'SET TOUCH PRESS':
-             case 'SET TRANSFORM': case 'SET TRAFO': case 'SET ADJACENT': case 'SET ADJACENCY':
-             case 'SET ASSASSINS': case 'SET ASSASSINATION': case 'SET BANK': case 'SET BANKERS': case 'SET LOANS':
-             case 'SET DICE': case 'SET FAMINE': case 'SET FORT': case 'SET FORTRESS': case 'SET GARRISON':
-             case 'SET MACH2': case 'SET MONEY': case 'SET PLAGUE': case 'SET SPECIAL': case 'SET STORM':
+             // Machiavelli specific SET commands
+             case 'SET MACH2': case 'SET SUMMER': case 'SET MONEY': case 'SET DICE':
+             case 'SET LOANS': case 'SET BANK': case 'SET BANKERS':
+             case 'SET FAMINE': case 'SET PLAGUE': case 'SET STORM':
+             case 'SET ASSASSINS': case 'SET ASSASSINATION': case 'SET GARRISONS':
+             case 'SET SPECIAL': case 'SET FORTRESSES': case 'SET FORTS':
+             case 'SET ADJACENCY': case 'SET ADJACENT': case 'SET COASTAL CONVOYS': case 'SET DISBAND':
+             case 'SET ATTACKTRANSFORM':
                   commandString = selectedCommand; // Simple SET command, value might be needed in text area
                   break;
+            case 'SET TRANSFORM':
+                commandString = `SET TRANSFORM ${val('#set-transform-value', 'NONE')}`;
+                break;
 
             // --- Manual ---
              case 'MANUAL': commandString = ''; break; // Body is handled separately
@@ -2548,80 +2608,151 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
     // --- Helper function to build a single order string from UI fields ---
+    // This function is now replaced by buildOrderLinesFromUI for multi-line orders
     function buildSingleOrderStringFromUI(gameData, currentTextareaValue) {
+        // This function can be kept for simple, single-line order generation if needed,
+        // or fully replaced by buildOrderLinesFromUI.
+        // For now, let's assume buildOrderLinesFromUI handles all order generation.
+        return buildOrderLinesFromUI(gameData, currentTextareaValue);
+    }
+
+    // --- Helper function to build potentially multiple order lines ---
+    function buildOrderLinesFromUI(gameData, currentTextareaValue) {
         const unitSelect = qs('#order-unit-select');
-        // If no unit is selected in the dropdown, return the current textarea value
-        // to allow manual typing and not wipe it out.
         if (!unitSelect || !unitSelect.value) {
+            // If no unit is selected, preserve manual input in textarea
             return currentTextareaValue;
         }
 
         const selectedUnitFull = unitSelect.value; // e.g., "A PAR"
         const [unitType, unitLocation] = selectedUnitFull.split(' ');
+        const isMachiavelliGame = gameData?.settings?.isMachiavelli || gameData?.variant?.toLowerCase().includes('machiavelli');
+        const currentPhaseType = gameData?.currentPhase?.slice(-1).toUpperCase(); // M, R, A/B
 
         const orderTypeRadioName = `order-type-${unitLocation}`;
-        const selectedOrderTypeFull = radioVal(orderTypeRadioName); // radioVal is in DOMContentLoaded scope
+        const selectedOrderTypeFull = radioVal(orderTypeRadioName);
 
         if (!selectedOrderTypeFull) {
-            // If no order type (Hold, Move etc.) is selected for the unit,
-            // represent as incomplete or return current text.
-            // For now, let's indicate it's for this unit but incomplete.
-            // Or, to be less intrusive if user is mid-typing other orders: return currentTextareaValue;
-            return `${unitType} ${unitLocation} ...`;
+            return `${unitType} ${unitLocation} ...`; // Incomplete
         }
 
-        const typeParts = selectedOrderTypeFull.split('-'); // e.g., "order-type-move-PAR" -> ["order", "type", "move", "PAR"]
-        const orderActionType = typeParts[2]; // "move", "hold", "support", "convoy"
+        const typeParts = selectedOrderTypeFull.split('-');
+        const orderActionType = typeParts[2]; // "move", "hold", "support", "convoy", "convert", "besiege", "lift", "transform"
 
         let command = `${unitType} ${unitLocation}`;
 
         switch (orderActionType) {
-            case 'hold':
-                command += ' H';
-                break;
+            case 'hold': command += ' H'; break;
             case 'move':
-                const dest = val(`#order-move-dest-${unitLocation}`); // val is now in DOMContentLoaded scope
+                const dest = val(`#order-move-dest-${unitLocation}`);
                 const coast = val(`#order-move-coast-${unitLocation}`);
-                const convoyRoute = val(`#order-convoy-route-${unitLocation}`); // VIA part
-
-                if (!dest) return `${command} - ...`; // Incomplete move
-
+                let convoyRoute = val(`#order-convoy-route-${unitLocation}`);
+                if (!dest) return `${command} - ...`;
                 command += ` - ${dest.toUpperCase()}`;
-                if (coast) {
-                    command += coast.startsWith('/') ? coast.toUpperCase() : `/${coast.toUpperCase()}`;
-                }
-                if (convoyRoute) {
-                    command += ` VIA ${convoyRoute.toUpperCase()}`;
+                if (coast) command += coast.startsWith('/') ? coast.toUpperCase() : `/${coast.toUpperCase()}`;
+                if (convoyRoute) { // For standard Dip and Machiavelli Army moves
+                    convoyRoute = convoyRoute.split('-').map(p => p.trim().toUpperCase()).join('-');
+                    command += `-${convoyRoute}`; // Append directly for A LON-NTH-NWY
                 }
                 break;
             case 'support':
                 const supportTargetUnit = val(`#order-support-target-unit-${unitLocation}`);
                 let supportTargetAction = val(`#order-support-target-action-${unitLocation}`);
-
-                if (!supportTargetUnit) return `${command} S ...`; // Incomplete support
-
+                if (!supportTargetUnit) return `${command} S ...`;
                 command += ` S ${supportTargetUnit.toUpperCase()}`;
-                if (supportTargetAction) {
-                    // Ensure action like "- PROV" or "H" is uppercase
-                    command += ` ${supportTargetAction.toUpperCase()}`;
-                } else {
-                    command += ' H'; // Default to support hold if action field is empty
-                }
+                if (supportTargetAction) command += ` ${supportTargetAction.toUpperCase()}`;
+                else command += ' H';
                 break;
-            case 'convoy':
+            case 'convoy': // Standard Dip and Machiavelli Fleet convoy
                 const convoyArmy = val(`#order-convoy-army-${unitLocation}`);
                 const convoyDest = val(`#order-convoy-dest-${unitLocation}`);
-
-                if (!convoyArmy || !convoyDest) return `${command} C ...`; // Incomplete convoy
-
+                if (!convoyArmy || !convoyDest) return `${command} C ...`;
                 command += ` C ${convoyArmy.toUpperCase()} - ${convoyDest.toUpperCase()}`;
                 break;
+            // Machiavelli specific order actions
+            case 'convert':
+                if (!isMachiavelliGame) return `${command} ... (Convert only in Machiavelli)`;
+                const convertToType = val(`#order-convert-to-type-${unitLocation}`);
+                const convertCoast = val(`#order-convert-coast-${unitLocation}`);
+                if (!convertToType) return `${command} C ...`;
+                command += ` C ${convertToType.toUpperCase()}`;
+                if (convertCoast) command += ` ${convertCoast.startsWith('/') ? convertCoast.toUpperCase() : `/${convertCoast.toUpperCase()}`}`;
+                break;
+            case 'besiege':
+                if (!isMachiavelliGame) return `${command} ... (Besiege only in Machiavelli)`;
+                command += ' B'; // Besiege implies target is the garrison in the current province
+                break;
+            case 'liftsiege': // Renamed from 'lift' to avoid conflict
+                if (!isMachiavelliGame) return `${command} ... (Lift Siege only in Machiavelli)`;
+                command += ' LS';
+                break;
+            case 'transform': // Movement phase transform
+                if (!isMachiavelliGame || !gameData?.settings?.transform?.move) return `${command} ... (Transform only if enabled)`;
+                const transformToType = val(`#order-transform-to-type-${unitLocation}`);
+                const transformCoast = val(`#order-transform-coast-${unitLocation}`);
+                if (!transformToType) return `${command} TRANSFORMS TO ...`;
+                command += ` TRANSFORMS TO ${transformToType.toUpperCase()}`;
+                if (transformCoast) command += ` ${transformCoast.startsWith('/') ? transformCoast.toUpperCase() : `/${transformCoast.toUpperCase()}`}`;
+                break;
+            // Adjustment phase orders for Machiavelli (Build, Remove, Maintain, Transform)
+            case 'build': // Machiavelli build (can be special unit)
+                if (!isMachiavelliGame || currentPhaseType !== 'A') return `BUILD ... (Build only in Machiavelli Adjustment)`;
+                const buildSpecialType = val(`#order-build-special-${unitLocation}`);
+                const buildUnitType = val(`#order-build-type-${unitLocation}`);
+                command = `BUILD`;
+                if (buildSpecialType) command += ` ${buildSpecialType.toUpperCase()}`;
+                command += ` ${buildUnitType.toUpperCase()} ${unitLocation.toUpperCase()}`;
+                // Coast might be needed if building a fleet in multi-coastal province
+                const buildCoast = val(`#order-build-coast-${unitLocation}`);
+                if (buildUnitType.toUpperCase() === 'F' && buildCoast) command += ` ${buildCoast.startsWith('/') ? buildCoast.toUpperCase() : `/${buildCoast.toUpperCase()}`}`;
+                break;
+            case 'remove': // Machiavelli remove
+                if (!isMachiavelliGame || currentPhaseType !== 'A') return `REMOVE ... (Remove only in Machiavelli Adjustment)`;
+                command = `REMOVE ${unitType.toUpperCase()} ${unitLocation.toUpperCase()}`;
+                break;
+            case 'maintain': // Machiavelli maintain
+                if (!isMachiavelliGame || currentPhaseType !== 'A') return `MAINTAIN ... (Maintain only in Machiavelli Adjustment)`;
+                command = `MAINTAIN ${unitType.toUpperCase()} ${unitLocation.toUpperCase()}`;
+                break;
+            case 'transformadj': // Adjustment phase transform
+                if (!isMachiavelliGame || currentPhaseType !== 'A' || !gameData?.settings?.transform?.build) return `TRANSFORM ... (Adj Transform only if enabled)`;
+                const adjTransformToType = val(`#order-adj-transform-to-type-${unitLocation}`);
+                const adjTransformCoast = val(`#order-adj-transform-coast-${unitLocation}`);
+                if (!adjTransformToType) return `TRANSFORM ...`;
+                command = `TRANSFORM ${adjTransformToType.toUpperCase()} ${unitLocation.toUpperCase()}`;
+                if (adjTransformCoast) command += ` ${adjTransformCoast.startsWith('/') ? adjTransformCoast.toUpperCase() : `/${adjTransformCoast.toUpperCase()}`}`;
+                break;
             default:
-                // Unknown order type, should not happen if radios are set up correctly
-                return `${unitType} ${unitLocation} ...`;
+                return `${unitType} ${unitLocation} ...`; // Unknown
         }
-        return command;
+
+        // For ORDERS, we want to replace only the line corresponding to the selected unit,
+        // or append if it's a new order for that unit.
+        const lines = currentTextareaValue.split('\n');
+        const unitOrderPrefix = `${unitType} ${unitLocation}`;
+        let orderFound = false;
+        const newLines = lines.map(line => {
+            if (line.trim().startsWith(unitOrderPrefix)) {
+                orderFound = true;
+                return command; // Replace existing order for this unit
+            }
+            return line;
+        });
+
+        if (!orderFound) {
+            // If it's a new order for this unit, and the last line isn't empty, add a newline.
+            if (newLines.length > 0 && newLines[newLines.length - 1].trim() !== "") {
+                newLines.push(command);
+            } else if (newLines.length > 0) { // Last line is empty or just whitespace
+                newLines[newLines.length -1] = command;
+            }
+            else { // Textarea was empty
+                newLines.push(command);
+            }
+        }
+        return newLines.join('\n');
     }
+
 
     // --- Helper functions for dynamic command options (PRESS, ORDERS UI) ---
     function handlePressDeliveryChange() {
@@ -2640,8 +2771,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function handleUnitOrderSelection() {
-        const selectedUnit = this.value;
+    function handleUnitOrderSelection(gameData) { // Pass gameData
+        const selectedUnit = qs('#order-unit-select').value;
         const detailsArea = qs('#order-details-area');
         if (!detailsArea) return;
 
@@ -2650,22 +2781,55 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (selectedUnit) {
             const [unitType, unitLocation] = selectedUnit.split(' ');
+            const isMachiavelliGame = gameData?.settings?.isMachiavelli || gameData?.variant?.toLowerCase().includes('machiavelli');
+            const currentPhaseType = gameData?.currentPhase?.slice(-1).toUpperCase(); // M, R, A/B
+
             let orderOptionsHtml = `<strong class="block mb-1">Order for ${unitType} ${unitLocation}:</strong>`;
             orderOptionsHtml += `<div class="flex flex-wrap gap-x-4 gap-y-1">`;
-            orderOptionsHtml += createRadio(`order-type-hold-${unitLocation}`, `order-type-${unitLocation}`, 'Hold', true);
-            orderOptionsHtml += createRadio(`order-type-move-${unitLocation}`, `order-type-${unitLocation}`, 'Move');
-            orderOptionsHtml += createRadio(`order-type-support-${unitLocation}`, `order-type-${unitLocation}`, 'Support');
-            if (unitType === 'F') { // Only fleets can convoy
-                orderOptionsHtml += createRadio(`order-type-convoy-${unitLocation}`, `order-type-${unitLocation}`, 'Convoy');
+
+            if (currentPhaseType === 'M' || currentPhaseType === 'S' || currentPhaseType === 'U' || currentPhaseType === 'F') { // Movement Phases (Spring, Summer, Fall)
+                orderOptionsHtml += createRadio(`order-type-hold-${unitLocation}`, `order-type-${unitLocation}`, 'Hold', true, '', `order-type-hold-${unitLocation}`);
+                orderOptionsHtml += createRadio(`order-type-move-${unitLocation}`, `order-type-${unitLocation}`, 'Move', false, '', `order-type-move-${unitLocation}`);
+                orderOptionsHtml += createRadio(`order-type-support-${unitLocation}`, `order-type-${unitLocation}`, 'Support', false, '', `order-type-support-${unitLocation}`);
+                if (unitType === 'F') {
+                    orderOptionsHtml += createRadio(`order-type-convoy-${unitLocation}`, `order-type-${unitLocation}`, 'Convoy', false, '', `order-type-convoy-${unitLocation}`);
+                }
+                if (isMachiavelliGame) {
+                    orderOptionsHtml += createRadio(`order-type-convert-${unitLocation}`, `order-type-${unitLocation}`, 'Convert', false, '', `order-type-convert-${unitLocation}`);
+                    orderOptionsHtml += createRadio(`order-type-besiege-${unitLocation}`, `order-type-${unitLocation}`, 'Besiege', false, '', `order-type-besiege-${unitLocation}`);
+                    orderOptionsHtml += createRadio(`order-type-liftsiege-${unitLocation}`, `order-type-${unitLocation}`, 'Lift Siege', false, '', `order-type-liftsiege-${unitLocation}`);
+                    if (gameData?.settings?.transform?.move) { // Check if movement phase transforms are allowed
+                        orderOptionsHtml += createRadio(`order-type-transform-${unitLocation}`, `order-type-${unitLocation}`, 'Transforms To', false, '', `order-type-transform-${unitLocation}`);
+                    }
+                }
+            } else if (currentPhaseType === 'R') { // Retreat Phase
+                orderOptionsHtml += createRadio(`order-type-move-${unitLocation}`, `order-type-${unitLocation}`, 'Retreat To', true, '', `order-type-move-${unitLocation}`); // 'move' action for retreat
+                orderOptionsHtml += createRadio(`order-type-disband-${unitLocation}`, `order-type-${unitLocation}`, 'Disband', false, '', `order-type-disband-${unitLocation}`);
+                if (isMachiavelliGame) { // Machiavelli retreat by conversion
+                     orderOptionsHtml += createRadio(`order-type-convert-${unitLocation}`, `order-type-${unitLocation}`, 'Convert to Garrison', false, '', `order-type-convert-${unitLocation}`);
+                }
+            } else if (currentPhaseType === 'A' || currentPhaseType === 'B') { // Adjustment/Build Phase
+                if (isMachiavelliGame) {
+                    orderOptionsHtml += createRadio(`order-type-maintain-${unitLocation}`, `order-type-${unitLocation}`, 'Maintain', true, '', `order-type-maintain-${unitLocation}`);
+                    orderOptionsHtml += createRadio(`order-type-remove-${unitLocation}`, `order-type-${unitLocation}`, 'Remove (Disband)', false, '', `order-type-remove-${unitLocation}`);
+                    if (gameData?.settings?.transform?.build) { // Check if build phase transforms are allowed
+                         orderOptionsHtml += createRadio(`order-type-transformadj-${unitLocation}`, `order-type-${unitLocation}`, 'Transform', false, '', `order-type-transformadj-${unitLocation}`);
+                    }
+                    // Build is handled separately as it's not tied to an existing unit from the dropdown
+                } else { // Standard Diplomacy Build/Remove
+                    orderOptionsHtml += createRadio(`order-type-remove-${unitLocation}`, `order-type-${unitLocation}`, 'Remove', false, '', `order-type-remove-${unitLocation}`);
+                    // Standard Build is not tied to a unit, so not here.
+                }
             }
-            // Add Transform if applicable? (Requires checking game settings)
             orderOptionsHtml += `</div>`;
 
-            // Add specific fields based on order type (initially hidden)
+            // Add specific fields based on order type (initially hidden or shown)
             orderOptionsHtml += `<div id="order-move-details-${unitLocation}" class="mt-2 hidden">`;
             orderOptionsHtml += createInput(`order-move-dest-${unitLocation}`, 'text', 'Destination Province', 'e.g., PAR', false, '', 'Enter 3-letter abbreviation.');
             orderOptionsHtml += createInput(`order-move-coast-${unitLocation}`, 'text', 'Coast (if needed)', 'e.g., NC, SC', false, '', 'Specify /NC, /SC etc.');
-            orderOptionsHtml += createInput(`order-convoy-route-${unitLocation}`, 'text', 'Convoy Route (if Move)', 'e.g., NTH-NWY', false, '', 'Enter intermediate sea zones like PROV1-PROV2-DEST.');
+            if (unitType === 'A' || (isMachiavelliGame && unitType === 'A')) { // Army move via convoy
+                 orderOptionsHtml += createInput(`order-convoy-route-${unitLocation}`, 'text', 'Convoy Route (Army)', 'e.g., NTH-NWY', false, '', 'Enter intermediate sea zones like PROV1-PROV2-DEST.');
+            }
             orderOptionsHtml += `</div>`;
 
             orderOptionsHtml += `<div id="order-support-details-${unitLocation}" class="mt-2 hidden">`;
@@ -2673,32 +2837,104 @@ document.addEventListener('DOMContentLoaded', () => {
             orderOptionsHtml += createInput(`order-support-target-action-${unitLocation}`, 'text', 'Action Being Supported (optional)', 'e.g., - PAR or H', false, '', 'Leave blank for Hold support.');
             orderOptionsHtml += `</div>`;
 
-            orderOptionsHtml += `<div id="order-convoy-details-${unitLocation}" class="mt-2 hidden">`;
-            orderOptionsHtml += createInput(`order-convoy-army-${unitLocation}`, 'text', 'Army Being Convoyed', 'e.g., A LON', false, '', 'Specify Type and Location.');
-            orderOptionsHtml += createInput(`order-convoy-dest-${unitLocation}`, 'text', 'Army Destination', 'e.g., NWY', false, '', 'Final destination province.');
-            orderOptionsHtml += `</div>`;
+            if (unitType === 'F') {
+                orderOptionsHtml += `<div id="order-convoy-details-${unitLocation}" class="mt-2 hidden">`;
+                orderOptionsHtml += createInput(`order-convoy-army-${unitLocation}`, 'text', 'Army Being Convoyed', 'e.g., A LON', false, '', 'Specify Type and Location.');
+                orderOptionsHtml += createInput(`order-convoy-dest-${unitLocation}`, 'text', 'Army Destination', 'e.g., NWY', false, '', 'Final destination province.');
+                orderOptionsHtml += `</div>`;
+            }
+            if (isMachiavelliGame) {
+                orderOptionsHtml += `<div id="order-convert-details-${unitLocation}" class="mt-2 hidden">`;
+                orderOptionsHtml += createSelect(`order-convert-to-type-${unitLocation}`, 'Convert To Type', [{value:'A',text:'Army (A)'},{value:'F',text:'Fleet (F)'},{value:'G',text:'Garrison (G)'},{value:'W',text:'Wing (W)'}], true);
+                orderOptionsHtml += createInput(`order-convert-coast-${unitLocation}`, 'text', 'Coast (if Fleet & multi-coastal)', 'e.g., /NC', false);
+                orderOptionsHtml += `</div>`;
+
+                if (gameData?.settings?.transform?.move) {
+                    orderOptionsHtml += `<div id="order-transform-details-${unitLocation}" class="mt-2 hidden">`;
+                    orderOptionsHtml += createSelect(`order-transform-to-type-${unitLocation}`, 'Transform To Type', [{value:'A',text:'Army (A)'},{value:'F',text:'Fleet (F)'},{value:'W',text:'Wing (W)'}], true); // Garrisons not transformed to in move phase
+                    orderOptionsHtml += createInput(`order-transform-coast-${unitLocation}`, 'text', 'Coast (if new type is Fleet & multi-coastal)', 'e.g., /NC', false);
+                    orderOptionsHtml += `</div>`;
+                }
+                if (currentPhaseType === 'A' || currentPhaseType === 'B') { // Adjustment phase specific for Machiavelli
+                    // Build is separate, not tied to existing unit from dropdown
+                    // For transform in adjustment:
+                    if (gameData?.settings?.transform?.build) {
+                        orderOptionsHtml += `<div id="order-adj-transform-details-${unitLocation}" class="mt-2 hidden">`;
+                        orderOptionsHtml += createSelect(`order-adj-transform-to-type-${unitLocation}`, 'Transform To Type', [{value:'A',text:'Army (A)'},{value:'F',text:'Fleet (F)'},{value:'W',text:'Wing (W)'}], true);
+                        orderOptionsHtml += createInput(`order-adj-transform-coast-${unitLocation}`, 'text', 'Coast (if new type is Fleet & multi-coastal)', 'e.g., /NC', false);
+                        orderOptionsHtml += `</div>`;
+                    }
+                }
+            }
+
 
             detailsArea.innerHTML = orderOptionsHtml;
 
             // Add listeners to the new radio buttons
             detailsArea.querySelectorAll(`input[name="order-type-${unitLocation}"]`).forEach(radio => {
-                radio.addEventListener('change', () => handleOrderTypeChange(unitLocation));
+                radio.addEventListener('change', () => handleOrderTypeChange(unitLocation, gameData));
             });
             // Add listeners to the new input fields to update the main command text
-             detailsArea.querySelectorAll('input').forEach(el => {
+             detailsArea.querySelectorAll('input, select').forEach(el => { // Include select
                  el.addEventListener('input', () => updateGeneratedCommandText(window.currentGameData));
+                 el.addEventListener('change', () => updateGeneratedCommandText(window.currentGameData)); // For selects
              });
-            handleOrderTypeChange(unitLocation); // Set initial visibility
+            handleOrderTypeChange(unitLocation, gameData); // Set initial visibility
         }
         updateGeneratedCommandText(window.currentGameData); // Update main text area
     }
 
-    function handleOrderTypeChange(unitLocation) {
-        const orderType = radioVal(`order-type-${unitLocation}`);
-        qs(`#order-move-details-${unitLocation}`)?.classList.toggle('hidden', orderType !== `order-type-move-${unitLocation}`);
-        qs(`#order-support-details-${unitLocation}`)?.classList.toggle('hidden', orderType !== `order-type-support-${unitLocation}`);
-        qs(`#order-convoy-details-${unitLocation}`)?.classList.toggle('hidden', orderType !== `order-type-convoy-${unitLocation}`);
+    function handleOrderTypeChange(unitLocation, gameData) { // Pass gameData
+        const orderTypeFull = radioVal(`order-type-${unitLocation}`);
+        if (!orderTypeFull) return;
+
+        const typeParts = orderTypeFull.split('-');
+        const orderAction = typeParts[2]; // "move", "hold", "support", etc.
+        const isMachiavelliGame = gameData?.settings?.isMachiavelli || gameData?.variant?.toLowerCase().includes('machiavelli');
+
+
+        qs(`#order-move-details-${unitLocation}`)?.classList.toggle('hidden', orderAction !== 'move');
+        qs(`#order-support-details-${unitLocation}`)?.classList.toggle('hidden', orderAction !== 'support');
+        qs(`#order-convoy-details-${unitLocation}`)?.classList.toggle('hidden', orderAction !== 'convoy');
+
+        if (isMachiavelliGame) {
+            qs(`#order-convert-details-${unitLocation}`)?.classList.toggle('hidden', orderAction !== 'convert');
+            qs(`#order-transform-details-${unitLocation}`)?.classList.toggle('hidden', orderAction !== 'transform');
+            qs(`#order-adj-transform-details-${unitLocation}`)?.classList.toggle('hidden', orderAction !== 'transformadj');
+        }
+
         updateGeneratedCommandText(window.currentGameData); // Update main text area
+    }
+
+    function handleExpenseTypeChange(gameData) {
+        const expenseType = val('#expense-type');
+        const detailsArea = qs('#expense-details-area');
+        if (!detailsArea) return;
+        detailsArea.innerHTML = ''; // Clear previous
+        detailsArea.classList.toggle('hidden', !expenseType || expenseType === 'NONE');
+
+        if (expenseType && expenseType !== 'NONE') {
+            let expenseDetailsHtml = '';
+            if (['COUNTER-BRIBE', 'DISBAND', 'BUY', 'GARRISON TO AUTONOMOUS'].includes(expenseType)) {
+                expenseDetailsHtml += createSelect('expense-unit-type', 'Unit Type (optional)', [
+                    {value:'', text:'Any (A/F/G/W)'}, {value:'A', text:'Army (A)'}, {value:'F', text:'Fleet (F)'},
+                    {value:'G', text:'Garrison (G)'}, {value:'W', text:'Wing (W)'}
+                ]);
+                expenseDetailsHtml += createInput('expense-province', 'text', 'Province', 'e.g., ROM', true);
+            } else if (expenseType === 'ASSASSINATE') {
+                const powerOptions = gameData?.players?.map(p => ({value: p.power.toUpperCase(), text: p.power})) || [];
+                expenseDetailsHtml += createSelect('expense-target-power', 'Target Power', [{value:'', text:'--Select Power--'}, ...powerOptions], true);
+            } else if (['FAMINE RELIEF', 'PACIFY REBELLION', 'CAUSE REBELLION'].includes(expenseType)) {
+                expenseDetailsHtml += createInput('expense-province', 'text', 'Province', 'e.g., ROM', true);
+            }
+            detailsArea.innerHTML = expenseDetailsHtml;
+            // Add listeners to new inputs
+            detailsArea.querySelectorAll('input, select').forEach(el => {
+                 el.addEventListener('input', () => updateGeneratedCommandText(window.currentGameData));
+                 el.addEventListener('change', () => updateGeneratedCommandText(window.currentGameData));
+            });
+        }
+        updateGeneratedCommandText(window.currentGameData);
     }
 
 
