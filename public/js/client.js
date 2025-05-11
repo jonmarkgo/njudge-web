@@ -101,6 +101,64 @@ function populateGameSelector(games) {
     }
 }
 
+// --- Machiavelli Settings Constants and Helpers ---
+const ALL_MACHIAVELLI_SETTINGS_KEYS = [
+    'mach2', 'summer', 'money', 'dice', 'loans', 'famine', 'plague', 'storm',
+    'assassinations', 'garrisons', 'special', 'fortresses', 'adjacency',
+    'coastalConvoys', 'disbandAnytime', 'transform', 'attacktransform'
+];
+
+const MACHIAVELLI_DEFAULTS = {
+    MACH1: {
+        mach2: false, summer: false, money: true, dice: true, loans: true, famine: true,
+        plague: false, storm: false, assassinations: true, garrisons: false, special: true,
+        fortresses: false, adjacency: true, coastalConvoys: true, disbandAnytime: true,
+        transform: null, attacktransform: false
+    },
+    MACH2: {
+        mach2: true, summer: false, money: true, dice: true, loans: true, famine: true,
+        plague: false, storm: false, assassinations: true, garrisons: false, special: true,
+        fortresses: false, adjacency: true, coastalConvoys: false, disbandAnytime: true,
+        transform: null, attacktransform: false
+    },
+    BASIC_MACH: {
+        mach2: false, summer: false, money: false, dice: false, loans: false, famine: false,
+        plague: false, storm: false, assassinations: false, garrisons: false, special: false,
+        fortresses: false, adjacency: false, coastalConvoys: true, disbandAnytime: false,
+        transform: null, attacktransform: false
+    }
+};
+
+function getMachiavelliDefaults(variantName, isMach2ExplicitlySet) {
+    if (variantName && variantName.toLowerCase().includes('basic machiavelli')) {
+        return MACHIAVELLI_DEFAULTS.BASIC_MACH;
+    }
+    // For "Machiavelli" variant, check the mach2 setting
+    if (isMach2ExplicitlySet === true) { // Explicitly true
+        return MACHIAVELLI_DEFAULTS.MACH2;
+    }
+    if (isMach2ExplicitlySet === false) { // Explicitly false
+        return MACHIAVELLI_DEFAULTS.MACH1;
+    }
+    // If mach2 is not explicitly set, but variant is "Machiavelli", assume Mach1 defaults
+    // (though server should ideally always set gameState.settings.mach2 for Machiavelli games)
+    if (variantName && variantName.toLowerCase().includes('machiavelli')) {
+        return MACHIAVELLI_DEFAULTS.MACH1;
+    }
+    return {}; // No defaults if not a known Machiavelli variant
+}
+
+function formatSettingKeyForDisplay(key) {
+    if (!key) return '';
+    // Add spaces before capital letters (for camelCase or PascalCase)
+    const spacedKey = key.replace(/([A-Z])/g, ' $1');
+    // Capitalize first letter of each word
+    return spacedKey.split(' ')
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+        .join(' ');
+}
+// --- End Machiavelli Settings ---
+
 function updateGameStateSidebar(gameState) {
     const gameStateSidebar = document.getElementById('game-state-sidebar');
     // Ensure preferences are loaded before using them
@@ -116,15 +174,14 @@ function updateGameStateSidebar(gameState) {
     let deadlineStr = 'N/A';
     if (gameState.nextDeadline) {
         try {
-            // Attempt to parse common judge formats (e.g., Mon Nov 17 2003 23:31:03 -0600)
             const date = new Date(gameState.nextDeadline);
             if (!isNaN(date) && date.getTime() !== 0) {
                 deadlineStr = date.toLocaleString();
             } else {
-                deadlineStr = gameState.nextDeadline; // Show raw string if parsing failed
+                deadlineStr = gameState.nextDeadline;
             }
         } catch (e) {
-            deadlineStr = gameState.nextDeadline; // Show raw string on error
+            deadlineStr = gameState.nextDeadline;
         }
     }
 
@@ -143,20 +200,151 @@ function updateGameStateSidebar(gameState) {
         </ul>`
         : 'N/A';
 
-    const settingsHtml = (gameState.settings && Object.keys(gameState.settings).length > 0)
-        ? `<ul class="space-y-1 pl-2 text-xs">
-            ${Object.entries(gameState.settings).sort(([keyA], [keyB]) => keyA.localeCompare(keyB)).map(([key, value]) => {
-                // Simple formatting for boolean/string/number
-                let displayValue = value;
-                if (typeof value === 'boolean') displayValue = value ? 'Yes' : 'No';
-                else if (typeof value === 'object' && value !== null) displayValue = JSON.stringify(value); // Display Machiavelli transform object
-                // Capitalize key
-                const displayKey = key.charAt(0).toUpperCase() + key.slice(1);
-                return `<li>${displayKey}: ${displayValue}</li>`;
-            }).join('')}
-        </ul>`
-        : 'N/A';
+    let settingsHtml = 'N/A';
+    const settingsToDisplay = [];
+    const isMachGame = gameState.variant?.toLowerCase().includes('machiavelli') || (gameState.settings ? gameState.settings.isMachiavelli === true : false);
+    const currentSettings = gameState.settings || {}; // Use empty object if gameState.settings is null
 
+    // Process settings if gameState.settings object exists OR if it's a Mach game (to show defaults)
+    if (gameState.settings || isMachGame) {
+        if (isMachGame) {
+            const machDefaults = getMachiavelliDefaults(gameState.variant, currentSettings.mach2);
+            const processedGameSettingKeys = new Set();
+
+            ALL_MACHIAVELLI_SETTINGS_KEYS.forEach(key => {
+                let value;
+                let isDefault = false;
+                const displayKey = formatSettingKeyForDisplay(key);
+
+                if (currentSettings.hasOwnProperty(key)) {
+                    value = currentSettings[key];
+                    processedGameSettingKeys.add(key);
+                } else if (machDefaults.hasOwnProperty(key)) {
+                    value = machDefaults[key];
+                    isDefault = true;
+                } else {
+                    // Should not be reached if ALL_MACHIAVELLI_SETTINGS_KEYS and defaults are consistent
+                    // For robustness, could show 'Unknown (default)' or skip
+                    console.warn(`Machiavelli setting key ${key} not found in defaults for variant ${gameState.variant}`);
+                    value = 'Unknown'; // Placeholder
+                    isDefault = true;
+                }
+
+                let displayValue;
+                let valueToFormat = value;
+
+                if (typeof valueToFormat === 'boolean') {
+                    displayValue = valueToFormat ? 'Yes' : 'No';
+                } else if (key === 'transform') {
+                    if (valueToFormat === null) {
+                        displayValue = 'None';
+                    } else if (typeof valueToFormat === 'object' && valueToFormat !== null) {
+                        if (Object.keys(valueToFormat).length === 0) {
+                            displayValue = JSON.stringify(valueToFormat); // Displays "{}"
+                        } else {
+                            const transformedEntries = Object.entries(valueToFormat)
+                                .map(([k_inner, v_inner]) => `${formatSettingKeyForDisplay(k_inner)}: ${v_inner}`);
+                            displayValue = transformedEntries.join(', ');
+                        }
+                    } else {
+                        displayValue = String(valueToFormat);
+                    }
+                } else if (typeof valueToFormat === 'object' && valueToFormat !== null) {
+                    displayValue = JSON.stringify(valueToFormat);
+                } else if (valueToFormat === null) {
+                    displayValue = 'N/A';
+                } else {
+                    displayValue = String(valueToFormat);
+                }
+
+                if (isDefault) {
+                    displayValue += ' (default)';
+                }
+
+                settingsToDisplay.push({
+                    key: key,
+                    displayKey: displayKey,
+                    displayValue: displayValue
+                });
+            });
+
+            // Add other settings from currentSettings not in ALL_MACHIAVELLI_SETTINGS_KEYS
+            Object.entries(currentSettings).forEach(([key, value]) => {
+                if (!ALL_MACHIAVELLI_SETTINGS_KEYS.includes(key) && !processedGameSettingKeys.has(key)) {
+                    const displayKey = formatSettingKeyForDisplay(key);
+                    let displayValue;
+                    let valueToFormat = value;
+
+                    if (typeof valueToFormat === 'boolean') {
+                        displayValue = valueToFormat ? 'Yes' : 'No';
+                    } else if (key === 'transform' && typeof valueToFormat === 'object' && valueToFormat !== null) {
+                        if (Object.keys(valueToFormat).length === 0) {
+                            displayValue = JSON.stringify(valueToFormat);
+                        } else {
+                            const transformedEntries = Object.entries(valueToFormat)
+                                .map(([k_inner, v_inner]) => `${formatSettingKeyForDisplay(k_inner)}: ${v_inner}`);
+                            displayValue = transformedEntries.join(', ');
+                        }
+                    } else if (typeof valueToFormat === 'object' && valueToFormat !== null) {
+                        displayValue = JSON.stringify(valueToFormat);
+                    } else if (valueToFormat === null) {
+                        displayValue = 'N/A';
+                    } else {
+                        displayValue = String(valueToFormat);
+                    }
+                    // No (default) suffix for these settings
+
+                    settingsToDisplay.push({
+                        key: key,
+                        displayKey: displayKey,
+                        displayValue: displayValue
+                    });
+                }
+            });
+
+        } else if (gameState.settings) { // Not a Machiavelli game, but gameState.settings exists
+            Object.entries(gameState.settings).forEach(([key, value]) => {
+                const displayKey = formatSettingKeyForDisplay(key);
+                let displayValue;
+                let valueToFormat = value;
+
+                if (typeof valueToFormat === 'boolean') {
+                    displayValue = valueToFormat ? 'Yes' : 'No';
+                } else if (key === 'transform' && typeof valueToFormat === 'object' && valueToFormat !== null) {
+                    if (Object.keys(valueToFormat).length === 0) {
+                        displayValue = JSON.stringify(valueToFormat);
+                    } else {
+                        const transformedEntries = Object.entries(valueToFormat)
+                            .map(([k_inner, v_inner]) => `${formatSettingKeyForDisplay(k_inner)}: ${v_inner}`);
+                        displayValue = transformedEntries.join(', ');
+                    }
+                } else if (typeof valueToFormat === 'object' && valueToFormat !== null) {
+                    displayValue = JSON.stringify(valueToFormat);
+                } else if (valueToFormat === null) {
+                    displayValue = 'N/A';
+                } else {
+                    displayValue = String(valueToFormat);
+                }
+
+                settingsToDisplay.push({
+                    key: key,
+                    displayKey: displayKey,
+                    displayValue: displayValue
+                });
+            });
+        }
+
+        if (settingsToDisplay.length > 0) {
+            settingsHtml = `<ul class="space-y-1 pl-2 text-xs">
+                ${settingsToDisplay
+                    .sort((a, b) => a.displayKey.localeCompare(b.displayKey))
+                    .map(item => `<li><span class="font-medium">${item.displayKey}:</span> ${item.displayValue}</li>`)
+                    .join('')}
+            </ul>`;
+        } else {
+            settingsHtml = 'N/A'; // Explicitly N/A if nothing to show
+        }
+    }
     const lastUpdatedStr = gameState.lastUpdated ? new Date(gameState.lastUpdated * 1000).toLocaleString() : 'N/A';
     const observerLink = `https://www.floc.net/observer.py?partie=${gameState.name}`;
 
@@ -183,15 +371,11 @@ function updateGameStateSidebar(gameState) {
     }
 
     if (visibility.settings) {
-         if (gameState.settings && Object.keys(gameState.settings).length > 0) {
-            sidebarHtml += `
-                <div class="pt-2 mt-2 border-t border-gray-200">
-                    <strong class="text-primary block mb-1">Settings:</strong>
-                    ${settingsHtml}
-                </div>`;
-         } else if (gameState.settings) { // Show N/A only if settings object exists but is empty
-             sidebarHtml += '<div><strong class="text-primary w-24 inline-block">Settings:</strong> N/A</div>';
-         }
+        sidebarHtml += `
+            <div class="pt-2 mt-2 border-t border-gray-200">
+                <strong class="text-primary block mb-1">Settings:</strong>
+                ${settingsHtml}
+            </div>`;
     }
 
     sidebarHtml += `</div>`; // Close space-y-2 div
