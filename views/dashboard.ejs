@@ -109,6 +109,7 @@
                     <div id="command-options-area" class="border-t border-gray-200 pt-4 mt-4 min-h-[50px]">
                          <p class="text-sm text-gray-500 italic">Select an action above to see options.</p>
                     </div>
+                    <button id="addToCommandBoxBtn" class="btn btn-secondary ml-2">Add to Command Box</button>
                 </div>
             </div>
 
@@ -118,7 +119,7 @@
                     <h2 class="text-xl font-semibold text-primary border-b border-gray-200 pb-3 mb-4">Manual Command / Generated Output</h2>
                     <label for="generated-command" class="block text-sm font-medium text-gray-700 mb-2">Command Text (Press Enter to Send):</label>
                     <textarea id="generated-command" placeholder="Select action or type command manually. Do NOT include SIGN OFF."
-                              class="input font-mono text-sm min-h-[150px] mb-4 resize-y"></textarea>
+                              class="input font-mono text-sm min-h-[150px] mb-4 resize-y" readonly></textarea>
                     <button id="send-command" class="btn btn-primary">Send Command</button>
                 </div>
                 <div class="card mt-6">

@@ -608,6 +608,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window.currentUserEmail = currentUserEmail; // Also store globally for easy check
     let currentFilters = {}; // Store the currently applied filters
     let savedBookmarks = []; // Store fetched bookmarks
+    let currentGeneratedCommand = '';
 
     // --- Command Option Helper Functions (Moved to broader scope) ---
     // Helper function to query selector safely within optionsArea
@@ -1122,7 +1123,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const selectedCommand = e.target.value;
             // Pass current game state to the generator
             generateCommandOptions(selectedCommand, window.currentGameData);
-            updateGeneratedCommandText(window.currentGameData); // Update text area immediately if possible
+            updateGeneratedCommandText(window.currentGameData); // This will now update currentGeneratedCommand
         });
     }
 
@@ -1349,10 +1350,11 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
              // Clear options if no command is selected
              if (optionsArea) optionsArea.innerHTML = '<p class="text-sm text-gray-500 italic">Select an action above to see options.</p>';
-             if (generatedCommandTextarea) {
+             if (generatedCommandTextarea && generatedCommandTextarea.readOnly) {
                  generatedCommandTextarea.value = '';
                  generatedCommandTextarea.placeholder = "Select action or type command manually. Do NOT include SIGN OFF.";
              }
+             currentGeneratedCommand = ''; // Clear the stored command when no command type is selected
         }
     }
 
@@ -1362,8 +1364,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!optionsArea || !generatedCommandTextarea) return; // Ensure elements exist
 
         optionsArea.innerHTML = ''; // Clear previous options
-        generatedCommandTextarea.value = ''; // Clear textarea
-        generatedCommandTextarea.placeholder = "Configure options above or type command here directly. Do NOT include SIGN OFF."; // Reset placeholder
+        if (generatedCommandTextarea.readOnly) {
+            generatedCommandTextarea.value = ''; // Clear textarea
+            generatedCommandTextarea.placeholder = "Configure options above or type command here directly. Do NOT include SIGN OFF."; // Reset placeholder
+        }
+        currentGeneratedCommand = ''; // Always clear the stored command when options change
 
         const targetGame = targetGameInput?.value || '<game>'; // Use selected game or placeholder
         const powerInitials = gameData?.players?.map(p => p.power?.charAt(0).toUpperCase()).filter(Boolean) || [];
@@ -1896,23 +1901,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // to avoid cursor jumping during manual edits in body section.
         // Also, if selectedCommand is empty but it's not ORDERS, we might have returned early.
         // If selectedCommand is empty AND it IS orders (because a unit is selected), we proceed.
-        if (generatedCommandTextarea.value !== finalOutput) {
-            const cursorPos = generatedCommandTextarea.selectionStart;
-            const oldLength = generatedCommandTextarea.value.length;
-            generatedCommandTextarea.value = finalOutput;
-            try {
-                if (cursorPos === oldLength) {
-                    generatedCommandTextarea.setSelectionRange(finalOutput.length, finalOutput.length);
-                } else if (cursorPos <= finalOutput.length) {
-                    generatedCommandTextarea.setSelectionRange(cursorPos, cursorPos);
-                } else {
-                    generatedCommandTextarea.setSelectionRange(finalOutput.length, finalOutput.length);
-                }
-            } catch (e) {
-                console.warn("Could not restore cursor position:", e);
-                generatedCommandTextarea.setSelectionRange(finalOutput.length, finalOutput.length);
-            }
-        }
+        currentGeneratedCommand = finalOutput;
+        // The generatedCommandTextarea itself is NOT updated here.
+        // It will only be updated when the "Add to Command Box" button is clicked,
+        // or if the user types into it manually (which then updates currentGeneratedCommand via the 'input' event listener).
     }
 
     // Helper to build the command string from options (first line usually)
@@ -2940,5 +2932,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Initial Load ---
     initializeDashboard();
+
+    // --- Add to Command Box Button ---
+    const addToCommandBoxBtn = document.getElementById('addToCommandBoxBtn');
+    if (addToCommandBoxBtn && generatedCommandTextarea) {
+        addToCommandBoxBtn.addEventListener('click', () => {
+            generatedCommandTextarea.value = currentGeneratedCommand;
+            generatedCommandTextarea.readOnly = false;
+            generatedCommandTextarea.focus();
+        });
+    }
 
 }); // End DOMContentLoaded wrapper
