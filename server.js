@@ -614,28 +614,72 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
                 // Parse Machiavelli flags
                 const flagsMatch = trimmedLine.match(flagsLineRegex);
                 if (flagsMatch) {
-                    const flagsString = flagsMatch[1];
-                    const flagsArray = flagsString.split(/\s+/);
-                    flagsArray.forEach(flag => {
+                    const flagsStringInput = flagsMatch[1];
+                    let processedFlagsString = flagsStringInput;
+                    const settings = gameState.settings; // Shortcut for brevity
+
+                    // Handle multi-word "coastal convoys" variants first and remove them from the string.
+                    // Regexes are case-insensitive and global (for replace all, though one occurrence is typical).
+                    const noCoastalConvoysRegex = /\bnocoastal convoys\b/gi;
+                    const coastalConvoysRegex = /\bcoastal convoys\b/gi;
+
+                    if (noCoastalConvoysRegex.test(processedFlagsString)) {
+                        settings.coastalConvoys = false;
+                        processedFlagsString = processedFlagsString.replace(noCoastalConvoysRegex, '');
+                    } else if (coastalConvoysRegex.test(processedFlagsString)) {
+                        settings.coastalConvoys = true;
+                        processedFlagsString = processedFlagsString.replace(coastalConvoysRegex, '');
+                    }
+
+                    // Trim whitespace that might be left after replacement, then split remaining flags.
+                    // Filter out any empty strings resulting from multiple spaces or trailing spaces.
+                    const flagsArray = processedFlagsString.trim().split(/\s+/).filter(f => f.length > 0);
+
+                    flagsArray.forEach(originalFlag => {
+                        let flag = originalFlag; // Use a mutable variable for the potentially normalized flag name
+                        const lowerFlag = flag.toLowerCase();
+
+                        // Normalize aliases to their canonical names or 'noCanonical' forms
+                        // This allows the generic logic below to work with canonical names.
+                        if (lowerFlag === 'bank' || lowerFlag === 'bankers') {
+                            flag = 'loans'; // Positive alias
+                        } else if (lowerFlag === 'nobank' || lowerFlag === 'nobankers') {
+                            flag = 'noloans'; // Negative alias
+                        } else if (lowerFlag === 'forts') {
+                            flag = 'fortresses'; // Positive alias
+                        } else if (lowerFlag === 'noforts') {
+                            flag = 'nofortresses'; // Negative alias
+                        } else if (lowerFlag === 'nocoastalconvoy') { // Single-word negative variant for coastal convoys
+                            flag = 'nocoastalConvoys'; // Normalize to a form that startsWith('no') can process to 'coastalConvoys'
+                        }
+                        // Add normalization for a positive 'coastalconvoy' if it were a possibility:
+                        // else if (lowerFlag === 'coastalconvoy') { flag = 'coastalConvoys'; }
+
+
                         if (flag.startsWith('no')) {
-                            gameState.settings[flag.substring(2)] = false;
-                        } else if (flag.includes(':')) { // e.g., transform:MOVE:HOMECENTRE,BUILD:ANYWHERE
+                            // Extracts the base flag name, e.g., "nomoney" -> "money", "noloans" -> "loans", "nocoastalConvoys" -> "coastalConvoys"
+                            const baseFlag = flag.substring(2);
+                            settings[baseFlag] = false;
+                        } else if (flag.includes(':')) {
                             const [key, ...values] = flag.split(':');
-                            if (key === 'transform') {
-                                gameState.settings.transform = {};
-                                values.join(':').split(',').forEach(tv => {
-                                    const [tWhen, tWhere] = tv.split(':');
-                                    if (tWhen && tWhere) {
-                                        gameState.settings.transform[tWhen.toLowerCase()] = tWhere;
-                                    } else if (tWhen) { // e.g. SET TRANSFORM MOVE (defaults to HOMECENTRE)
-                                        gameState.settings.transform[tWhen.toLowerCase()] = 'HOMECENTRE';
+                            // Ensure 'transform' key check is case-insensitive and initialize object if needed.
+                            if (key.toLowerCase() === 'transform') {
+                                settings.transform = settings.transform || {}; // Initialize if multiple transform parts or not yet existing
+                                values.join(':').split(',').forEach(tvPair => {
+                                    const [transformAction, transformValue] = tvPair.split(':');
+                                    if (transformAction && transformValue) {
+                                        settings.transform[transformAction.toLowerCase()] = transformValue;
+                                    } else if (transformAction) { // Handles cases like "SET TRANSFORM MOVE" which implies a default value
+                                        settings.transform[transformAction.toLowerCase()] = 'HOMECENTRE'; // Default for simple transform actions
                                     }
                                 });
                             } else {
-                                gameState.settings[key] = values.join(':'); // Store as string if not 'transform'
+                                // For other colon-separated flags, store as key-value string.
+                                settings[key] = values.join(':');
                             }
                         } else {
-                            gameState.settings[flag] = true;
+                            // For simple positive flags (either original or normalized aliases like 'loans' from 'bank').
+                            settings[flag] = true;
                         }
                     });
                     if (gameState.settings.mach2 === undefined && (gameState.variant?.toLowerCase().includes('machiavelli') || gameState.settings.isMachiavelli)) {

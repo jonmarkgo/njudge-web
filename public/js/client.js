@@ -2937,7 +2937,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const addToCommandBoxBtn = document.getElementById('addToCommandBoxBtn');
     if (addToCommandBoxBtn && generatedCommandTextarea) {
         addToCommandBoxBtn.addEventListener('click', () => {
-            generatedCommandTextarea.value = currentGeneratedCommand;
+            // Append instead of overwrite
+            if (generatedCommandTextarea.value && !generatedCommandTextarea.value.endsWith('\n')) {
+                generatedCommandTextarea.value += '\n';
+            }
+            generatedCommandTextarea.value += currentGeneratedCommand;
             generatedCommandTextarea.readOnly = false;
             generatedCommandTextarea.focus();
         });
