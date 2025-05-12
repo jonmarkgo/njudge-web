@@ -924,29 +924,63 @@ const executeDipCommand = (email, command, targetGame = null, targetPassword = n
         } else {
             requiresSignOn = !!targetGame;
         }
-
+        
         let signOnPrefix = null;
         if (requiresSignOn) {
             if (!targetGame || !targetPassword) return reject({ success: false, output: `Error: Command "${commandVerb}" requires a target game and password.` });
-            const variant = targetVariant;
-            if (variant && variant.trim() !== '') {
-                signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword} ${variant.trim()}`;
-            } else {
-                try {
-                    const gameState = await getGameState(targetGame);
-                    if (!gameState) signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword}`;
-                    else {
-                        const userIsMaster = gameState.masters?.includes(email);
-                        const myPlayerInfo = gameState.players?.find(p => p.email === email);
-                        const userIsPlayer = !!myPlayerInfo;
-                        const userPowerInitial = userIsPlayer ? myPlayerInfo.power?.charAt(0).toUpperCase() : null;
-                        const userIsObserver = gameState.observers?.includes(email) && !userIsPlayer && !userIsMaster;
-                        if (userIsPlayer && userPowerInitial) signOnPrefix = `SIGN ON ${userPowerInitial}${targetGame} ${targetPassword}`;
-                        else if (userIsMaster) signOnPrefix = `SIGN ON M${targetGame} ${targetPassword}`;
-                        else if (userIsObserver) signOnPrefix = `SIGN ON O${targetGame} ${targetPassword}`;
-                        else signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword}`;
+
+            let determinedUserPowerInitial = null;
+            let gameStateForSignOn = null;
+
+            // Attempt to get game state and player's power initial first
+            try {
+                gameStateForSignOn = await getGameState(targetGame);
+                if (gameStateForSignOn) {
+                    const myPlayerInfo = gameStateForSignOn.players?.find(p => p.email === email);
+                    if (myPlayerInfo && myPlayerInfo.power) {
+                        determinedUserPowerInitial = myPlayerInfo.power.charAt(0).toUpperCase();
                     }
-                } catch (dbErr) { return reject({ success: false, output: `Database error checking user role for game ${targetGame}.` }); }
+                }
+            } catch (dbErr) {
+                console.error(`[Execute SignOn] DB error fetching gameState for ${targetGame} to determine power initial: ${dbErr.message}. Proceeding with fallback logic.`);
+                // Do not reject here; allow fallback to '?', Master, or Observer roles.
+            }
+
+            const variant = targetVariant; // from req.body
+
+            if (determinedUserPowerInitial) {
+                // Player's power initial is found; use it. This is prioritized for in-game actions.
+                signOnPrefix = `SIGN ON ${determinedUserPowerInitial}${targetGame} ${targetPassword}`;
+            } else {
+                // No specific player power initial found.
+                // This could be because the user is not a player, not in this game,
+                // the game state couldn't be fetched, or the player has no power assigned yet.
+                if (variant && variant.trim() !== '') {
+                    // A variant is specified, typically for creating a new game or an explicit join attempt with variant.
+                    signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword} ${variant.trim()}`;
+                } else if (gameStateForSignOn) {
+                    // No variant specified, but game state was fetched.
+                    // Check for Master or Observer roles since player power wasn't found.
+                    const userIsMaster = gameStateForSignOn.masters?.includes(email);
+                    const isRegisteredObserver = gameStateForSignOn.observers?.includes(email);
+                    const myPlayerInfo = gameStateForSignOn.players?.find(p => p.email === email); // Re-check for context
+                    const isPlayerContext = !!myPlayerInfo; // True if user is listed as a player, even if power was missing
+
+                    if (userIsMaster) {
+                        signOnPrefix = `SIGN ON M${targetGame} ${targetPassword}`;
+                    } else if (isRegisteredObserver && !isPlayerContext && !userIsMaster) {
+                        // User is an observer, not currently a player in context, and not a master.
+                        signOnPrefix = `SIGN ON O${targetGame} ${targetPassword}`;
+                    } else {
+                        // Game exists, but user is not a player with power, not master, not clearly an observer.
+                        // Default to '?' for joining or if role is ambiguous.
+                        signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword}`;
+                    }
+                } else {
+                    // No determined player power, no variant, and no game state (game likely new or unlisted).
+                    // This is a clear case for '?' (e.g., initial SIGN ON to a game not yet in DB).
+                    signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword}`;
+                }
             }
             if (signOnPrefix) fullCommand = `${signOnPrefix}\n${fullCommand}`;
         }
