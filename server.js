@@ -932,7 +932,7 @@ const executeDipCommand = (email, command, targetGame = null, targetPassword = n
         } else {
             requiresSignOn = !!targetGame;
         }
-        
+
         let signOnPrefix = null;
         if (requiresSignOn) {
             if (!targetGame || !targetPassword) return reject({ success: false, output: `Error: Command "${commandVerb}" requires a target game and password.` });
@@ -1056,40 +1056,59 @@ async function generateMapPng(postscriptContent, outputPngPath) {
 }
 
 // --- Map Data API Endpoint ---
-async function getMapData(gameName, phase) {
+async function getMapData(userEmail, gameName, phase) {
     console.log(`[getMapData PNG] Entering with gameName: ${gameName}, phase: ${phase}`);
     try {
-        const basicGameState = await getGameState(gameName);
-        if (!basicGameState) {
-            console.error(`[getMapData PNG Error] Game not found in DB: ${gameName}`);
-            return null;
-        }
-        const variantName = basicGameState.variant || 'Standard';
-        const lowerVariant = variantName.toLowerCase().replace(/[^a-z0-9_-]/g, '');
-
-        const { nameToAbbr, provinceLookup } = await ensureMapDataParsed(variantName);
-        if (!provinceLookup || Object.keys(provinceLookup).length === 0) {
-             throw new Error(`Map data (province names/abbreviations/coordinates) could not be loaded for variant ${variantName}. Cannot generate map.`);
-        }
-
-        const listResult = await executeDipCommand(judgeEmail, `LIST ${gameName}`, gameName);
+        // Step 1: Execute LIST command to get fresh data
+        const listResult = await executeDipCommand(userEmail, `LIST ${gameName}`, gameName, null, null);
         if (!listResult.success) {
             console.error(`[getMapData PNG Error] Failed to fetch LIST data for ${gameName}:`, listResult.output);
-            return null;
+            throw new Error(`LIST command failed for ${gameName}, cannot reliably determine variant for map generation. Output: ${listResult.output}`);
         }
+
+        // Step 2: Tentatively parse the variant from the LIST output.
+        let variantFromListOutput = 'Standard'; // Default
+        const lines = listResult.stdout.split('\n');
+        const variantRegex = /Variant:\s*(\S+)/i; // Regex to find "Variant: <variant_name>"
+        for (const line of lines) {
+            const match = line.match(variantRegex);
+            if (match && match[1]) { // Ensure match[1] (the variant name) exists
+                variantFromListOutput = match[1].trim();
+                break;
+            }
+        }
+        console.log(`[getMapData PNG] Variant tentatively parsed from LIST output for ${gameName}: ${variantFromListOutput}`);
+
+        // Step 3: Use this parsed variant to load map data.
+        const { nameToAbbr, provinceLookup } = await ensureMapDataParsed(variantFromListOutput);
+        if (!provinceLookup || Object.keys(provinceLookup).length === 0) {
+             throw new Error(`Map data (provinceLookup) could not be loaded for variant ${variantFromListOutput}. Cannot generate map.`);
+        }
+        if (!nameToAbbr || Object.keys(nameToAbbr).length === 0) {
+            throw new Error(`Map data (nameToAbbr) could not be loaded for variant ${variantFromListOutput}. Cannot generate map.`);
+       }
+
+        // Step 4: Now fully parse the LIST output with the correct nameToAbbr map.
         const currentGameState = parseListOutput(gameName, listResult.stdout, nameToAbbr);
         if (!currentGameState) {
-            console.error(`[getMapData PNG Error] Failed to parse LIST output for ${gameName}`);
-            return null;
+            console.error(`[getMapData PNG Error] Failed to parse LIST output for ${gameName} (after map data load).`);
+            return null; // Or throw error
+        }
+        // Ensure the variant in currentGameState is correct
+        if (currentGameState.variant !== variantFromListOutput) {
+            console.warn(`[getMapData PNG] Mismatch: Variant from LIST output (${variantFromListOutput}) vs parseListOutput result (${currentGameState.variant}). Using LIST output's.`);
+            currentGameState.variant = variantFromListOutput;
         }
 
         let targetPhase = phase || currentGameState.currentPhase || 'UnknownPhase';
         if (targetPhase === 'Unknown') targetPhase = 'UnknownPhase';
 
-        const cmapPathOriginal = path.join(mapDataDir, `${variantName}.cmap.ps`);
-        const cmapPathLower = path.join(mapDataDir, `${lowerVariant}.cmap.ps`);
-        const mapPathOriginal = path.join(mapDataDir, `${variantName}.map.ps`);
-        const mapPathLower = path.join(mapDataDir, `${lowerVariant}.map.ps`);
+        const lowerVariantForPath = variantFromListOutput.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+        const cmapPathOriginal = path.join(mapDataDir, `${variantFromListOutput}.cmap.ps`);
+        const cmapPathLower = path.join(mapDataDir, `${lowerVariantForPath}.cmap.ps`);
+        const mapPathOriginal = path.join(mapDataDir, `${variantFromListOutput}.map.ps`);
+        const mapPathLower = path.join(mapDataDir, `${lowerVariantForPath}.map.ps`);
+
         let basePsContent = ''; let isColored = false; let usedTemplatePath = '';
 
         try { basePsContent = await fsPromises.readFile(cmapPathOriginal, 'utf-8'); isColored = true; usedTemplatePath = cmapPathOriginal; }
@@ -1099,7 +1118,7 @@ async function getMapData(gameName, phase) {
                 try { basePsContent = await fsPromises.readFile(mapPathOriginal, 'utf-8'); isColored = false; usedTemplatePath = mapPathOriginal; }
                 catch (errMapOrig) { if (errMapOrig.code === 'ENOENT') {
                     try { basePsContent = await fsPromises.readFile(mapPathLower, 'utf-8'); isColored = false; usedTemplatePath = mapPathLower; }
-                    catch (errMapLower) { console.error(`[getMapData PNG Error] Could not read any map template for variant ${variantName}. Tried ${cmapPathOriginal}, ${cmapPathLower}, ${mapPathOriginal}, ${mapPathLower}`); return null; }
+                    catch (errMapLower) { console.error(`[getMapData PNG Error] Could not read any map template for variant ${variantFromListOutput}. Tried ${cmapPathOriginal}, ${cmapPathLower}, ${mapPathOriginal}, ${mapPathLower}`); return null; }
                 } else { console.error(`[getMapData PNG Error] Error reading map template ${mapPathOriginal}:`, errMapOrig); return null; }}
             } else { console.error(`[getMapData PNG Error] Error reading map template ${cmapPathLower}:`, errCmapLower); return null; }}
         } else { console.error(`[getMapData PNG Error] Error reading map template ${cmapPathOriginal}:`, errCmapOrig); return null; }}
@@ -1109,7 +1128,7 @@ async function getMapData(gameName, phase) {
         const psDrawFunctions = { "A": "DrawArmySymbol", "F": "DrawFleetSymbol", "W": "DrawWingSymbol", "R": "DrawArtillerySymbol", "G": "DrawGarrisonSymbol" };
 
         let powerToIndexMap = {};
-        if (lowerVariant === 'machiavelli') {
+        if (lowerVariantForPath === 'machiavelli') {
             powerToIndexMap = {
                 'AUSTRIA': 1, 'FRANCE': 2, 'MILAN': 3, 'FLORENCE': 4,
                 'NAPLES': 5, 'PAPACY': 6, 'TURKEY': 7, 'VENICE': 8, 'AUTONOMOUS': 9
@@ -1148,10 +1167,9 @@ async function getMapData(gameName, phase) {
             const powerIndex = powerToIndexMap[unit.power.toUpperCase()];
 
             if (powerIndex === undefined) {
-                console.warn(`[getMapData PNG] Unknown power '${unit.power}' for unit in ${unitLocationAbbr}. Skipping unit. Check POWER_TO_INDEX for variant ${variantName}.`);
+                console.warn(`[getMapData PNG] Unknown power '${unit.power}' for unit in ${unitLocationAbbr}. Skipping unit. Check POWER_TO_INDEX for variant ${variantFromListOutput}.`);
                 return;
             }
-            // *** MODIFIED LINE FOR UNIT DRAWING ***
             unitPsCommands.push(`gsave ${x} ${y} translate ${powerIndex} ${drawFunc} grestore`);
         });
 
@@ -1190,7 +1208,7 @@ async function getMapData(gameName, phase) {
             }
         }
 
-        if (coordinateError) throw new Error(`Map generation failed for ${gameName} (${variantName}): Coordinate data missing or invalid for one or more provinces. Check .info file and parsing logic.`);
+        if (coordinateError) throw new Error(`Map generation failed for ${gameName} (${variantFromListOutput}): Coordinate data missing or invalid for one or more provinces. Check .info file and parsing logic.`);
 
         let dynamicPsDefs = [
             `/DrawDynamicUnits {`, ...unitPsCommands, `} def`,
@@ -1202,9 +1220,6 @@ async function getMapData(gameName, phase) {
 
         const safeGameName = gameName.replace(/[^a-zA-Z0-9_-]/g, '_');
         const safePhase = targetPhase.replace(/[^a-zA-Z0-9_-]/g, '_');
-        // const debugPsPath = path.join(staticMapDir, `${safeGameName}_${safePhase}_debug.ps`);
-        // try { await fsPromises.writeFile(debugPsPath, combinedPsContent); console.log(`[getMapData PNG Debug] Saved combined PostScript to ${debugPsPath}`); }
-        // catch (writeErr) { console.error(`[getMapData PNG Debug] Failed to write debug PS file:`, writeErr); }
 
         const outputPngFilename = `${safeGameName}_${safePhase}.png`;
         const outputPngPath = path.join(staticMapDir, outputPngFilename);
@@ -1244,70 +1259,83 @@ app.get('/register', requireEmail, (req, res) => { res.render('register', { emai
 app.post('/register', requireEmail, async (req, res) => { const email = req.session.email; const { name, address, phone, country, level, site } = req.body; if (!name || !address || !phone || !country || !level || !site) return res.render('register', { email: email, error: 'All fields are required.', formData: req.body }); const registerCommand = `REGISTER\nname: ${name}\naddress: ${address}\nphone: ${phone}\ncountry: ${country}\nlevel: ${level}\ne-mail: ${email}\nsite: ${site}\npackage: yes\nEND`; try { const result = await executeDipCommand(email, registerCommand); const outputLower = result.stdout.trim().toLowerCase(); if (outputLower.includes("registration accepted") || outputLower.includes("registration processed") || outputLower.includes("updated registration") || outputLower.includes("already registered") || outputLower.includes("this is an update to an existing registration")) { await setUserRegistered(email); console.log(`[Register Success] User ${email} registered with judge.`); req.session.save(err => { if (err) console.error("Session save error after registration:", err); res.redirect('/dashboard'); }); } else { console.error(`[Register Fail] Judge rejected registration for ${email}. Output:\n${result.output}`); res.render('register', { email: email, error: `Judge rejected registration. Please check the output below and correct your details.`, judgeOutput: result.output, formData: req.body }); } } catch (error) { console.error(`[Register Error] Failed to execute REGISTER command for ${email}:`, error); res.render('register', { email: email, error: `Error communicating with the judge: ${error.output || error.message}`, judgeOutput: error.output, formData: req.body }); } });
 app.post('/signoff', (req, res) => { const email = req.session.email; console.log(`[Auth] User ${email} signing off.`); req.session.destroy((err) => { res.clearCookie('connect.sid'); res.clearCookie('targetGame'); Object.keys(req.cookies).forEach(cookieName => { if (cookieName.startsWith('targetPassword_') || cookieName.startsWith('targetVariant_')) res.clearCookie(cookieName); }); if (err) console.error("Session destruction error:", err); res.redirect('/'); }); });
 app.get('/api/games', requireEmail, async (req, res) => { try { const filters = { status: req.query.status, variant: req.query.variant, phase: req.query.phase, player: req.query.player }; Object.keys(filters).forEach(key => filters[key] === undefined && delete filters[key]); const gameStates = await getFilteredGameStates(filters); const gameList = Object.values(gameStates).map(g => ({ name: g.name, status: g.status, variant: g.variant, phase: g.currentPhase, players: g.players.map(p => p.email), masters: g.masters, nextDeadline: g.nextDeadline })); res.json({ success: true, games: gameList }); } catch (err) { console.error("[API Error] /api/games:", err); res.status(500).json({ success: false, message: "Failed to retrieve game list." }); } });
+
 app.get('/api/game/:gameName', requireEmail, async (req, res) => {
     const gameName = req.params.gameName;
     const userEmail = req.session.email;
 
     if (!gameName) return res.status(400).json({ success: false, message: "Game name is required." });
 
+    let refreshedGameState = null;
+    let recommendedCommands = {};
+    let errorOccurred = null;
+    let warningMessage = null;
+
     try {
-        let refreshedGameState = null;
-        let recommendedCommands = {};
-        let errorOccurred = null;
-        let warningMessage = null;
+        // Step 1: Execute LIST command
+        const listResult = await executeDipCommand(userEmail, `LIST ${gameName}`, gameName, null, null);
 
-        // Attempt to fetch and parse fresh LIST data
-        try {
-            // We need targetPassword and targetVariant for executeDipCommand if it does SIGN ON.
-            // For a simple LIST, these might not be strictly necessary.
-            // Pass null, executeDipCommand will use judgeEmail if no specific role context.
-            const listResult = await executeDipCommand(userEmail, `LIST ${gameName}`, gameName, null, null);
-
-            if (listResult.success) {
-                // Determine variant for parsing. Fallback to 'Standard' if game not in DB yet or variant unknown.
-                const preliminaryGameState = await getGameState(gameName);
-                const variantForParsing = preliminaryGameState?.variant || 'Standard';
-                const { nameToAbbr } = await ensureMapDataParsed(variantForParsing);
-
-                refreshedGameState = parseListOutput(gameName, listResult.stdout, nameToAbbr);
-
-                if (refreshedGameState) {
-                    await saveGameState(gameName, refreshedGameState); // Save the fresh state
-                    recommendedCommands = getRecommendedCommands(refreshedGameState, userEmail);
-                } else {
-                    errorOccurred = `LIST command for '${gameName}' succeeded but parsing the output failed.`;
-                    console.error(`[API Error] /api/game/${gameName}: ${errorOccurred}`);
+        if (listResult.success) {
+            // Step 2: Tentatively parse the variant from the LIST output.
+            let variantFromListOutput = 'Standard'; // Default
+            const lines = listResult.stdout.split('\n');
+            const variantRegex = /Variant:\s*(\S+)/i;
+            for (const line of lines) {
+                const match = line.match(variantRegex);
+                if (match && match[1]) {
+                    variantFromListOutput = match[1].trim();
+                    break;
                 }
-            } else {
-                errorOccurred = `LIST command execution failed for '${gameName}'. Output: ${listResult.output}`;
-                console.error(`[API Error] /api/game/${gameName}: ${errorOccurred}`);
             }
-        } catch (listRefreshError) {
-            errorOccurred = `Error during LIST refresh for '${gameName}': ${listRefreshError.message}`;
-            console.error(`[API Error] /api/game/${gameName} (LIST Refresh Catch):`, listRefreshError);
-        }
+            console.log(`[API /api/game/${gameName}] Variant tentatively parsed from LIST output: ${variantFromListOutput}`);
 
-        // If refresh failed, try to use stored data as a fallback
-        if (errorOccurred || !refreshedGameState) {
-            warningMessage = errorOccurred || "Could not obtain fresh game state.";
-            console.warn(`[API Warning] /api/game/${gameName}: ${warningMessage}. Attempting to use stored data.`);
-            const dbGameState = await getGameState(gameName);
-            if (dbGameState) {
-                refreshedGameState = dbGameState; // Use DB state
+            // Step 3: Use this parsed variant to load map data.
+            const { nameToAbbr } = await ensureMapDataParsed(variantFromListOutput);
+
+            // Step 4: Now fully parse the LIST output with the correct nameToAbbr map.
+            refreshedGameState = parseListOutput(gameName, listResult.stdout, nameToAbbr);
+
+            if (refreshedGameState) {
+                // Ensure the variant in refreshedGameState is the one from LIST output
+                if (refreshedGameState.variant !== variantFromListOutput) {
+                    console.warn(`[API /api/game/${gameName}] Mismatch: Variant from LIST output (${variantFromListOutput}) vs parseListOutput result (${refreshedGameState.variant}). Correcting to LIST output's variant.`);
+                    refreshedGameState.variant = variantFromListOutput;
+                }
+                await saveGameState(gameName, refreshedGameState); // Save the fresh state
                 recommendedCommands = getRecommendedCommands(refreshedGameState, userEmail);
             } else {
-                // If DB state also doesn't exist (e.g., game truly not found)
-                return res.status(404).json({ success: false, message: `Game '${gameName}' not found and live refresh failed. ${warningMessage}` });
+                errorOccurred = `LIST command for '${gameName}' succeeded but parsing the output failed (after map data load).`;
+                console.error(`[API Error] /api/game/${gameName}: ${errorOccurred}`);
             }
+        } else {
+            errorOccurred = `LIST command execution failed for '${gameName}'. Output: ${listResult.output}`;
+            console.error(`[API Error] /api/game/${gameName}: ${errorOccurred}`);
         }
-
-        res.json({ success: true, gameState: refreshedGameState, recommendedCommands, warning: warningMessage });
-
-    } catch (outerErr) {
-        console.error(`[API Error] /api/game/${gameName} (Outer Catch):`, outerErr);
-        res.status(500).json({ success: false, message: `Critical error retrieving game state for ${gameName}: ${outerErr.message}` });
+    } catch (listRefreshError) {
+        // This catch block now handles errors from executeDipCommand, ensureMapDataParsed, or parseListOutput.
+        errorOccurred = `Error during LIST refresh process for '${gameName}': ${listRefreshError.message}`;
+        console.error(`[API Error] /api/game/${gameName} (Refresh Process Catch):`, listRefreshError);
     }
+
+    // Fallback logic if refresh failed or didn't produce a game state
+    if (errorOccurred || !refreshedGameState) {
+        warningMessage = errorOccurred || "Could not obtain fresh game state.";
+        console.warn(`[API Warning] /api/game/${gameName}: ${warningMessage}. Attempting to use stored data.`);
+        const dbGameState = await getGameState(gameName);
+        if (dbGameState) {
+            refreshedGameState = dbGameState; // Use DB state
+            recommendedCommands = getRecommendedCommands(refreshedGameState, userEmail);
+            // If we're falling back, ensure the warning reflects that the displayed state might be stale.
+            warningMessage = `${warningMessage} Displaying potentially stale data from database.`;
+        } else {
+            // If DB state also doesn't exist
+            return res.status(404).json({ success: false, message: `Game '${gameName}' not found in database and live refresh failed. ${warningMessage}` });
+        }
+    }
+
+    res.json({ success: true, gameState: refreshedGameState, recommendedCommands, warning: warningMessage });
 });
+
 app.get('/api/user/search-bookmarks', requireAuth, async (req, res) => { try { const bookmarks = await getSavedSearches(req.session.email); res.json({ success: true, bookmarks }); } catch (err) { res.status(500).json({ success: false, message: "Failed to retrieve saved searches." }); } });
 app.post('/api/user/search-bookmarks', requireAuth, async (req, res) => { const { name, params } = req.body; if (!name || typeof name !== 'string' || name.trim().length === 0) return res.status(400).json({ success: false, message: "Bookmark name is required." }); if (!params || typeof params !== 'object') return res.status(400).json({ success: false, message: "Search parameters (params) object is required." }); try { await saveSavedSearch(req.session.email, name.trim(), params); res.json({ success: true, message: `Bookmark '${name.trim()}' saved successfully.` }); } catch (err) { res.status(500).json({ success: false, message: "Failed to save bookmark." }); } });
 app.delete('/api/user/search-bookmarks/:name', requireAuth, async (req, res) => { const bookmarkName = decodeURIComponent(req.params.name); if (!bookmarkName) return res.status(400).json({ success: false, message: "Bookmark name parameter is required." }); try { const deleted = await deleteSavedSearch(req.session.email, bookmarkName); if (deleted) res.json({ success: true, message: `Bookmark '${bookmarkName}' deleted successfully.` }); else res.status(404).json({ success: false, message: `Bookmark '${bookmarkName}' not found.` }); } catch (err) { res.status(500).json({ success: false, message: "Failed to delete bookmark." }); } });
@@ -1401,14 +1429,18 @@ app.get('/api/map/:gameName/:phase?', requireAuth, async (req, res) => {
     const { gameName, phase } = req.params;
     if (!gameName) return res.status(400).json({ success: false, message: 'Game name is required.' });
     try {
-        const mapResult = await getMapData(gameName, phase);
+        const mapResult = await getMapData(req.session.email, gameName, phase);
         if (mapResult && mapResult.success) res.json({ success: true, mapUrl: mapResult.mapUrl });
         else {
+            // If mapResult is null or not success, it implies an error within getMapData
+            // which should have already logged specifics.
+            // We can check if the game exists in DB for a more specific 404.
             const gameExists = await getGameState(gameName);
             if (!gameExists) return res.status(404).json({ success: false, message: `Game '${gameName}' not found.` });
-            else return res.status(500).json({ success: false, message: `Could not generate map image for game '${gameName}' phase '${phase || 'latest'}'. Check server logs.` });
+            else return res.status(500).json({ success: false, message: `Could not generate map image for game '${gameName}' phase '${phase || 'latest'}'. Check server logs for details from getMapData.` });
         }
     } catch (error) {
+        // This catch is for errors thrown directly by getMapData or other unexpected issues.
         console.error(`[Map API Request PNG Fatal Error] Failed to get map URL for ${gameName} / ${phase || 'latest'}:`, error);
         if (error.message.includes("Coordinate data missing")) res.status(500).json({ success: false, message: `Map generation failed: ${error.message}. The map data file (.info) for this variant seems incomplete or incorrectly parsed.` });
         else if (error.message.includes("Failed to read map info file") || error.message.includes("Failed to read .info file")) {
@@ -1462,7 +1494,7 @@ async function syncDipMaster() {
         if (!fs.existsSync(dipMasterPath)) throw new Error(`File not found: ${dipMasterPath}.`);
         const masterContent = fs.readFileSync(dipMasterPath, 'utf8');
         const gameBlocks = masterContent.split(/^\s*-\s*$/m);
-        const gameLineRegex = /^\s*([a-zA-Z0-9]{1,8})\s+(\S+)\s+([SFUW]\d{4}[MRBAX]|Forming|Paused|Finished|Terminated)/i;
+        const gameLineRegex = /^\s*([a-zA-Z0-9]+)\s+(\S+)\s+([SFUW]\d{4}[MRBAX]|Forming|Paused|Finished|Terminated)/i;
         gameBlocks.forEach((block) => {
             const blockTrimmed = block.trim(); if (!blockTrimmed) return;
             const blockLines = blockTrimmed.split('\n');
@@ -1475,6 +1507,10 @@ async function syncDipMaster() {
                         gamesFromMaster[gameName] = { name: gameName, status: 'Unknown', currentPhase: 'Unknown' };
                         if (/^[SFUW]\d{4}[MRBAX]$/i.test(phaseOrStatus)) { gamesFromMaster[gameName].currentPhase = phaseOrStatus.toUpperCase(); gamesFromMaster[gameName].status = 'Active'; }
                         else { const statusLower = phaseOrStatus.toLowerCase(); if (statusLower === 'forming') gamesFromMaster[gameName].status = 'Forming'; else if (statusLower === 'paused') gamesFromMaster[gameName].status = 'Paused'; else if (statusLower === 'finished') gamesFromMaster[gameName].status = 'Finished'; else if (statusLower === 'terminated') gamesFromMaster[gameName].status = 'Terminated'; else gamesFromMaster[gameName].status = 'Unknown'; }
+                    }
+                } else {
+                    if (firstLine && !firstLine.startsWith("Process") && !firstLine.startsWith("Start") && !firstLine.startsWith("Ontime") && !firstLine.startsWith("T =") && !firstLine.startsWith("Yet_") && !firstLine.startsWith("Moves") && !firstLine.startsWith("Retreat") && !firstLine.startsWith("Adjust") && !firstLine.includes("_power") && !firstLine.startsWith("master")) {
+                        console.warn(`[Sync Warn] Line did not match gameLineRegex in dip.master: "${firstLine}"`);
                     }
                 }
             }
