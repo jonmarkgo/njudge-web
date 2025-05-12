@@ -1,4 +1,3 @@
-
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
@@ -141,7 +140,7 @@ const saveGameState = (gameName, gameState) => {
             ],
             (err) => {
                 if (err) { console.error(`[DB Error] Failed to save state for game ${gameName}:`, err); reject(err); }
-                else { /* console.log(`[DB Success] Saved state for game ${gameName}`); */ resolve(); }
+                else {  console.log(`[DB Success] Saved state for game ${gameName}`);  resolve(); }
             }
         );
     });
@@ -368,7 +367,7 @@ const ensureMapDataParsed = async (variantName) => {
             throw errorOriginal;
         }
     }
-    // console.log(`[Map Parse] Using .info file: ${usedInfoPath}`);
+     console.log(`[Map Parse] Using .info file: ${usedInfoPath}`);
 
     const infoLines = infoFileContent.split(/\r?\n/);
     let parsingSection = 'powers'; // Default, but some .info files might skip this or start with aliases
@@ -516,7 +515,7 @@ const ensureMapDataParsed = async (variantName) => {
 
 // --- Parsing Helper Functions ---
 const parseListOutput = (gameName, output, nameToAbbr) => {
-    // console.log(`[Parser LIST] Attempting to parse LIST output for ${gameName}`);
+     console.log(`[Parser LIST] Attempting to parse LIST output for ${gameName}`);
     const gameState = {
         name: gameName, status: 'Unknown', variant: 'Standard', options: [],
         currentPhase: 'Unknown', nextDeadline: null, players: [], masters: [],
@@ -593,7 +592,16 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
                 match = line.match(explicitDeadlineRegex); if (match) { gameState.currentPhase = match[1].trim().toUpperCase(); gameState.nextDeadline = match[2].trim(); if (gameState.status === 'Unknown' || gameState.status === 'Forming') gameState.status = 'Active'; break; }
                 match = line.match(activeStatusLineRegex); if (match) { const [, phaseTypeStr, seasonStr, year] = match; let seasonCode = 'S'; if (seasonStr.toLowerCase() === 'fall') seasonCode = 'F'; else if (seasonStr.toLowerCase() === 'winter') seasonCode = 'W'; else if (seasonStr.toLowerCase() === 'summer') seasonCode = 'U'; let phaseCode = 'M'; if (phaseTypeStr.toLowerCase() === 'retreat') phaseCode = 'R'; else if (phaseTypeStr.toLowerCase() === 'adjustment' || phaseTypeStr.toLowerCase() === 'builds') phaseCode = 'A'; gameState.currentPhase = `${seasonCode}${year}${phaseCode}`; gameState.status = 'Active'; break; }
                 match = line.match(statusRegex); if (match) { const explicitStatus = match[1].trim(); if (explicitStatus !== 'Active' || gameState.status === 'Unknown') gameState.status = explicitStatus; break; }
-                match = line.match(variantRegex); if (match) { gameState.variant = match[1].trim(); const optionsStr = match[2].replace(/,/g, ' ').trim(); gameState.options = optionsStr.split(/\s+/).filter(opt => opt && opt !== 'Variant:'); if (gameState.options.includes('Gunboat')) gameState.settings.gunboat = true; if (gameState.options.includes('NMR')) gameState.settings.nmr = true; else gameState.settings.nmr = false; if (gameState.options.includes('Chaos')) gameState.settings.chaos = true; if (gameState.variant.toLowerCase().includes('machiavelli')) gameState.settings.isMachiavelli = true; break; }
+                match = line.match(variantRegex);
+                if (!match) {
+                    // Try to find 'Variant:' anywhere in the line
+                    const idx = line.indexOf('Variant:');
+                    if (idx !== -1) {
+                        const sub = line.slice(idx);
+                        match = sub.match(variantRegex);
+                    }
+                }
+                if (match) { gameState.variant = match[1].trim(); const optionsStr = match[2].replace(/,/g, ' ').trim(); gameState.options = optionsStr.split(/\s+/).filter(opt => opt && opt !== 'Variant:'); if (gameState.options.includes('Gunboat')) gameState.settings.gunboat = true; if (gameState.options.includes('NMR')) gameState.settings.nmr = true; else gameState.settings.nmr = false; if (gameState.options.includes('Chaos')) gameState.settings.chaos = true; if (gameState.variant.toLowerCase().includes('machiavelli')) gameState.settings.isMachiavelli = true; break; }
                 break;
             case 'players':
                 const playerMatch = line.match(playerLineRegex); const masterMatch = line.match(masterLineRegex); const observerMatch = line.match(observerLineRegex);
@@ -773,7 +781,7 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
 
 // --- Command Recommendation Logic ---
 const getRecommendedCommands = (gameState, userEmail) => {
-    // console.log(`[getRecommendedCommands] Generating for user: ${userEmail}, Game State:`, gameState ? { name: gameState.name, status: gameState.status, phase: gameState.currentPhase, masters: gameState.masters, settings: gameState.settings } : null);
+     console.log(`[getRecommendedCommands] Generating for user: ${userEmail}, Game State:`, gameState ? { name: gameState.name, status: gameState.status, phase: gameState.currentPhase, masters: gameState.masters, settings: gameState.settings } : null);
 
     const recommendations = { recommended: [], playerActions: [], settings: [], gameInfo: [], master: [], general: [], machiavelli: [] };
     const generalCmds = ['GET', 'HELP', 'VERSION', 'WHOIS', 'LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'MAP', 'GET DEDICATION', 'INFO PLAYER', 'MANUAL'];
@@ -888,7 +896,7 @@ const getRecommendedCommands = (gameState, userEmail) => {
     const filterUniqueAndSort = (arr) => arr.filter(cmd => { if (uniqueCommands.has(cmd) || cmd === 'REGISTER' || cmd === 'SIGN OFF') return false; uniqueCommands.add(cmd); return true; }).sort();
     const finalRecommendations = {};
     for (const key in recommendations) finalRecommendations[key] = filterUniqueAndSort(recommendations[key]);
-    // console.log(`[getRecommendedCommands] Final Recommendations:`, finalRecommendations);
+     console.log(`[getRecommendedCommands] Final Recommendations:`, finalRecommendations);
     return finalRecommendations;
 };
 
@@ -986,14 +994,14 @@ const executeDipCommand = (email, command, targetGame = null, targetPassword = n
         }
         if (!fullCommand.toUpperCase().endsWith('SIGN OFF')) fullCommand += '\nSIGN OFF';
         const dipInput = `FROM: ${email}\nTO: ${judgeEmail}\nSubject: njudge-web via ${email}\nDate: ${now.toUTCString()}\n\n${fullCommand}\n`;
-        // console.log(`[Execute] User ${email} executing: Command=${dipBinaryPath}, Args=${[...dipBinaryArgs].join(' ')}, Input=${dipInput.substring(0, 200).replace(/\n/g, '\\n')}...`);
+        console.log(`[Execute] User ${email} executing: Command=${dipBinaryPath}, Args=${[...dipBinaryArgs].join(' ')}, Input=${dipInput.substring(0, 200).replace(/\n/g, '\\n')}...`);
         let stdoutData = ''; let stderrData = ''; let processError = null;
         const dipProcess = spawn(dipBinaryPath, dipBinaryArgs, { timeout: 30000, cwd: dipBinaryRootPath });
         dipProcess.stdout.on('data', (data) => { stdoutData += data.toString(); });
         dipProcess.stderr.on('data', (data) => { stderrData += data.toString(); console.error(`Stderr chunk for ${email} (${commandVerb}): ${data}`); });
         dipProcess.on('error', (err) => { console.error(`[Execute Error] Spawn Error for ${email}: ${err.message}`); processError = err; if (!dipProcess.killed) dipProcess.kill(); });
         dipProcess.on('close', (code, signal) => {
-            // console.log(`[Execute] Dip process for ${email} closed with code ${code}, signal ${signal}`);
+             console.log(`[Execute] Dip process for ${email} closed with code ${code}, signal ${signal}`);
             const output = `--- stdout ---\n${stdoutData}\n--- stderr ---\n${stderrData}`;
             const executionSuccess = code === 0 && signal === null;
             if (processError) return reject({ success: false, output: `Spawn failed: ${processError.message}\n\n${output}` });
@@ -1019,7 +1027,7 @@ async function generateMapPng(postscriptContent, outputPngPath) {
             '-dTextAlphaBits=4', '-dGraphicsAlphaBits=4',
             `-sOutputFile=${outputPngPath}`, '-'
         ];
-        // console.log(`[generateMapPng] Running ${ghostscriptPath} with args: ${gsArgs.slice(0, -1).join(' ')} -sOutputFile=${outputPngPath} -`);
+         console.log(`[generateMapPng] Running ${ghostscriptPath} with args: ${gsArgs.slice(0, -1).join(' ')} -sOutputFile=${outputPngPath} -`);
         const gsProcess = spawn(ghostscriptPath, gsArgs);
         let stdoutData = ''; let stderrData = ''; let processError = null;
         gsProcess.stdout.on('data', (data) => { stdoutData += data.toString(); });
@@ -1030,7 +1038,7 @@ async function generateMapPng(postscriptContent, outputPngPath) {
             if (!gsProcess.killed) gsProcess.kill();
         });
         gsProcess.on('close', (code, signal) => {
-            // console.log(`[generateMapPng] Ghostscript process closed with code ${code}, signal ${signal}`);
+            console.log(`[generateMapPng] Ghostscript process closed with code ${code}, signal ${signal}`);
             if (processError) return reject(new Error(`Ghostscript spawn failed: ${processError.message}\nStderr: ${stderrData}`));
             if (code !== 0) {
                  console.error(`[generateMapPng] Ghostscript failed: Exit code ${code}, Signal ${signal}\nStderr:\n${stderrData}\nStdout:\n${stdoutData}`);
@@ -1038,7 +1046,7 @@ async function generateMapPng(postscriptContent, outputPngPath) {
             }
             fs.access(outputPngPath, fs.constants.F_OK, (errAccess) => {
                 if (errAccess) return reject(new Error(`Ghostscript finished successfully but output file ${outputPngPath} was not created.`));
-                // console.log(`[generateMapPng] Successfully generated ${outputPngPath}`);
+                console.log(`[generateMapPng] Successfully generated ${outputPngPath}`);
                 resolve();
             });
         });
@@ -1223,7 +1231,7 @@ app.set('view engine', 'ejs'); app.set('views', path.join(__dirname, 'views'));
 app.use(expressLayouts); app.set('layout', 'layout'); app.set("layout extractScripts", true); app.set("layout extractStyles", true);
 app.use(cookieParser()); app.use(express.json()); app.use(express.urlencoded({ extended: true }));
 app.use(session({ store: new SQLiteStore({ db: 'sessions.db', dir: __dirname, table: 'sessions', concurrentDB: true }), secret: sessionSecret || 'fallback-secret-change-me', resave: false, saveUninitialized: false, cookie: { secure: process.env.NODE_ENV === 'production', httpOnly: true, maxAge: 1000 * 60 * 60 * 24 * 7 } }));
-app.use((req, res, next) => { /* console.log(`[Request Logger] Path: ${req.path}, Method: ${req.method}, User: ${req.session?.email}`); */ next(); });
+app.use((req, res, next) => { console.log(`[Request Logger] Path: ${req.path}, Method: ${req.method}, User: ${req.session?.email}`);  next(); });
 function requireEmail(req, res, next) { if (!req.session.email) { res.clearCookie('targetGame'); Object.keys(req.cookies).forEach(cookieName => { if (cookieName.startsWith('targetPassword_') || cookieName.startsWith('targetVariant_')) res.clearCookie(cookieName); }); if (req.path === '/') return next(); if (req.xhr || req.headers.accept.indexOf('json') > -1) return res.status(401).json({ success: false, output: 'Session expired or invalid. Please reload.' }); return res.redirect('/'); } res.locals.user = req.session.email; next(); }
 function requireAuth(req, res, next) { if (req.session && req.session.email) { req.userId = req.session.email; next(); } else { res.status(401).json({ success: false, message: 'Authentication required.' }); } }
 try { if (!fs.existsSync(staticMapDir)) { fs.mkdirSync(staticMapDir, { recursive: true }); console.log(`Created static map directory: ${staticMapDir}`); } } catch (err) { console.error(`Error creating static map directory ${staticMapDir}:`, err); }
@@ -1233,7 +1241,7 @@ console.log(`Serving static maps from ${staticMapDir} at /generated_maps`);
 app.get('/', (req, res) => { if (req.session.email) return res.redirect('/dashboard'); res.render('index', { layout: false }); });
 app.post('/start', async (req, res) => { const email = req.body.email; if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.render('index', { layout: false, error: 'Please enter a valid email address.' }); try { await ensureUserExists(email); req.session.email = email; res.clearCookie('targetGame'); Object.keys(req.cookies).forEach(cookieName => { if (cookieName.startsWith('targetPassword_') || cookieName.startsWith('targetVariant_')) res.clearCookie(cookieName); }); req.session.save(err => { if (err) { console.error("Session save error on /start:", err); return res.render('index', { layout: false, error: 'Session error. Please try again.' }); } res.redirect('/dashboard'); }); } catch (err) { console.error("Error ensuring user exists:", err); res.render('index', { layout: false, error: 'Database error. Please try again.' }); } });
 app.get('/register', requireEmail, (req, res) => { res.render('register', { email: req.session.email, error: null, formData: {} }); });
-app.post('/register', requireEmail, async (req, res) => { const email = req.session.email; const { name, address, phone, country, level, site } = req.body; if (!name || !address || !phone || !country || !level || !site) return res.render('register', { email: email, error: 'All fields are required.', formData: req.body }); const registerCommand = `REGISTER\nname: ${name}\naddress: ${address}\nphone: ${phone}\ncountry: ${country}\nlevel: ${level}\ne-mail: ${email}\nsite: ${site}\npackage: yes\nEND`; try { const result = await executeDipCommand(email, registerCommand); const outputLower = result.stdout.trim().toLowerCase(); if (outputLower.includes("registration accepted") || outputLower.includes("updated registration") || outputLower.includes("already registered") || outputLower.includes("this is an update to an existing registration")) { await setUserRegistered(email); console.log(`[Register Success] User ${email} registered with judge.`); req.session.save(err => { if (err) console.error("Session save error after registration:", err); res.redirect('/dashboard'); }); } else { console.error(`[Register Fail] Judge rejected registration for ${email}. Output:\n${result.output}`); res.render('register', { email: email, error: `Judge rejected registration. Please check the output below and correct your details.`, judgeOutput: result.output, formData: req.body }); } } catch (error) { console.error(`[Register Error] Failed to execute REGISTER command for ${email}:`, error); res.render('register', { email: email, error: `Error communicating with the judge: ${error.output || error.message}`, judgeOutput: error.output, formData: req.body }); } });
+app.post('/register', requireEmail, async (req, res) => { const email = req.session.email; const { name, address, phone, country, level, site } = req.body; if (!name || !address || !phone || !country || !level || !site) return res.render('register', { email: email, error: 'All fields are required.', formData: req.body }); const registerCommand = `REGISTER\nname: ${name}\naddress: ${address}\nphone: ${phone}\ncountry: ${country}\nlevel: ${level}\ne-mail: ${email}\nsite: ${site}\npackage: yes\nEND`; try { const result = await executeDipCommand(email, registerCommand); const outputLower = result.stdout.trim().toLowerCase(); if (outputLower.includes("registration accepted") || outputLower.includes("registration processed") || outputLower.includes("updated registration") || outputLower.includes("already registered") || outputLower.includes("this is an update to an existing registration")) { await setUserRegistered(email); console.log(`[Register Success] User ${email} registered with judge.`); req.session.save(err => { if (err) console.error("Session save error after registration:", err); res.redirect('/dashboard'); }); } else { console.error(`[Register Fail] Judge rejected registration for ${email}. Output:\n${result.output}`); res.render('register', { email: email, error: `Judge rejected registration. Please check the output below and correct your details.`, judgeOutput: result.output, formData: req.body }); } } catch (error) { console.error(`[Register Error] Failed to execute REGISTER command for ${email}:`, error); res.render('register', { email: email, error: `Error communicating with the judge: ${error.output || error.message}`, judgeOutput: error.output, formData: req.body }); } });
 app.post('/signoff', (req, res) => { const email = req.session.email; console.log(`[Auth] User ${email} signing off.`); req.session.destroy((err) => { res.clearCookie('connect.sid'); res.clearCookie('targetGame'); Object.keys(req.cookies).forEach(cookieName => { if (cookieName.startsWith('targetPassword_') || cookieName.startsWith('targetVariant_')) res.clearCookie(cookieName); }); if (err) console.error("Session destruction error:", err); res.redirect('/'); }); });
 app.get('/api/games', requireEmail, async (req, res) => { try { const filters = { status: req.query.status, variant: req.query.variant, phase: req.query.phase, player: req.query.player }; Object.keys(filters).forEach(key => filters[key] === undefined && delete filters[key]); const gameStates = await getFilteredGameStates(filters); const gameList = Object.values(gameStates).map(g => ({ name: g.name, status: g.status, variant: g.variant, phase: g.currentPhase, players: g.players.map(p => p.email), masters: g.masters, nextDeadline: g.nextDeadline })); res.json({ success: true, games: gameList }); } catch (err) { console.error("[API Error] /api/games:", err); res.status(500).json({ success: false, message: "Failed to retrieve game list." }); } });
 app.get('/api/game/:gameName', requireEmail, async (req, res) => {
@@ -1448,13 +1456,13 @@ process.on('SIGINT', () => { console.log('SIGINT signal received: closing databa
 
 // --- Sync dip.master with DB ---
 async function syncDipMaster() {
-    // console.log('[Sync] Starting sync from dip.master...');
+     console.log('[Sync] Starting sync from dip.master...');
     let gamesFromMaster = {}; let syncError = null;
     try {
         if (!fs.existsSync(dipMasterPath)) throw new Error(`File not found: ${dipMasterPath}.`);
         const masterContent = fs.readFileSync(dipMasterPath, 'utf8');
         const gameBlocks = masterContent.split(/^\s*-\s*$/m);
-        const gameLineRegex = /^([a-zA-Z0-9]{1,8})\s+(\S+)\s+([SFUW]\d{4}[MRBAX]|Forming|Paused|Finished|Terminated)/i;
+        const gameLineRegex = /^\s*([a-zA-Z0-9]{1,8})\s+(\S+)\s+([SFUW]\d{4}[MRBAX]|Forming|Paused|Finished|Terminated)/i;
         gameBlocks.forEach((block) => {
             const blockTrimmed = block.trim(); if (!blockTrimmed) return;
             const blockLines = blockTrimmed.split('\n');
@@ -1471,7 +1479,7 @@ async function syncDipMaster() {
                 }
             }
         });
-        // console.log(`[Sync] Found ${Object.keys(gamesFromMaster).length} potential games in ${dipMasterPath}`);
+         console.log(`[Sync] Found ${Object.keys(gamesFromMaster).length} potential games in ${dipMasterPath}`);
         const existingStates = await getAllGameStates();
         for (const gameName in gamesFromMaster) {
             const masterInfo = gamesFromMaster[gameName]; let currentState = existingStates[gameName]; let needsSave = false;
@@ -1483,7 +1491,7 @@ async function syncDipMaster() {
             }
             if (needsSave) { currentState.lastUpdated = Math.floor(Date.now() / 1000); await saveGameState(gameName, currentState); }
         }
-        // console.log(`[Sync DB] Finished DB update from dip.master.`);
+         console.log(`[Sync DB] Finished DB update from dip.master.`);
     } catch (err) { console.error(`[Sync Error] Error reading or processing ${dipMasterPath}:`, err); syncError = `Failed to load/sync game list from ${dipMasterPath}. Error: ${err.code || err.message}`; }
     return { gamesFromMaster, syncError };
 }
