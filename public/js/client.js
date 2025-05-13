@@ -1404,6 +1404,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     renderMap(gameName, data.gameState.currentPhase); // Render the map
 
                     loadCredentialsForGame(gameName); // Load credentials for this game
+                    updateProvinceAbbrExplorer(currentGameData);
                 } else {
                     // Handle backend success=false
                     const errorMsg = data.message || `Failed to fetch game state for ${gameName} (unknown reason).`;
@@ -1413,6 +1414,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     updateCommandGenerator(null); // Reset recommendations
                     renderMap(null); // Clear map
                     loadCredentialsForGame(gameName); // Still try to load credentials
+                    updateProvinceAbbrExplorer(null);
                 }
             })
             .catch(error => {
@@ -1422,6 +1424,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateCommandGenerator(null);
                 renderMap(null); // Clear map
                 loadCredentialsForGame(gameName);
+                updateProvinceAbbrExplorer(null);
             });
     }
 
@@ -3130,5 +3133,79 @@ document.addEventListener('DOMContentLoaded', () => {
             generatedCommandTextarea.focus();
         });
     }
+
+    // Province Abbreviation Explorer logic
+    function updateProvinceAbbrExplorer(gameState) {
+        const explorerCard = document.getElementById('province-abbr-explorer');
+        const select = document.getElementById('province-select');
+        const abbrList = document.getElementById('province-abbr-list');
+        if (!explorerCard || !select || !abbrList) return;
+
+        // Helper to clear UI
+        function clearExplorer(msg = 'Select a game to view provinces.') {
+            select.innerHTML = '<option value="">Select a province...</option>';
+            select.disabled = true;
+            abbrList.innerHTML = `<span class='text-gray-400'>${msg}</span>`;
+        }
+
+        if (!gameState || !gameState.variant) {
+            clearExplorer();
+            return;
+        }
+
+        // Fetch abbreviations for the variant
+        select.disabled = true;
+        select.innerHTML = '<option value="">Loading provinces...</option>';
+        abbrList.innerHTML = '';
+        fetch(`/api/mapdata/${encodeURIComponent(gameState.variant)}/abbreviations`)
+            .then(res => {
+                if (!res.ok) throw new Error('Failed to fetch province abbreviations.');
+                return res.json();
+            })
+            .then(data => {
+                if (!data.success || !Array.isArray(data.abbreviations) || data.abbreviations.length === 0) {
+                    clearExplorer('No province data found for this variant.');
+                    return;
+                }
+                // Build a map: fullName -> [abbr, ...aliases]
+                const provinceMap = {};
+                data.abbreviations.forEach(entry => {
+                    provinceMap[entry.fullName] = entry.abbreviations;
+                });
+                const provinceNames = Object.keys(provinceMap).sort((a, b) => a.localeCompare(b));
+                select.innerHTML = '<option value="">Select a province...</option>' +
+                    provinceNames.map(name => `<option value="${encodeURIComponent(name)}">${name}</option>`).join('');
+                select.disabled = false;
+                abbrList.innerHTML = '<span class="text-gray-400">Select a province to see abbreviations.</span>';
+
+                // On change, show abbreviations
+                select.onchange = function() {
+                    const selected = decodeURIComponent(select.value);
+                    if (!selected || !provinceMap[selected]) {
+                        abbrList.innerHTML = '<span class="text-gray-400">Select a province to see abbreviations.</span>';
+                        return;
+                    }
+                    const abbrs = provinceMap[selected];
+                    abbrList.innerHTML = `<strong>Abbreviations:</strong> <span class="font-mono">${abbrs.join(', ')}</span>`;
+                };
+            })
+            .catch(err => {
+                clearExplorer('Error loading province data.');
+            });
+    }
+
+    // ... existing code ...
+
+    // In fetchAndDisplayGameState, after updateGameStateSidebar and updateCommandGenerator:
+    // updateProvinceAbbrExplorer(currentGameData);
+    // And in error/clear cases, call updateProvinceAbbrExplorer(null);
+
+    // ... inside fetchAndDisplayGameState ...
+    // After updateGameStateSidebar(currentGameData); and updateCommandGenerator(...);
+    // Add:
+    // updateProvinceAbbrExplorer(currentGameData);
+    // ...
+    // In error/clear cases, add:
+    // updateProvinceAbbrExplorer(null);
 
 }); // End DOMContentLoaded wrapper

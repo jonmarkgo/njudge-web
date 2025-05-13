@@ -850,10 +850,11 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
 };
 
 
+
 /**
- * Parses a map.<variantname> file to extract province full names and their primary abbreviations.
+ * Parses a map.<variantname> file to extract province full names and all their abbreviations (main and aliases).
  * @param {string} variantName - The name of the variant.
- * @returns {Promise<Array<{fullName: string, abbreviation: string}>>} - A promise that resolves to an array of province-abbreviation pairs.
+ * @returns {Promise<Array<{fullName: string, abbreviations: string[]}>>} - A promise that resolves to an array of province-abbreviation pairs.
  * @throws {Error} If the map file cannot be read or parsed.
  */
 async function parseMapVariantFileForAbbreviations(variantName) {
@@ -884,10 +885,15 @@ async function parseMapVariantFileForAbbreviations(variantName) {
     }
 
     console.log(`[Map Abbr Parse] Parsing abbreviations from: ${usedPath}`);
-    const provinceAbbreviations = [];
+    const provinceMap = {}; // fullName -> Set of abbreviations
     const lines = fileContent.split(/\r?\n/);
-    // Regex: Full Name (capture 1), comma, metadata (ignore), first abbreviation (capture 2)
-    const provinceLineRegex = /^([^,]+?)\s*,\s*[^.]*\.\s*([a-zA-Z0-9]{3,})(?:\s+.*)?$/;
+
+    // Regex: Full Name (capture 1), comma, rest of the line (capture 2)
+    const provinceLineRegex = /^([^,]+?)\s*,\s*(.*)$/;
+    // Regex to find abbreviations within the "rest of the line"
+    // Looks for a pattern of abbreviations (e.g., "abr1 abr2 ...") at the end of the string.
+    // First abbreviation must be 3+ alphanumeric chars. Subsequent ones (if any) must be 2+ alphanumeric chars.
+    const abbrExtractionRegex = /([a-zA-Z0-9]{3,}(?:\s+[a-zA-Z0-9]{2,})*)$/;
 
     for (const line of lines) {
         const trimmedLine = line.trim();
@@ -895,32 +901,56 @@ async function parseMapVariantFileForAbbreviations(variantName) {
             continue; // Skip comments and empty lines
         }
         if (trimmedLine === '-1') {
-            break; // Stop parsing at the first separator line
+            break; // Stop parsing at the first separator line (common in these map files)
         }
 
         const match = trimmedLine.match(provinceLineRegex);
         if (match) {
             const fullName = match[1].trim();
-            const abbreviation = match[2].trim(); // This is the first abbreviation
-            if (fullName && abbreviation) {
-                provinceAbbreviations.push({ fullName, abbreviation });
+            const restOfLine = match[2].trim();
+
+            // Now, extract abbreviations from the end of restOfLine
+            const abbrMatch = restOfLine.match(abbrExtractionRegex);
+
+            if (abbrMatch) {
+                const abbrsStr = abbrMatch[1].trim(); // This is the "abbr1 abbr2 ..." part
+                const abbrs = abbrsStr.split(/\s+/).filter(Boolean);
+
+                if (fullName && abbrs.length > 0) {
+                    if (!provinceMap[fullName]) provinceMap[fullName] = new Set();
+                    abbrs.forEach(abbr => provinceMap[fullName].add(abbr.toUpperCase())); // Standardize to uppercase
+                } else {
+                    // This case might occur if fullName is empty or abbrs array is empty after split.
+                    console.warn(`[Map Abbr Parse Warn] Extracted empty fullName or abbrs from line in ${usedPath}: "${trimmedLine}". FullName: '${fullName}', AbbrsStr: '${abbrsStr}'`);
+                }
             } else {
-                console.warn(`[Map Abbr Parse Warn] Partially matched line in ${usedPath}: "${trimmedLine}". FullName: '${fullName}', Abbr: '${abbreviation}'`);
+                // This means the "restOfLine" didn't end with a pattern of abbreviations
+                // recognizable by abbrExtractionRegex. This might be okay for lines that are
+                // not standard province definitions or have unusual abbreviation formats.
+                // Example: "Some Sea Zone, w0." - "w0." won't match if it's not 3+ alphanumeric.
+                console.warn(`[Map Abbr Parse Warn] Could not extract standard abbreviations from restOfLine in ${usedPath}: "${restOfLine}" (from line: "${trimmedLine}")`);
             }
         } else {
-            // console.warn(`[Map Abbr Parse Warn] Line did not match province regex in ${usedPath}: "${trimmedLine}"`);
+            // This means the line didn't match the basic `FullName, Rest` pattern.
+            // It's likely not a province definition line.
+            // console.warn(`[Map Abbr Parse Warn] Line did not match basic province regex in ${usedPath}: "${trimmedLine}"`);
         }
     }
 
+    // Convert to array of { fullName, abbreviations: [] }
+    const provinceAbbreviations = Object.entries(provinceMap).map(([fullName, abbrSet]) => ({
+        fullName,
+        abbreviations: Array.from(abbrSet) // Abbreviations are already uppercase
+    }));
+
     if (provinceAbbreviations.length === 0) {
-        console.warn(`[Map Abbr Parse Warn] No abbreviations parsed from ${usedPath} for variant ${variantName}. Check file format.`);
+        console.warn(`[Map Abbr Parse Warn] No abbreviations parsed from ${usedPath} for variant ${variantName}. Check file format and content.`);
     } else {
-        console.log(`[Map Abbr Parse Success] Parsed ${provinceAbbreviations.length} abbreviations for variant ${variantName}.`);
+        console.log(`[Map Abbr Parse Success] Parsed ${provinceAbbreviations.length} provinces for variant ${variantName}.`);
     }
 
     return provinceAbbreviations;
 }
-
 
 // --- Command Recommendation Logic ---
 const getRecommendedCommands = (gameState, userEmail) => {
@@ -1699,17 +1729,14 @@ app.get('/api/mapdata/:variantName/abbreviations', requireAuth, async (req, res)
     }
 
     try {
-        const abbreviations = await parseMapVariantFileForAbbreviations(variantName);
-        if (abbreviations.length > 0) {
-            res.json({ success: true, variant: variantName, abbreviations: abbreviations });
+        const provinceAbbreviations = await parseMapVariantFileForAbbreviations(variantName);
+        if (provinceAbbreviations.length > 0) {
+            res.json({ success: true, variant: variantName, abbreviations: provinceAbbreviations });
         } else {
-            // If no abbreviations found, it might mean the file was empty or format was unexpected,
-            // but not necessarily a file-not-found error if parseMapVariantFileForAbbreviations didn't throw.
             res.status(404).json({ success: false, message: `No abbreviation data found or parsed for variant '${variantName}'. Check server logs and map file format.` });
         }
     } catch (error) {
         console.error(`[API Error] /api/mapdata/${variantName}/abbreviations:`, error);
-        // Check if the error is due to file not found from our parser
         if (error.message.startsWith('Failed to read map abbreviation file')) {
             res.status(404).json({ success: false, message: error.message });
         } else {

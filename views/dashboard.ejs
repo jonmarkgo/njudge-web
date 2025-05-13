@@ -63,6 +63,17 @@
              <p class="text-xs text-orange-600 mt-2">Warning: Game password and variant stored in browser cookies for convenience. Clear target/sign out to remove.</p>
         </div>
 
+        <!-- Province Abbreviation Explorer -->
+        <div class="card mb-6" id="province-abbr-explorer">
+            <h2 class="text-lg font-semibold text-primary border-b border-gray-200 pb-2 mb-3">Province Abbreviations</h2>
+            <div id="province-abbr-controls">
+                <select id="province-select" class="input text-sm w-full mb-2" disabled>
+                    <option value="">Select a province...</option>
+                </select>
+                <div id="province-abbr-list" class="text-xs text-gray-700"></div>
+            </div>
+        </div>
+
         <!-- Main Grid: Command Generator, Output, Map, Game State -->
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
             <!-- Generator Controls (Left Column) -->
