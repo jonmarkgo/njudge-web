@@ -956,7 +956,7 @@ async function parseMapVariantFileForAbbreviations(variantName) {
     // Convert to array of { fullName, abbreviations: [] }
     const provinceAbbreviations = Object.entries(provinceMap).map(([fullName, abbrSet]) => ({
         fullName,
-        abbreviations: Array.from(abbrSet) // Abbreviations are already uppercase
+        abbreviations: Array.from(abbrSet).filter(abbr => abbr.toUpperCase() !== 'XXXXXX') // Filter out 'XXXXXX'
     }));
 
     if (provinceAbbreviations.length === 0) {
