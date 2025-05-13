@@ -515,7 +515,6 @@ const ensureMapDataParsed = async (variantName) => {
 
 // --- Parsing Helper Functions ---
 
-
 const parseListOutput = (gameName, output, nameToAbbr) => {
     console.log(`[Parser LIST] Attempting to parse LIST output for ${gameName}`);
     const gameState = {
@@ -526,18 +525,16 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
         units: [], supplyCenters: []
     };
     const lines = output.split('\n');
-    let currentSection = 'header'; // Start in header
+    let currentSection = 'header'; 
     let currentPowerForUnits = null;
     let currentPowerForSCs = null;
 
     const explicitDeadlineRegex = /::\s*Deadline:\s*([SFUW]\d{4}[MRBAX]?)\s+(.*)/i;
     const activeStatusLineRegex = /Status of the (\w+) phase for (Spring|Summer|Fall|Winter) of (\d{4})\./i;
     const variantRegex = /Variant:\s*(\S+)\s*(.*)/i;
-    // Player line: PowerName potentially_spaces_and_numbers email (optional status)
     const playerLineRegex = /^\s*([a-zA-Z]+)\s+[\s\S]*?([\w.-]+@[\w.-]+\.\w+)(?:\s*\(([^)]+)\))?.*$/i;
     const masterLineRegex = /^\s*(?:Master|Moderator)\s+[\s\S]*?([\w.-]+@[\w.-]+\.\w+).*$/i;
     const observerLineRegex = /^\s*Observer\s*:\s*([\w.-]+@[\w.-]+\.\w+).*$/i;
-
     const statusRegex = /Game status:\s*(.*)/i;
     const settingsHeaderRegex = /The parameters for .*? are as follows:|Game settings:|flags:/i;
     const pressSettingRegex = /Press:\s*(.*?)(?:,|\s*$)/i;
@@ -545,10 +542,10 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
     const nmrSettingRegex = /\b(NMR|NoNMR)\b/i;
     const concessionSettingRegex = /\b(Concessions|No Concessions)\b/i;
     const emailRegex = /[\w.-]+@[\w.-]+\.\w+/;
-    const unitHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s*$/i;
-    const unitLineRegex = /^\s+(A|F|W|G|R)\s+([A-Z]{3}(?:\/[NESW]C)?)\s*(?:\(([^)]+)\))?/i;
+    const unitHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s*$/i; // For blocks like "Austria: \n A VIE \n F TRI"
+    const unitLineRegex = /^\s+(A|F|W|G|R)\s+([A-Z]{3}(?:\/[NESW]C)?)\s*(?:\(([^)]+)\))?/i; // For lines under a unitHeader
     const scHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous)\s+\(\d+\):\s*$/i;
-    const directUnitLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s+(Army|Fleet|Garrison|Wing|Artillery)\s+(.+)\.\s*$/i;
+    const directUnitLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s+(Army|Fleet|Garrison|Wing|Artillery)\s+(.+)\.\s*$/i; // For lines like "Austria: Army Vienna."
     const citiesControlledHeaderRegex = /^Cities Controlled:/i;
     const playerListHeader = "The following players are signed up for game";
     const flagsLineRegex = /^flags:\s*(.*)/i;
@@ -558,19 +555,27 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
         let match;
 
         // Section switching logic - order can be important
+        // More specific headers should come first.
         if (trimmedLine.startsWith(playerListHeader)) {
             currentSection = 'players';
             console.log(`[Parser LIST ${gameName}] Switched to section: players`);
-            continue; // Consume this line, move to next
+            continue;
         } else if (settingsHeaderRegex.test(trimmedLine)) {
             currentSection = 'settings';
             console.log(`[Parser LIST ${gameName}] Switched to section: settings`);
-            // Don't continue here, as the "flags:" line itself needs processing
+            // Don't continue, process the "flags:" line if it's this one
         } else if (citiesControlledHeaderRegex.test(trimmedLine)) {
             currentSection = 'cities_controlled';
             console.log(`[Parser LIST ${gameName}] Switched to section: cities_controlled`);
             continue;
+        } else if (trimmedLine.match(directUnitLineRegex) && currentSection !== 'players') {
+            // If it's a direct unit line AND we are NOT in the 'players' section (to avoid misinterpreting player names)
+            // This is a self-contained unit definition, not needing a section switch.
+            // No `continue` here, let it fall through to the switch if currentSection isn't 'units'.
+            // If currentSection IS 'units', currentPowerForUnits would be set by unitHeaderRegex first.
+            // This directUnitLineRegex is for cases where units are listed one per line with power name.
         } else {
+            // These headers define blocks for units or SCs by power
             match = trimmedLine.match(unitHeaderRegex);
             if (match) {
                 currentSection = 'units';
@@ -587,7 +592,6 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
             }
         }
 
-        // If it's an empty line, reset sub-section specific vars
         if (!trimmedLine) {
             if (currentSection === 'units' && currentPowerForUnits) {
                 console.log(`[Parser LIST ${gameName}] Exiting units sub-section for power: ${currentPowerForUnits} (empty line)`);
@@ -597,49 +601,48 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
                 console.log(`[Parser LIST ${gameName}] Exiting scs sub-section for power: ${currentPowerForSCs} (empty line)`);
                 currentPowerForSCs = null;
             }
-            // Potentially switch out of 'players' section if an empty line truly signifies its end
-            // if (currentSection === 'players') {
-            //     console.log(`[Parser LIST ${gameName}] Empty line in players section, potentially ending player list.`);
-            //     // currentSection = 'unknown_after_players'; // Or similar
-            // }
-            continue; // Skip further processing for empty lines
+            // If we are in 'players' section and encounter an empty line,
+            // it might signify the end of the player list.
+            if (currentSection === 'players') {
+                console.log(`[Parser LIST ${gameName}] Empty line in 'players' section. Assuming end of player list. Switching to 'unknown_after_players'.`);
+                currentSection = 'unknown_after_players'; // Or just 'header' or 'unknown'
+            }
+            continue;
         }
 
-        // Process direct unit lines if they appear outside a specific unit block (e.g. initial setup)
-        // This should ideally be conditional on not being in another specific parsing mode like 'players'
-        if (currentSection !== 'players' && currentSection !== 'settings') { // Avoid misinterpreting player/setting lines as units
-            match = trimmedLine.match(directUnitLineRegex);
-            if (match) {
-                const powerNameFromLine = match[1];
-                const powerCanonical = powerNameFromLine.toUpperCase();
-                const unitTypeFull = match[2];
-                let unitTypeChar = unitTypeFull.charAt(0).toUpperCase();
-                if (unitTypeFull.toUpperCase() === 'ARTILLERY') unitTypeChar = 'R';
-                else if (unitTypeFull.toUpperCase() === 'GARRISON') unitTypeChar = 'G';
-                else if (unitTypeFull.toUpperCase() === 'WING') unitTypeChar = 'W';
+        // Unit parsing logic (direct lines first, then section-based)
+        match = trimmedLine.match(directUnitLineRegex);
+        if (match) {
+            const powerNameFromLine = match[1];
+            const powerCanonical = powerNameFromLine.toUpperCase();
+            const unitTypeFull = match[2];
+            let unitTypeChar = unitTypeFull.charAt(0).toUpperCase();
+            if (unitTypeFull.toUpperCase() === 'ARTILLERY') unitTypeChar = 'R';
+            else if (unitTypeFull.toUpperCase() === 'GARRISON') unitTypeChar = 'G';
+            else if (unitTypeFull.toUpperCase() === 'WING') unitTypeChar = 'W';
 
-                const locationName = match[3].trim();
-                let locationAbbr = locationName.toUpperCase().substring(0, 3);
-                if (nameToAbbr) {
-                    const resolvedAbbr = nameToAbbr[locationName.toLowerCase()];
-                    if (resolvedAbbr) {
-                        locationAbbr = resolvedAbbr;
-                    } else {
-                        console.warn(`[Parser LIST ${gameName}] Direct Unit: Could not find abbr for location '${locationName}' (using '${locationAbbr}' as fallback) for power ${powerCanonical}. nameToAbbr keys: ${Object.keys(nameToAbbr).slice(0,10).join(',')}...`);
-                    }
-                }
-                console.log(`[Parser LIST ${gameName}] Adding direct unit: ${powerCanonical} ${unitTypeChar} ${locationAbbr}`);
-                gameState.units.push({ power: powerCanonical, type: unitTypeChar, location: locationAbbr, status: null });
-                const playerForUnit = gameState.players.find(p => p.power.toUpperCase() === powerCanonical);
-                if (playerForUnit) { if (!playerForUnit.units) playerForUnit.units = []; playerForUnit.units.push({ type: unitTypeChar, location: locationAbbr, status: null }); }
-                continue; // Consumed this line
+            const locationName = match[3].trim();
+            let locationAbbr = locationName.toUpperCase().substring(0, 3);
+            if (nameToAbbr && nameToAbbr[locationName.toLowerCase()]) {
+                locationAbbr = nameToAbbr[locationName.toLowerCase()];
+            } else {
+                console.warn(`[Parser LIST ${gameName}] Direct Unit: Could not find abbr for location '${locationName}' (using '${locationAbbr}' as fallback) for power ${powerCanonical}. nameToAbbr keys: ${Object.keys(nameToAbbr || {}).slice(0,10).join(',')}...`);
             }
+            console.log(`[Parser LIST ${gameName}] Adding direct unit: ${powerCanonical} ${unitTypeChar} ${locationAbbr}`);
+            gameState.units.push({ power: powerCanonical, type: unitTypeChar, location: locationAbbr, status: null });
+            const playerForUnit = gameState.players.find(p => p.power.toUpperCase() === powerCanonical);
+            if (playerForUnit) {
+                if (!playerForUnit.units) playerForUnit.units = [];
+                playerForUnit.units.push({ type: unitTypeChar, location: locationAbbr, status: null });
+            }
+            continue; // This line is consumed
         }
 
 
         switch (currentSection) {
-            case 'header': // Also 'unknown' can fall here
+            case 'header':
             case 'unknown':
+            case 'unknown_after_players': // Treat this like header/unknown for further parsing
                 match = line.match(explicitDeadlineRegex); if (match) { gameState.currentPhase = match[1].trim().toUpperCase(); gameState.nextDeadline = match[2].trim(); if (gameState.status === 'Unknown' || gameState.status === 'Forming') gameState.status = 'Active'; break; }
                 match = line.match(activeStatusLineRegex); if (match) { const [, phaseTypeStr, seasonStr, year] = match; let seasonCode = 'S'; if (seasonStr.toLowerCase() === 'fall') seasonCode = 'F'; else if (seasonStr.toLowerCase() === 'winter') seasonCode = 'W'; else if (seasonStr.toLowerCase() === 'summer') seasonCode = 'U'; let phaseCode = 'M'; if (phaseTypeStr.toLowerCase() === 'retreat') phaseCode = 'R'; else if (phaseTypeStr.toLowerCase() === 'adjustment' || phaseTypeStr.toLowerCase() === 'builds') phaseCode = 'A'; gameState.currentPhase = `${seasonCode}${year}${phaseCode}`; gameState.status = 'Active'; break; }
                 match = line.match(statusRegex); if (match) { const explicitStatus = match[1].trim(); if (explicitStatus !== 'Active' || gameState.status === 'Unknown') gameState.status = explicitStatus; break; }
@@ -656,18 +659,18 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
             case 'players':
                 console.log(`[Parser LIST ${gameName}] In 'players' section, processing line: "${trimmedLine}"`);
                 let playerMatch = trimmedLine.match(playerLineRegex);
-                let masterMatch = trimmedLine.match(masterLineRegex);
-                let observerMatch = trimmedLine.match(observerLineRegex);
+                let masterMatch = trimmedLine.match(masterLineRegex); // Master can also be in this list
+                let observerMatch = trimmedLine.match(observerLineRegex); // Observers too
 
                 if (playerMatch) {
                     const powerNameFromLine = playerMatch[1];
                     const email = playerMatch[2];
-                    const statusFromRegex = playerMatch[3]; // Status captured from regex if present
-                    let playerStatus = statusFromRegex ? statusFromRegex.trim() : 'Playing'; // Use captured status or default
+                    const statusFromRegex = playerMatch[3];
+                    let playerStatus = statusFromRegex ? statusFromRegex.trim() : 'Playing';
 
                     console.log(`[Parser LIST ${gameName}] Player match: Power=${powerNameFromLine}, Email=${email}, Status=${playerStatus}`);
                     gameState.players.push({
-                        power: powerNameFromLine,
+                        power: powerNameFromLine, // Keep original casing for display
                         email: email || null,
                         status: playerStatus,
                         name: null,
@@ -687,13 +690,18 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
                         gameState.observers.push(email);
                     }
                 } else {
-                    if (trimmedLine && !trimmedLine.startsWith("---") && !trimmedLine.includes("signed up for game")) { // Avoid logging separators or re-logging header
-                        console.log(`[Parser LIST ${gameName}] In 'players' section, no match for line: "${trimmedLine}"`);
+                     // If it's not a player, master, or observer, and not an empty line (handled above),
+                     // it means the player list section has ended.
+                    if (trimmedLine && !trimmedLine.startsWith("---") && !trimmedLine.includes("signed up for game")) {
+                        console.log(`[Parser LIST ${gameName}] In 'players' section, no match for line: "${trimmedLine}". Assuming end of player list. Switching to 'unknown_after_players'.`);
+                        currentSection = 'unknown_after_players';
+                        // Re-process the current line under the new section if it wasn't consumed
+                        // This is tricky; for now, we'll let the next iteration handle it.
+                        // A more robust FSM might re-evaluate the line against all section headers.
                     }
                 }
                 break;
             case 'settings':
-                // ... (settings parsing logic remains the same)
                 match = line.match(pressSettingRegex); if (match) gameState.settings.press = match[1].trim();
                 match = line.match(diasSettingRegex); if (match) gameState.settings.dias = (match[1].toUpperCase() === 'DIAS');
                 match = line.match(nmrSettingRegex); if (match) gameState.settings.nmr = (match[1].toUpperCase() === 'NMR');
@@ -755,7 +763,12 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
                 }
                 break;
             case 'units':
-                if (!currentPowerForUnits) break;
+                if (!currentPowerForUnits) { // If currentPowerForUnits is null, we shouldn't be in 'units' section for line items
+                    console.log(`[Parser LIST ${gameName}] In 'units' section but currentPowerForUnits is null. Line: "${trimmedLine}". Switching to 'unknown'.`);
+                    currentSection = 'unknown';
+                    // Potentially re-process this line under 'unknown' section in a more advanced FSM
+                    break;
+                }
                 match = line.match(unitLineRegex);
                 if (match) {
                     const unitType = match[1].toUpperCase();
@@ -764,10 +777,13 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
                     console.log(`[Parser LIST ${gameName}] Adding unit (units section): ${currentPowerForUnits} ${unitType} ${locationAbbrFromList}`);
                     gameState.units.push({ power: currentPowerForUnits, type: unitType, location: locationAbbrFromList, status: unitStatus });
                     const playerForUnit = gameState.players.find(p => p.power.toUpperCase() === currentPowerForUnits);
-                    if (playerForUnit) playerForUnit.units.push({ type: unitType, location: locationAbbrFromList, status: unitStatus });
+                    if (playerForUnit) {
+                        if(!playerForUnit.units) playerForUnit.units = [];
+                        playerForUnit.units.push({ type: unitType, location: locationAbbrFromList, status: unitStatus });
+                    }
                 } else if (trimmedLine && !trimmedLine.startsWith('-')) {
-                    console.log(`[Parser LIST ${gameName}] Exiting units section for power (unmatched line): ${currentPowerForUnits}`);
-                    currentPowerForUnits = null; currentSection = 'unknown'; // Revert to unknown if line doesn't fit unit pattern
+                    console.log(`[Parser LIST ${gameName}] Exiting units section for power (unmatched line): ${currentPowerForUnits}. Line: "${trimmedLine}". Switching to 'unknown'.`);
+                    currentPowerForUnits = null; currentSection = 'unknown';
                 }
                 break;
             case 'cities_controlled':
@@ -783,13 +799,10 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
                         if (nameMatch) {
                             const cityName = nameMatch[1].trim();
                             let provinceAbbr = cityName.toUpperCase().substring(0,3);
-                            if (nameToAbbr) {
-                                const resolvedAbbr = nameToAbbr[cityName.toLowerCase()];
-                                if (resolvedAbbr) {
-                                    provinceAbbr = resolvedAbbr;
-                                } else {
-                                    console.warn(`[Parser LIST ${gameName}] SC: Could not find abbr for SC name '${cityName}' for power ${powerCanonical} (using '${provinceAbbr}' as fallback). Original entry: '${entry.trim()}'. nameToAbbr keys: ${Object.keys(nameToAbbr).slice(0,10).join(',')}...`);
-                                }
+                            if (nameToAbbr && nameToAbbr[cityName.toLowerCase()]) {
+                                provinceAbbr = nameToAbbr[cityName.toLowerCase()];
+                            } else {
+                                console.warn(`[Parser LIST ${gameName}] SC: Could not find abbr for SC name '${cityName}' for power ${powerCanonical} (using '${provinceAbbr}' as fallback). Original entry: '${entry.trim()}'. nameToAbbr keys: ${Object.keys(nameToAbbr || {}).slice(0,10).join(',')}...`);
                             }
                             console.log(`[Parser LIST ${gameName}] Adding SC (cities_controlled): ${powerCanonical} owns ${provinceAbbr}`);
                             gameState.supplyCenters.push({ owner: powerCanonical, location: provinceAbbr });
@@ -804,13 +817,16 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
                     });
                 } else if (trimmedLine === 'Unowned:') { /* Ignore */ }
                 else if (trimmedLine && !trimmedLine.startsWith(' ') && !trimmedLine.startsWith('Unowned:') && !trimmedLine.startsWith('*')) {
-                    // If line in cities_controlled doesn't match power: city list, and isn't Unowned, it might be end of section
-                    console.log(`[Parser LIST ${gameName}] Exiting cities_controlled section (unmatched line): "${trimmedLine}"`);
+                    console.log(`[Parser LIST ${gameName}] Exiting cities_controlled section (unmatched line): "${trimmedLine}". Switching to 'unknown'.`);
                     currentSection = 'unknown';
                 }
                 break;
-            case 'scs': // This section might be redundant if "Cities Controlled" is comprehensive
-                if (!currentPowerForSCs) break;
+            case 'scs':
+                if (!currentPowerForSCs) {
+                    console.log(`[Parser LIST ${gameName}] In 'scs' section but currentPowerForSCs is null. Line: "${trimmedLine}". Switching to 'unknown'.`);
+                    currentSection = 'unknown';
+                    break;
+                }
                 const scLineRegex = /^\s+([A-Z]{3}(?:\/[NESW]C)?)\s*/i;
                 match = line.match(scLineRegex);
                 if (match) {
@@ -820,7 +836,7 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
                     const playerForSc = gameState.players.find(p => p.power.toUpperCase() === currentPowerForSCs);
                     if (playerForSc) { if (!playerForSc.supplyCenters) playerForSc.supplyCenters = []; if (!playerForSc.supplyCenters.includes(locationAbbrFromList)) playerForSc.supplyCenters.push(locationAbbrFromList); }
                 } else if (trimmedLine && !trimmedLine.startsWith('-')) {
-                    console.log(`[Parser LIST ${gameName}] Exiting scs section for power (unmatched line): ${currentPowerForSCs}`);
+                    console.log(`[Parser LIST ${gameName}] Exiting scs section for power (unmatched line): ${currentPowerForSCs}. Line: "${trimmedLine}". Switching to 'unknown'.`);
                     currentPowerForSCs = null; currentSection = 'unknown';
                 }
                 break;
