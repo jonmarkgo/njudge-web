@@ -514,555 +514,570 @@ const ensureMapDataParsed = async (variantName) => {
 
 
 // --- Parsing Helper Functions ---
+
 const parseListOutput = (gameName, output, nameToAbbr) => {
-     console.log(`[Parser LIST] Attempting to parse LIST output for ${gameName}`);
-    const gameState = {
-        name: gameName, status: 'Unknown', variant: 'Standard', options: [],
-        currentPhase: 'Unknown', nextDeadline: null, players: [], masters: [],
-        observers: [], settings: {}, rawListOutput: output,
-        lastUpdated: Math.floor(Date.now() / 1000),
-        units: [], supplyCenters: [] // Ensure these are initialized
-    };
-    const lines = output.split('\n');
-    let currentSection = 'header';
-    let currentPowerForUnits = null;
-    let currentPowerForSCs = null;
+    console.log(`[Parser LIST] Attempting to parse LIST output for ${gameName}`);
+   const gameState = {
+       name: gameName, status: 'Unknown', variant: 'Standard', options: [],
+       currentPhase: 'Unknown', nextDeadline: null, players: [], masters: [],
+       observers: [], settings: {}, rawListOutput: output,
+       lastUpdated: Math.floor(Date.now() / 1000),
+       units: [], supplyCenters: [] // Ensure these are initialized
+   };
+   const lines = output.split('\n');
+   let currentSection = 'header';
+   let currentPowerForUnits = null; // Will store the CANONICAL (uppercase) power name
+   let currentPowerForSCs = null;   // Will store the CANONICAL (uppercase) power name
 
-    const explicitDeadlineRegex = /::\s*Deadline:\s*([SFUW]\d{4}[MRBAX]?)\s+(.*)/i;
-    const activeStatusLineRegex = /Status of the (\w+) phase for (Spring|Summer|Fall|Winter) of (\d{4})\./i;
-    const variantRegex = /Variant:\s*(\S+)\s*(.*)/i;
-    const playerLineRegex = /^\s*([a-zA-Z]+)\s+\S+\s+\S+\s+\S+\s+([\w.-]+@[\w.-]+\.\w+).*$/i;
-    const masterLineRegex = /^\s*(?:Master|Moderator)\s+\d+\s+([\w.-]+@[\w.-]+\.\w+).*$/i;
-    const observerLineRegex = /^\s*Observer\s*:\s*([\w.-]+@[\w.-]+\.\w+).*$/i;
-    const statusRegex = /Game status:\s*(.*)/i;
-    const settingsHeaderRegex = /The parameters for .*? are as follows:|Game settings:|flags:/i; // Added "flags:"
-    const pressSettingRegex = /Press:\s*(.*?)(?:,|\s*$)/i;
-    const diasSettingRegex = /\b(NoDIAS|DIAS)\b/i;
-    const nmrSettingRegex = /\b(NMR|NoNMR)\b/i;
-    const concessionSettingRegex = /\b(Concessions|No Concessions)\b/i;
-    const emailRegex = /[\w.-]+@[\w.-]+\.\w+/;
-    // Updated unitHeaderRegex and unitLineRegex to include G and W
-    const unitHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s*$/i;
-    const unitLineRegex = /^\s+(A|F|W|G|R)\s+([A-Z]{3}(?:\/[NESW]C)?)\s*(?:\(([^)]+)\))?/i; // Added G, W, R
-    const scHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous)\s+\(\d+\):\s*$/i;
-    const directUnitLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s+(Army|Fleet|Garrison|Wing|Artillery)\s+(.+)\.\s*$/i;
-    const citiesControlledHeaderRegex = /^Cities Controlled:/i;
-    const playerListHeader = "The following players are signed up for game";
-    const flagsLineRegex = /^flags:\s*(.*)/i; // For Machiavelli flags
+   const explicitDeadlineRegex = /::\s*Deadline:\s*([SFUW]\d{4}[MRBAX]?)\s+(.*)/i;
+   const activeStatusLineRegex = /Status of the (\w+) phase for (Spring|Summer|Fall|Winter) of (\d{4})\./i;
+   const variantRegex = /Variant:\s*(\S+)\s*(.*)/i;
+   const playerLineRegex = /^\s*([a-zA-Z]+)\s+\S+\s+\S+\s+\S+\s+([\w.-]+@[\w.-]+\.\w+).*$/i; // Power name here is as-is
+   const masterLineRegex = /^\s*(?:Master|Moderator)\s+\d+\s+([\w.-]+@[\w.-]+\.\w+).*$/i;
+   const observerLineRegex = /^\s*Observer\s*:\s*([\w.-]+@[\w.-]+\.\w+).*$/i;
+   const statusRegex = /Game status:\s*(.*)/i;
+   const settingsHeaderRegex = /The parameters for .*? are as follows:|Game settings:|flags:/i;
+   const pressSettingRegex = /Press:\s*(.*?)(?:,|\s*$)/i;
+   const diasSettingRegex = /\b(NoDIAS|DIAS)\b/i;
+   const nmrSettingRegex = /\b(NMR|NoNMR)\b/i;
+   const concessionSettingRegex = /\b(Concessions|No Concessions)\b/i;
+   const emailRegex = /[\w.-]+@[\w.-]+\.\w+/;
+   const unitHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s*$/i;
+   const unitLineRegex = /^\s+(A|F|W|G|R)\s+([A-Z]{3}(?:\/[NESW]C)?)\s*(?:\(([^)]+)\))?/i;
+   const scHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous)\s+\(\d+\):\s*$/i;
+   const directUnitLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s+(Army|Fleet|Garrison|Wing|Artillery)\s+(.+)\.\s*$/i;
+   const citiesControlledHeaderRegex = /^Cities Controlled:/i;
+   const playerListHeader = "The following players are signed up for game";
+   const flagsLineRegex = /^flags:\s*(.*)/i;
 
-    lines.forEach(line => {
-        const trimmedLine = line.trim();
-        let match;
+   lines.forEach(line => {
+       const trimmedLine = line.trim();
+       let match;
 
-        if (trimmedLine.startsWith(playerListHeader)) { currentSection = 'players'; return; }
-        if (settingsHeaderRegex.test(trimmedLine)) { currentSection = 'settings'; } // Don't return, process flags line
-        match = trimmedLine.match(unitHeaderRegex); if (match) { currentSection = 'units'; currentPowerForUnits = match[1]; return; }
-        match = trimmedLine.match(scHeaderRegex); if (match) { currentSection = 'scs'; currentPowerForSCs = match[1]; return; }
-        if (citiesControlledHeaderRegex.test(trimmedLine)) { currentSection = 'cities_controlled'; return; }
-        if (!trimmedLine) { if (currentSection === 'units') currentPowerForUnits = null; if (currentSection === 'scs') currentPowerForSCs = null; }
+       if (trimmedLine.startsWith(playerListHeader)) { currentSection = 'players'; return; }
+       if (settingsHeaderRegex.test(trimmedLine)) { currentSection = 'settings'; }
+       match = trimmedLine.match(unitHeaderRegex);
+       if (match) {
+           currentSection = 'units';
+           currentPowerForUnits = match[1].toUpperCase(); // Store canonical power name
+           console.log(`[Parser LIST ${gameName}] Switched to units section for power: ${currentPowerForUnits}`);
+           return;
+       }
+       match = trimmedLine.match(scHeaderRegex);
+       if (match) {
+           currentSection = 'scs';
+           currentPowerForSCs = match[1].toUpperCase(); // Store canonical power name
+           console.log(`[Parser LIST ${gameName}] Switched to SCs section for power: ${currentPowerForSCs}`);
+           return;
+       }
+       if (citiesControlledHeaderRegex.test(trimmedLine)) { currentSection = 'cities_controlled'; return; }
+       if (!trimmedLine) {
+           if (currentSection === 'units') {
+               console.log(`[Parser LIST ${gameName}] Exiting units section for power: ${currentPowerForUnits}`);
+               currentPowerForUnits = null;
+           }
+           if (currentSection === 'scs') {
+               console.log(`[Parser LIST ${gameName}] Exiting SCs section for power: ${currentPowerForSCs}`);
+               currentPowerForSCs = null;
+           }
+       }
 
-        match = trimmedLine.match(directUnitLineRegex);
-        if (match) {
-            const power = match[1]; const unitTypeFull = match[2];
-            let unitTypeChar = unitTypeFull.charAt(0).toUpperCase();
-            if (unitTypeFull.toUpperCase() === 'ARTILLERY') unitTypeChar = 'R';
-            else if (unitTypeFull.toUpperCase() === 'GARRISON') unitTypeChar = 'G';
-            else if (unitTypeFull.toUpperCase() === 'WING') unitTypeChar = 'W';
+       match = trimmedLine.match(directUnitLineRegex);
+       if (match) {
+           const powerNameFromLine = match[1]; // e.g., "Austria"
+           const powerCanonical = powerNameFromLine.toUpperCase(); // e.g., "AUSTRIA"
+           const unitTypeFull = match[2];
+           let unitTypeChar = unitTypeFull.charAt(0).toUpperCase();
+           if (unitTypeFull.toUpperCase() === 'ARTILLERY') unitTypeChar = 'R';
+           else if (unitTypeFull.toUpperCase() === 'GARRISON') unitTypeChar = 'G';
+           else if (unitTypeFull.toUpperCase() === 'WING') unitTypeChar = 'W';
 
+           const locationName = match[3].trim();
+           let locationAbbr = locationName.toUpperCase().substring(0,3);
+           if (nameToAbbr) {
+               const resolvedAbbr = nameToAbbr[locationName.toLowerCase()];
+               if (resolvedAbbr) {
+                   locationAbbr = resolvedAbbr;
+               } else {
+                   console.warn(`[Parser LIST ${gameName}] Direct Unit: Could not find abbr for location '${locationName}' (using '${locationAbbr}' as fallback) for power ${powerCanonical}. nameToAbbr keys: ${Object.keys(nameToAbbr).slice(0,10).join(',')}...`);
+               }
+           }
+           console.log(`[Parser LIST ${gameName}] Adding direct unit: ${powerCanonical} ${unitTypeChar} ${locationAbbr}`);
+           gameState.units.push({ power: powerCanonical, type: unitTypeChar, location: locationAbbr, status: null });
+           const player = gameState.players.find(p => p.power.toUpperCase() === powerCanonical); // Compare with canonical
+           if (player) { if (!player.units) player.units = []; player.units.push({ type: unitTypeChar, location: locationAbbr, status: null }); }
+           return;
+       }
 
-            const locationName = match[3].trim();
-            let locationAbbr = locationName.toUpperCase().substring(0,3); // Default fallback
-            if (nameToAbbr) {
-                const resolvedAbbr = nameToAbbr[locationName.toLowerCase()];
-                if (resolvedAbbr) {
-                    locationAbbr = resolvedAbbr;
-                } else {
-                    console.warn(`[Parser LIST ${gameName}] Direct Unit: Could not find abbr for location '${locationName}' (using '${locationAbbr}' as fallback) for power ${power}`);
-                }
-            }
+       switch (currentSection) {
+           case 'header': case 'unknown':
+               match = line.match(explicitDeadlineRegex); if (match) { gameState.currentPhase = match[1].trim().toUpperCase(); gameState.nextDeadline = match[2].trim(); if (gameState.status === 'Unknown' || gameState.status === 'Forming') gameState.status = 'Active'; break; }
+               match = line.match(activeStatusLineRegex); if (match) { const [, phaseTypeStr, seasonStr, year] = match; let seasonCode = 'S'; if (seasonStr.toLowerCase() === 'fall') seasonCode = 'F'; else if (seasonStr.toLowerCase() === 'winter') seasonCode = 'W'; else if (seasonStr.toLowerCase() === 'summer') seasonCode = 'U'; let phaseCode = 'M'; if (phaseTypeStr.toLowerCase() === 'retreat') phaseCode = 'R'; else if (phaseTypeStr.toLowerCase() === 'adjustment' || phaseTypeStr.toLowerCase() === 'builds') phaseCode = 'A'; gameState.currentPhase = `${seasonCode}${year}${phaseCode}`; gameState.status = 'Active'; break; }
+               match = line.match(statusRegex); if (match) { const explicitStatus = match[1].trim(); if (explicitStatus !== 'Active' || gameState.status === 'Unknown') gameState.status = explicitStatus; break; }
+               match = line.match(variantRegex);
+               if (!match) {
+                   const idx = line.indexOf('Variant:');
+                   if (idx !== -1) {
+                       const sub = line.slice(idx);
+                       match = sub.match(variantRegex);
+                   }
+               }
+               if (match) { gameState.variant = match[1].trim(); const optionsStr = match[2].replace(/,/g, ' ').trim(); gameState.options = optionsStr.split(/\s+/).filter(opt => opt && opt !== 'Variant:'); if (gameState.options.includes('Gunboat')) gameState.settings.gunboat = true; if (gameState.options.includes('NMR')) gameState.settings.nmr = true; else gameState.settings.nmr = false; if (gameState.options.includes('Chaos')) gameState.settings.chaos = true; if (gameState.variant.toLowerCase().includes('machiavelli')) gameState.settings.isMachiavelli = true; break; }
+               break;
+           case 'players':
+               const playerMatch = line.match(playerLineRegex); const masterMatch = line.match(masterLineRegex); const observerMatch = line.match(observerLineRegex);
+               if (playerMatch) {
+                   const powerNameFromLine = playerMatch[1]; // This is the power name as it appears, e.g., "Austria"
+                   const email = playerMatch[2];
+                   let playerStatus = 'Playing';
+                   const statusMatch = line.match(/\(([^)]+)\)/);
+                   if (statusMatch) playerStatus = statusMatch[1];
+                   // Store power name as is, but comparison later might need toUpperCase()
+                   gameState.players.push({ power: powerNameFromLine, email: email || null, status: playerStatus, name: null, units: [], supplyCenters: [] });
+               }
+               else if (masterMatch) { const email = masterMatch[1]; if (email && !gameState.masters.includes(email)) gameState.masters.push(email); }
+               else if (observerMatch) { const email = observerMatch[1].trim().match(emailRegex)?.[0]; if (email && !gameState.observers.includes(email)) gameState.observers.push(email); }
+               break;
+           case 'settings':
+               match = line.match(pressSettingRegex); if (match) gameState.settings.press = match[1].trim();
+               match = line.match(diasSettingRegex); if (match) gameState.settings.dias = (match[1].toUpperCase() === 'DIAS');
+               match = line.match(nmrSettingRegex); if (match) gameState.settings.nmr = (match[1].toUpperCase() === 'NMR');
+               match = line.match(concessionSettingRegex); if (match) gameState.settings.concessions = (match[1].toLowerCase() === 'concessions');
+               if (line.toLowerCase().includes('gunboat')) gameState.settings.gunboat = true; if (line.toLowerCase().includes('chaos')) gameState.settings.chaos = true;
+               if (line.toLowerCase().includes('partial allowed')) gameState.settings.partialPress = true; if (line.toLowerCase().includes('no partial')) gameState.settings.partialPress = false;
+               if (line.toLowerCase().includes('observer any')) gameState.settings.observerPress = 'any'; if (line.toLowerCase().includes('observer white')) gameState.settings.observerPress = 'white'; if (line.toLowerCase().includes('observer none')) gameState.settings.observerPress = 'none';
+               if (line.toLowerCase().includes('strict convoy')) gameState.settings.strictConvoy = true; if (line.toLowerCase().includes('strict wait')) gameState.settings.strictWait = true; if (line.toLowerCase().includes('strict grace')) gameState.settings.strictGrace = true;
 
-            gameState.units.push({ power: power, type: unitTypeChar, location: locationAbbr, status: null });
-            const player = gameState.players.find(p => p.power === power);
-            if (player) { if (!player.units) player.units = []; player.units.push({ type: unitTypeChar, location: locationAbbr, status: null }); }
-            return;
-        }
+               const flagsMatch = trimmedLine.match(flagsLineRegex);
+               if (flagsMatch) {
+                   const flagsStringInput = flagsMatch[1];
+                   let processedFlagsString = flagsStringInput;
+                   const settings = gameState.settings;
+                   const noCoastalConvoysRegex = /\bnocoastal convoys\b/gi;
+                   const coastalConvoysRegex = /\bcoastal convoys\b/gi;
+                   if (noCoastalConvoysRegex.test(processedFlagsString)) {
+                       settings.coastalConvoys = false;
+                       processedFlagsString = processedFlagsString.replace(noCoastalConvoysRegex, '');
+                   } else if (coastalConvoysRegex.test(processedFlagsString)) {
+                       settings.coastalConvoys = true;
+                       processedFlagsString = processedFlagsString.replace(coastalConvoysRegex, '');
+                   }
+                   const flagsArray = processedFlagsString.trim().split(/\s+/).filter(f => f.length > 0);
+                   flagsArray.forEach(originalFlag => {
+                       let flag = originalFlag;
+                       const lowerFlag = flag.toLowerCase();
+                       if (lowerFlag === 'bank' || lowerFlag === 'bankers') { flag = 'loans'; }
+                       else if (lowerFlag === 'nobank' || lowerFlag === 'nobankers') { flag = 'noloans'; }
+                       else if (lowerFlag === 'forts') { flag = 'fortresses'; }
+                       else if (lowerFlag === 'noforts') { flag = 'nofortresses'; }
+                       else if (lowerFlag === 'nocoastalconvoy') { flag = 'nocoastalConvoys'; }
 
-        switch (currentSection) {
-            case 'header': case 'unknown':
-                match = line.match(explicitDeadlineRegex); if (match) { gameState.currentPhase = match[1].trim().toUpperCase(); gameState.nextDeadline = match[2].trim(); if (gameState.status === 'Unknown' || gameState.status === 'Forming') gameState.status = 'Active'; break; }
-                match = line.match(activeStatusLineRegex); if (match) { const [, phaseTypeStr, seasonStr, year] = match; let seasonCode = 'S'; if (seasonStr.toLowerCase() === 'fall') seasonCode = 'F'; else if (seasonStr.toLowerCase() === 'winter') seasonCode = 'W'; else if (seasonStr.toLowerCase() === 'summer') seasonCode = 'U'; let phaseCode = 'M'; if (phaseTypeStr.toLowerCase() === 'retreat') phaseCode = 'R'; else if (phaseTypeStr.toLowerCase() === 'adjustment' || phaseTypeStr.toLowerCase() === 'builds') phaseCode = 'A'; gameState.currentPhase = `${seasonCode}${year}${phaseCode}`; gameState.status = 'Active'; break; }
-                match = line.match(statusRegex); if (match) { const explicitStatus = match[1].trim(); if (explicitStatus !== 'Active' || gameState.status === 'Unknown') gameState.status = explicitStatus; break; }
-                match = line.match(variantRegex);
-                if (!match) {
-                    // Try to find 'Variant:' anywhere in the line
-                    const idx = line.indexOf('Variant:');
-                    if (idx !== -1) {
-                        const sub = line.slice(idx);
-                        match = sub.match(variantRegex);
-                    }
-                }
-                if (match) { gameState.variant = match[1].trim(); const optionsStr = match[2].replace(/,/g, ' ').trim(); gameState.options = optionsStr.split(/\s+/).filter(opt => opt && opt !== 'Variant:'); if (gameState.options.includes('Gunboat')) gameState.settings.gunboat = true; if (gameState.options.includes('NMR')) gameState.settings.nmr = true; else gameState.settings.nmr = false; if (gameState.options.includes('Chaos')) gameState.settings.chaos = true; if (gameState.variant.toLowerCase().includes('machiavelli')) gameState.settings.isMachiavelli = true; break; }
-                break;
-            case 'players':
-                const playerMatch = line.match(playerLineRegex); const masterMatch = line.match(masterLineRegex); const observerMatch = line.match(observerLineRegex);
-                if (playerMatch) { const power = playerMatch[1]; const email = playerMatch[2]; let playerStatus = 'Playing'; const statusMatch = line.match(/\(([^)]+)\)/); if (statusMatch) playerStatus = statusMatch[1]; gameState.players.push({ power: power, email: email || null, status: playerStatus, name: null, units: [], supplyCenters: [] }); }
-                else if (masterMatch) { const email = masterMatch[1]; if (email && !gameState.masters.includes(email)) gameState.masters.push(email); }
-                else if (observerMatch) { const email = observerMatch[1].trim().match(emailRegex)?.[0]; if (email && !gameState.observers.includes(email)) gameState.observers.push(email); }
-                break;
-            case 'settings':
-                match = line.match(pressSettingRegex); if (match) gameState.settings.press = match[1].trim();
-                match = line.match(diasSettingRegex); if (match) gameState.settings.dias = (match[1].toUpperCase() === 'DIAS');
-                match = line.match(nmrSettingRegex); if (match) gameState.settings.nmr = (match[1].toUpperCase() === 'NMR');
-                match = line.match(concessionSettingRegex); if (match) gameState.settings.concessions = (match[1].toLowerCase() === 'concessions');
-                if (line.toLowerCase().includes('gunboat')) gameState.settings.gunboat = true; if (line.toLowerCase().includes('chaos')) gameState.settings.chaos = true;
-                if (line.toLowerCase().includes('partial allowed')) gameState.settings.partialPress = true; if (line.toLowerCase().includes('no partial')) gameState.settings.partialPress = false;
-                if (line.toLowerCase().includes('observer any')) gameState.settings.observerPress = 'any'; if (line.toLowerCase().includes('observer white')) gameState.settings.observerPress = 'white'; if (line.toLowerCase().includes('observer none')) gameState.settings.observerPress = 'none';
-                if (line.toLowerCase().includes('strict convoy')) gameState.settings.strictConvoy = true; if (line.toLowerCase().includes('strict wait')) gameState.settings.strictWait = true; if (line.toLowerCase().includes('strict grace')) gameState.settings.strictGrace = true;
+                       if (flag.startsWith('no')) {
+                           const baseFlag = flag.substring(2);
+                           settings[baseFlag] = false;
+                       } else if (flag.includes(':')) {
+                           const [key, ...values] = flag.split(':');
+                           if (key.toLowerCase() === 'transform') {
+                               settings.transform = settings.transform || {};
+                               values.join(':').split(',').forEach(tvPair => {
+                                   const [transformAction, transformValue] = tvPair.split(':');
+                                   if (transformAction && transformValue) {
+                                       settings.transform[transformAction.toLowerCase()] = transformValue;
+                                   } else if (transformAction) {
+                                       settings.transform[transformAction.toLowerCase()] = 'HOMECENTRE';
+                                   }
+                               });
+                           } else {
+                               settings[key] = values.join(':');
+                           }
+                       } else {
+                           settings[flag] = true;
+                       }
+                   });
+                   if (gameState.settings.mach2 === undefined && (gameState.variant?.toLowerCase().includes('machiavelli') || gameState.settings.isMachiavelli)) {
+                        if (gameState.settings.mach2 !== false) gameState.settings.mach2 = false;
+                   }
+               }
+               break;
+           case 'units':
+               if (!currentPowerForUnits) break; // currentPowerForUnits is already UPPERCASE
+               match = line.match(unitLineRegex);
+               if (match) {
+                   const unitType = match[1].toUpperCase();
+                   const locationAbbrFromList = match[2].toUpperCase();
+                   const unitStatus = match[3] ? match[3].trim() : null;
+                   console.log(`[Parser LIST ${gameName}] Adding unit: ${currentPowerForUnits} ${unitType} ${locationAbbrFromList}`);
+                   gameState.units.push({ power: currentPowerForUnits, type: unitType, location: locationAbbrFromList, status: unitStatus });
+                   const player = gameState.players.find(p => p.power.toUpperCase() === currentPowerForUnits);
+                   if (player) player.units.push({ type: unitType, location: locationAbbrFromList, status: unitStatus });
+               } else if (trimmedLine && !trimmedLine.startsWith('-')) {
+                   console.log(`[Parser LIST ${gameName}] Exiting units section for power (unmatched line): ${currentPowerForUnits}`);
+                   currentPowerForUnits = null; currentSection = 'unknown';
+               }
+               break;
+           case 'cities_controlled':
+               const cityLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s+(.*)\.?\s*$/i;
+               match = trimmedLine.match(cityLineRegex);
+               if (match) {
+                   const powerNameFromLine = match[1]; // e.g., "Austria"
+                   const powerCanonical = powerNameFromLine.toUpperCase(); // e.g., "AUSTRIA"
+                   const citiesStr = match[2];
+                   const cityEntries = citiesStr.split(',');
+                   cityEntries.forEach(entry => {
+                       const nameMatch = entry.trim().match(/^([^(*]+)/);
+                       if (nameMatch) {
+                           const cityName = nameMatch[1].trim();
+                           let provinceAbbr = cityName.toUpperCase().substring(0,3);
+                           if (nameToAbbr) {
+                               const resolvedAbbr = nameToAbbr[cityName.toLowerCase()];
+                               if (resolvedAbbr) {
+                                   provinceAbbr = resolvedAbbr;
+                               } else {
+                                   console.warn(`[Parser LIST ${gameName}] SC: Could not find abbr for SC name '${cityName}' for power ${powerCanonical} (using '${provinceAbbr}' as fallback). Original entry: '${entry.trim()}'. nameToAbbr keys: ${Object.keys(nameToAbbr).slice(0,10).join(',')}...`);
+                               }
+                           }
+                           console.log(`[Parser LIST ${gameName}] Adding SC: ${powerCanonical} owns ${provinceAbbr}`);
+                           gameState.supplyCenters.push({ owner: powerCanonical, location: provinceAbbr });
+                           const playerForSc = gameState.players.find(p => p.power.toUpperCase() === powerCanonical);
+                           if (playerForSc) {
+                                if (!playerForSc.supplyCenters) playerForSc.supplyCenters = [];
+                                if (!playerForSc.supplyCenters.includes(provinceAbbr)) playerForSc.supplyCenters.push(provinceAbbr);
+                           }
+                       } else {
+                           console.warn(`[Parser LIST ${gameName}] Could not parse SC entry '${entry.trim()}' for power ${powerCanonical}.`);
+                       }
+                   });
+               } else if (trimmedLine === 'Unowned:') { /* Ignore */ }
+               else if (trimmedLine && !trimmedLine.startsWith(' ') && !trimmedLine.startsWith('Unowned:') && !trimmedLine.startsWith('*')) {
+                   currentSection = 'unknown';
+               }
+               break;
+           case 'scs': // This section might be redundant if "Cities Controlled" is comprehensive
+               if (!currentPowerForSCs) break; // currentPowerForSCs is already UPPERCASE
+               const scLineRegex = /^\s+([A-Z]{3}(?:\/[NESW]C)?)\s*/i;
+               match = line.match(scLineRegex);
+               if (match) {
+                   const locationAbbrFromList = match[1].toUpperCase();
+                   console.log(`[Parser LIST ${gameName}] Adding SC (scs section): ${currentPowerForSCs} owns ${locationAbbrFromList}`);
+                   gameState.supplyCenters.push({ owner: currentPowerForSCs, location: locationAbbrFromList });
+                   const player = gameState.players.find(p => p.power.toUpperCase() === currentPowerForSCs);
+                   if (player) { if (!player.supplyCenters) player.supplyCenters = []; if (!player.supplyCenters.includes(locationAbbrFromList)) player.supplyCenters.push(locationAbbrFromList); }
+               } else if (trimmedLine && !trimmedLine.startsWith('-')) {
+                   console.log(`[Parser LIST ${gameName}] Exiting SCs section for power (unmatched line): ${currentPowerForSCs}`);
+                   currentPowerForSCs = null; currentSection = 'unknown';
+               }
+               break;
+       }
+   });
 
-                // Parse Machiavelli flags
-                const flagsMatch = trimmedLine.match(flagsLineRegex);
-                if (flagsMatch) {
-                    const flagsStringInput = flagsMatch[1];
-                    let processedFlagsString = flagsStringInput;
-                    const settings = gameState.settings; // Shortcut for brevity
-
-                    // Handle multi-word "coastal convoys" variants first and remove them from the string.
-                    // Regexes are case-insensitive and global (for replace all, though one occurrence is typical).
-                    const noCoastalConvoysRegex = /\bnocoastal convoys\b/gi;
-                    const coastalConvoysRegex = /\bcoastal convoys\b/gi;
-
-                    if (noCoastalConvoysRegex.test(processedFlagsString)) {
-                        settings.coastalConvoys = false;
-                        processedFlagsString = processedFlagsString.replace(noCoastalConvoysRegex, '');
-                    } else if (coastalConvoysRegex.test(processedFlagsString)) {
-                        settings.coastalConvoys = true;
-                        processedFlagsString = processedFlagsString.replace(coastalConvoysRegex, '');
-                    }
-
-                    // Trim whitespace that might be left after replacement, then split remaining flags.
-                    // Filter out any empty strings resulting from multiple spaces or trailing spaces.
-                    const flagsArray = processedFlagsString.trim().split(/\s+/).filter(f => f.length > 0);
-
-                    flagsArray.forEach(originalFlag => {
-                        let flag = originalFlag; // Use a mutable variable for the potentially normalized flag name
-                        const lowerFlag = flag.toLowerCase();
-
-                        // Normalize aliases to their canonical names or 'noCanonical' forms
-                        // This allows the generic logic below to work with canonical names.
-                        if (lowerFlag === 'bank' || lowerFlag === 'bankers') {
-                            flag = 'loans'; // Positive alias
-                        } else if (lowerFlag === 'nobank' || lowerFlag === 'nobankers') {
-                            flag = 'noloans'; // Negative alias
-                        } else if (lowerFlag === 'forts') {
-                            flag = 'fortresses'; // Positive alias
-                        } else if (lowerFlag === 'noforts') {
-                            flag = 'nofortresses'; // Negative alias
-                        } else if (lowerFlag === 'nocoastalconvoy') { // Single-word negative variant for coastal convoys
-                            flag = 'nocoastalConvoys'; // Normalize to a form that startsWith('no') can process to 'coastalConvoys'
-                        }
-                        // Add normalization for a positive 'coastalconvoy' if it were a possibility:
-                        // else if (lowerFlag === 'coastalconvoy') { flag = 'coastalConvoys'; }
-
-
-                        if (flag.startsWith('no')) {
-                            // Extracts the base flag name, e.g., "nomoney" -> "money", "noloans" -> "loans", "nocoastalConvoys" -> "coastalConvoys"
-                            const baseFlag = flag.substring(2);
-                            settings[baseFlag] = false;
-                        } else if (flag.includes(':')) {
-                            const [key, ...values] = flag.split(':');
-                            // Ensure 'transform' key check is case-insensitive and initialize object if needed.
-                            if (key.toLowerCase() === 'transform') {
-                                settings.transform = settings.transform || {}; // Initialize if multiple transform parts or not yet existing
-                                values.join(':').split(',').forEach(tvPair => {
-                                    const [transformAction, transformValue] = tvPair.split(':');
-                                    if (transformAction && transformValue) {
-                                        settings.transform[transformAction.toLowerCase()] = transformValue;
-                                    } else if (transformAction) { // Handles cases like "SET TRANSFORM MOVE" which implies a default value
-                                        settings.transform[transformAction.toLowerCase()] = 'HOMECENTRE'; // Default for simple transform actions
-                                    }
-                                });
-                            } else {
-                                // For other colon-separated flags, store as key-value string.
-                                settings[key] = values.join(':');
-                            }
-                        } else {
-                            // For simple positive flags (either original or normalized aliases like 'loans' from 'bank').
-                            settings[flag] = true;
-                        }
-                    });
-                    if (gameState.settings.mach2 === undefined && (gameState.variant?.toLowerCase().includes('machiavelli') || gameState.settings.isMachiavelli)) {
-                         // If it's a Machiavelli game and mach2 flag isn't explicitly set, assume Mach1 (mach2=false)
-                         if (gameState.settings.mach2 !== false) gameState.settings.mach2 = false;
-                    }
-                }
-                break;
-            case 'units':
-                if (!currentPowerForUnits) break;
-                match = line.match(unitLineRegex);
-                if (match) {
-                    const unitType = match[1].toUpperCase();
-                    const locationAbbrFromList = match[2].toUpperCase();
-                    const unitStatus = match[3] ? match[3].trim() : null;
-                    gameState.units.push({ power: currentPowerForUnits, type: unitType, location: locationAbbrFromList, status: unitStatus });
-                    const player = gameState.players.find(p => p.power === currentPowerForUnits);
-                    if (player) player.units.push({ type: unitType, location: locationAbbrFromList, status: unitStatus });
-                } else if (trimmedLine && !trimmedLine.startsWith('-')) { currentPowerForUnits = null; currentSection = 'unknown'; }
-                break;
-            case 'cities_controlled':
-                const cityLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s+(.*)\.?\s*$/i;
-                match = trimmedLine.match(cityLineRegex);
-                if (match) {
-                    const power = match[1]; const citiesStr = match[2];
-                    const cityEntries = citiesStr.split(',');
-                    cityEntries.forEach(entry => {
-                        const nameMatch = entry.trim().match(/^([^(*]+)/);
-                        if (nameMatch) {
-                            const cityName = nameMatch[1].trim();
-                            let provinceAbbr = cityName.toUpperCase().substring(0,3); // Default fallback
-                            if (nameToAbbr) {
-                                const resolvedAbbr = nameToAbbr[cityName.toLowerCase()];
-                                if (resolvedAbbr) {
-                                    provinceAbbr = resolvedAbbr;
-                                } else {
-                                    console.warn(`[Parser LIST ${gameName}] SC: Could not find abbr for SC name '${cityName}' for power ${power} (using '${provinceAbbr}' as fallback). Original entry: '${entry.trim()}'`);
-                                }
-                            }
-                            gameState.supplyCenters.push({ owner: power, location: provinceAbbr });
-                            const playerForSc = gameState.players.find(p => p.power === power);
-                            if (playerForSc) {
-                                 if (!playerForSc.supplyCenters) playerForSc.supplyCenters = [];
-                                 if (!playerForSc.supplyCenters.includes(provinceAbbr)) playerForSc.supplyCenters.push(provinceAbbr);
-                            }
-                        } else {
-                            console.warn(`[Parser LIST ${gameName}] Could not parse SC entry '${entry.trim()}' for power ${power}.`);
-                        }
-                    });
-                } else if (trimmedLine === 'Unowned:') { /* Ignore */ }
-                else if (trimmedLine && !trimmedLine.startsWith(' ') && !trimmedLine.startsWith('Unowned:') && !trimmedLine.startsWith('*')) {
-                    currentSection = 'unknown';
-                }
-                break;
-            case 'scs':
-                if (!currentPowerForSCs) break;
-                const scLineRegex = /^\s+([A-Z]{3}(?:\/[NESW]C)?)\s*/i;
-                match = line.match(scLineRegex);
-                if (match) {
-                    const locationAbbrFromList = match[1].toUpperCase();
-                    gameState.supplyCenters.push({ owner: currentPowerForSCs, location: locationAbbrFromList });
-                    const player = gameState.players.find(p => p.power === currentPowerForSCs);
-                    if (player) { if (!player.supplyCenters) player.supplyCenters = []; if (!player.supplyCenters.includes(locationAbbrFromList)) player.supplyCenters.push(locationAbbrFromList); }
-                } else if (trimmedLine && !trimmedLine.startsWith('-')) { currentPowerForSCs = null; currentSection = 'unknown'; }
-                break;
-        }
-    });
-
-    if (gameState.status === 'Unknown' && gameState.currentPhase && gameState.currentPhase !== 'Unknown') {
-        if (gameState.currentPhase.toUpperCase() === 'FORMING') gameState.status = 'Forming';
-        else gameState.status = 'Active';
-    }
-    // Default settings if not found in flags
-    if (gameState.settings.nmr === undefined) gameState.settings.nmr = false;
-    if (gameState.settings.dias === undefined) gameState.settings.dias = true;
-    if (gameState.settings.concessions === undefined) gameState.settings.concessions = true;
-    if (gameState.settings.gunboat === undefined) gameState.settings.gunboat = false;
-    if (gameState.settings.press === undefined) gameState.settings.press = 'White';
-    if (gameState.settings.partialPress === undefined) gameState.settings.partialPress = true;
-    if (gameState.settings.observerPress === undefined) gameState.settings.observerPress = 'any';
-    if (gameState.variant?.toLowerCase().includes('machiavelli') && gameState.settings.isMachiavelli === undefined) {
-        gameState.settings.isMachiavelli = true;
-    }
-    if (gameState.settings.isMachiavelli && gameState.settings.mach2 === undefined) {
-        gameState.settings.mach2 = false; // Default to Mach1 if Machiavelli variant
-    }
-
-
-    return gameState;
+   if (gameState.status === 'Unknown' && gameState.currentPhase && gameState.currentPhase !== 'Unknown') {
+       if (gameState.currentPhase.toUpperCase() === 'FORMING') gameState.status = 'Forming';
+       else gameState.status = 'Active';
+   }
+   if (gameState.settings.nmr === undefined) gameState.settings.nmr = false;
+   if (gameState.settings.dias === undefined) gameState.settings.dias = true;
+   if (gameState.settings.concessions === undefined) gameState.settings.concessions = true;
+   if (gameState.settings.gunboat === undefined) gameState.settings.gunboat = false;
+   if (gameState.settings.press === undefined) gameState.settings.press = 'White';
+   if (gameState.settings.partialPress === undefined) gameState.settings.partialPress = true;
+   if (gameState.settings.observerPress === undefined) gameState.settings.observerPress = 'any';
+   if (gameState.variant?.toLowerCase().includes('machiavelli') && gameState.settings.isMachiavelli === undefined) {
+       gameState.settings.isMachiavelli = true;
+   }
+   if (gameState.settings.isMachiavelli && gameState.settings.mach2 === undefined) {
+       gameState.settings.mach2 = false;
+   }
+   console.log(`[Parser LIST ${gameName}] Final parsed units: ${gameState.units.length}, SCs: ${gameState.supplyCenters.length}`);
+   return gameState;
 };
+
+// ... (rest of the server.js file remains the same as the previous version) ...
 
 // --- Command Recommendation Logic ---
 const getRecommendedCommands = (gameState, userEmail) => {
-     console.log(`[getRecommendedCommands] Generating for user: ${userEmail}, Game State:`, gameState ? { name: gameState.name, status: gameState.status, phase: gameState.currentPhase, masters: gameState.masters, settings: gameState.settings } : null);
+    console.log(`[getRecommendedCommands] Generating for user: ${userEmail}, Game State:`, gameState ? { name: gameState.name, status: gameState.status, phase: gameState.currentPhase, masters: gameState.masters, settings: gameState.settings } : null);
 
-    const recommendations = { recommended: [], playerActions: [], settings: [], gameInfo: [], master: [], general: [], machiavelli: [] };
-    const generalCmds = ['GET', 'HELP', 'VERSION', 'WHOIS', 'LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'MAP', 'GET DEDICATION', 'INFO PLAYER', 'MANUAL'];
-    const playerAccountCmds = ['REGISTER', 'I AM ALSO', 'SET PASSWORD', 'SET ADDRESS'];
-    const joiningCmds = ['CREATE ?', 'SIGN ON ?', 'SIGN ON ?game', 'SIGN ON power', 'OBSERVE', 'WATCH'];
-    const playerActionCmds = ['ORDERS', 'PRESS', 'BROADCAST', 'POSTAL PRESS', 'DIARY', 'RESIGN', 'WITHDRAW'];
-    const playerSettingCmds = [
-        'SET WAIT', 'SET NOWAIT', 'SET ABSENCE', 'SET NOABSENCE', 'SET HOLIDAY', 'SET VACATION',
-        'SET DRAW', 'SET NODRAW', 'SET CONCEDE', 'SET NOCONCEDE', 'SET PREFERENCE', 'PHASE', 'IF', 'CLEAR'
-    ];
-    const masterCmds = [
-        'BECOME MASTER', 'SET MODERATE', 'SET UNMODERATE', 'BECOME', 'EJECT', 'FORCE BEGIN', 'PAUSE', 'PREDICT',
-        'PROMOTE', 'PROCESS', 'ROLLBACK', 'TERMINATE', 'RESUME', 'UNSTART', 'SET',
-        'SET DEADLINE', 'SET GRACE', 'SET START', 'SET COMMENT', 'SET COMMENT BEGIN', 'SET CD', 'SET NMR',
-        'SET CONCESSIONS', 'SET DIAS', 'SET LIST', 'SET PUBLIC', 'SET PRIVATE', 'SET AUTO PROCESS', 'SET MANUAL PROCESS',
-        'SET AUTO START', 'SET MANUAL START', 'SET RATED', 'SET UNRATED', 'SET MAX ABSENCE', 'SET LATE COUNT',
-        'SET STRICT GRACE', 'SET STRICT WAIT', 'SET MOVE', 'SET RETREAT', 'SET ADJUST', 'SET ALL PRESS', 'SET NORMAL PRESS',
-        'SET QUIET', 'SET NO QUIET', 'SET WATCH ALL PRESS', 'SET NO WATCH ALL PRESS', 'SET ACCESS', 'SET ALLOW PLAYER',
-        'SET DENY PLAYER', 'SET LEVEL', 'SET DEDICATION', 'SET ONTIMERAT', 'SET RESRAT', 'SET APPROVAL', 'SET APPROVE',
-        'SET NOT APPROVE', 'SET BLANK PRESS', 'SET BROADCAST', 'SET NORMAL BROADCAST', 'SET NO FAKE', 'SET GREY',
-        'SET NO WHITE', 'SET GREY/WHITE', 'SET LATE PRESS', 'SET MINOR PRESS', 'SET MUST ORDER', 'SET NO PRESS',
-        'SET NONE', 'SET OBSERVER', 'SET PARTIAL', 'SET PARTIAL FAKES BROADCAST', 'SET PARTIAL MAY', 'SET POSTAL PRESS',
-        'SET WHITE', 'SET WHITE/GREY', 'SET VARIANT', 'SET NOT VARIANT',
-        // Machiavelli specific SET commands (for master)
-        'SET MACH2', 'SET SUMMER', 'SET MONEY', 'SET DICE', 'SET LOANS', 'SET BANK', 'SET BANKERS',
-        'SET FAMINE', 'SET PLAGUE', 'SET STORM', 'SET ASSASSINS', 'SET ASSASSINATION', 'SET GARRISONS',
-        'SET SPECIAL', 'SET FORTRESSES', 'SET FORTS', 'SET ADJACENCY', 'SET ADJACENT',
-        'SET COASTAL CONVOYS', 'SET DISBAND', 'SET TRANSFORM', 'SET ATTACKTRANSFORM'
-    ];
-    const machiavelliPlayerCmds = ['BORROW', 'GIVE', 'PAY', 'ALLY', 'EXPENSE'];
+   const recommendations = { recommended: [], playerActions: [], settings: [], gameInfo: [], master: [], general: [], machiavelli: [] };
+   const generalCmds = ['GET', 'HELP', 'VERSION', 'WHOIS', 'LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'MAP', 'GET DEDICATION', 'INFO PLAYER', 'MANUAL'];
+   const playerAccountCmds = ['REGISTER', 'I AM ALSO', 'SET PASSWORD', 'SET ADDRESS'];
+   const joiningCmds = ['CREATE ?', 'SIGN ON ?', 'SIGN ON ?game', 'SIGN ON power', 'OBSERVE', 'WATCH'];
+   const playerActionCmds = ['ORDERS', 'PRESS', 'BROADCAST', 'POSTAL PRESS', 'DIARY', 'RESIGN', 'WITHDRAW'];
+   const playerSettingCmds = [
+       'SET WAIT', 'SET NOWAIT', 'SET ABSENCE', 'SET NOABSENCE', 'SET HOLIDAY', 'SET VACATION',
+       'SET DRAW', 'SET NODRAW', 'SET CONCEDE', 'SET NOCONCEDE', 'SET PREFERENCE', 'PHASE', 'IF', 'CLEAR'
+   ];
+   const masterCmds = [
+       'BECOME MASTER', 'SET MODERATE', 'SET UNMODERATE', 'BECOME', 'EJECT', 'FORCE BEGIN', 'PAUSE', 'PREDICT',
+       'PROMOTE', 'PROCESS', 'ROLLBACK', 'TERMINATE', 'RESUME', 'UNSTART', 'SET',
+       'SET DEADLINE', 'SET GRACE', 'SET START', 'SET COMMENT', 'SET COMMENT BEGIN', 'SET CD', 'SET NMR',
+       'SET CONCESSIONS', 'SET DIAS', 'SET LIST', 'SET PUBLIC', 'SET PRIVATE', 'SET AUTO PROCESS', 'SET MANUAL PROCESS',
+       'SET AUTO START', 'SET MANUAL START', 'SET RATED', 'SET UNRATED', 'SET MAX ABSENCE', 'SET LATE COUNT',
+       'SET STRICT GRACE', 'SET STRICT WAIT', 'SET MOVE', 'SET RETREAT', 'SET ADJUST', 'SET ALL PRESS', 'SET NORMAL PRESS',
+       'SET QUIET', 'SET NO QUIET', 'SET WATCH ALL PRESS', 'SET NO WATCH ALL PRESS', 'SET ACCESS', 'SET ALLOW PLAYER',
+       'SET DENY PLAYER', 'SET LEVEL', 'SET DEDICATION', 'SET ONTIMERAT', 'SET RESRAT', 'SET APPROVAL', 'SET APPROVE',
+       'SET NOT APPROVE', 'SET BLANK PRESS', 'SET BROADCAST', 'SET NORMAL BROADCAST', 'SET NO FAKE', 'SET GREY',
+       'SET NO WHITE', 'SET GREY/WHITE', 'SET LATE PRESS', 'SET MINOR PRESS', 'SET MUST ORDER', 'SET NO PRESS',
+       'SET NONE', 'SET OBSERVER', 'SET PARTIAL', 'SET PARTIAL FAKES BROADCAST', 'SET PARTIAL MAY', 'SET POSTAL PRESS',
+       'SET WHITE', 'SET WHITE/GREY', 'SET VARIANT', 'SET NOT VARIANT',
+       // Machiavelli specific SET commands (for master)
+       'SET MACH2', 'SET SUMMER', 'SET MONEY', 'SET DICE', 'SET LOANS', 'SET BANK', 'SET BANKERS',
+       'SET FAMINE', 'SET PLAGUE', 'SET STORM', 'SET ASSASSINS', 'SET ASSASSINATION', 'SET GARRISONS',
+       'SET SPECIAL', 'SET FORTRESSES', 'SET FORTS', 'SET ADJACENCY', 'SET ADJACENT',
+       'SET COASTAL CONVOYS', 'SET DISBAND', 'SET TRANSFORM', 'SET ATTACKTRANSFORM'
+   ];
+   const machiavelliPlayerCmds = ['BORROW', 'GIVE', 'PAY', 'ALLY', 'EXPENSE'];
 
 
-    recommendations.general = [...generalCmds, ...playerAccountCmds];
-    recommendations.gameInfo = [...joiningCmds];
-    recommendations.playerActions = [...playerActionCmds];
-    recommendations.settings = [...playerSettingCmds];
-    recommendations.master = [...masterCmds];
-    recommendations.machiavelli = []; // Will be populated based on game settings
+   recommendations.general = [...generalCmds, ...playerAccountCmds];
+   recommendations.gameInfo = [...joiningCmds];
+   recommendations.playerActions = [...playerActionCmds];
+   recommendations.settings = [...playerSettingCmds];
+   recommendations.master = [...masterCmds];
+   recommendations.machiavelli = []; // Will be populated based on game settings
 
-    if (!gameState || !userEmail) {
-        recommendations.recommended = ['SIGN ON ?', 'SIGN ON ?game', 'SIGN ON power', 'OBSERVE', 'LIST', 'CREATE ?'];
-    } else {
-        const userIsMaster = Array.isArray(gameState.masters) && gameState.masters.includes(userEmail);
-        const myPlayerInfo = Array.isArray(gameState.players) ? gameState.players.find(p => p.email === userEmail) : null;
-        const userIsPlayer = !!myPlayerInfo;
-        const userIsObserver = Array.isArray(gameState.observers) && gameState.observers.includes(userEmail) && !userIsPlayer && !userIsMaster;
-        const phase = gameState.currentPhase?.toUpperCase() || 'UNKNOWN';
-        const status = gameState.status?.toUpperCase() || 'UNKNOWN';
-        const playerStatus = myPlayerInfo?.status?.toUpperCase() || 'UNKNOWN';
-        const isActivePlayer = userIsPlayer && !['CD', 'RESIGNED', 'ABANDONED', 'ELIMINATED'].includes(playerStatus);
+   if (!gameState || !userEmail) {
+       recommendations.recommended = ['SIGN ON ?', 'SIGN ON ?game', 'SIGN ON power', 'OBSERVE', 'LIST', 'CREATE ?'];
+   } else {
+       const userIsMaster = Array.isArray(gameState.masters) && gameState.masters.includes(userEmail);
+       const myPlayerInfo = Array.isArray(gameState.players) ? gameState.players.find(p => p.email === userEmail) : null;
+       const userIsPlayer = !!myPlayerInfo;
+       const userIsObserver = Array.isArray(gameState.observers) && gameState.observers.includes(userEmail) && !userIsPlayer && !userIsMaster;
+       const phase = gameState.currentPhase?.toUpperCase() || 'UNKNOWN';
+       const status = gameState.status?.toUpperCase() || 'UNKNOWN';
+       const playerStatus = myPlayerInfo?.status?.toUpperCase() || 'UNKNOWN';
+       const isActivePlayer = userIsPlayer && !['CD', 'RESIGNED', 'ABANDONED', 'ELIMINATED'].includes(playerStatus);
 
-        // Machiavelli specific recommendations
-        if (gameState.settings?.isMachiavelli || gameState.variant?.toLowerCase().includes('machiavelli')) {
-            if (gameState.settings?.money) { // Check if money is enabled
-                recommendations.machiavelli.push(...machiavelliPlayerCmds);
+       // Machiavelli specific recommendations
+       if (gameState.settings?.isMachiavelli || gameState.variant?.toLowerCase().includes('machiavelli')) {
+           if (gameState.settings?.money) { // Check if money is enabled
+               recommendations.machiavelli.push(...machiavelliPlayerCmds);
+           }
+           // Add other Machiavelli commands to playerActions or settings if they fit better
+           // e.g., 'MAINTAIN' could be part of 'ORDERS' during adjustment.
+           // 'CONVERT', 'BESIEGE', 'LIFT SIEGE' are also part of 'ORDERS'.
+       }
+
+
+       if (status === 'FORMING') {
+           if (userIsPlayer) recommendations.recommended.push('SET PREFERENCE');
+           else if (!userIsMaster && !userIsObserver) recommendations.recommended.push('SIGN ON ?game');
+           if (userIsMaster) recommendations.recommended.push('FORCE BEGIN', 'SET');
+           recommendations.recommended.push('LIST', 'WHOGAME');
+       } else if (status === 'ACTIVE') {
+           if (isActivePlayer) {
+               if (phase.endsWith('M') || phase.endsWith('R') || phase.endsWith('B') || phase.endsWith('A')) recommendations.recommended.push('ORDERS');
+               if (gameState.settings?.press !== 'None') recommendations.recommended.push('PRESS', 'BROADCAST');
+               if (gameState.settings?.wait !== false) recommendations.recommended.push('SET WAIT'); // Standard
+               if (gameState.settings?.dias !== false || gameState.settings?.dias === undefined) recommendations.recommended.push('SET DRAW');
+               if (gameState.settings?.concessions !== false) recommendations.recommended.push('SET CONCEDE');
+               recommendations.recommended.push('DIARY');
+
+               // Add Machiavelli active phase commands to recommended
+               if (recommendations.machiavelli.length > 0) {
+                   recommendations.recommended.push(...recommendations.machiavelli.filter(cmd => ['BORROW', 'GIVE', 'PAY', 'ALLY', 'EXPENSE'].includes(cmd)));
+               }
+
+           } else if (userIsObserver && gameState.settings?.observerPress !== 'none' && gameState.settings?.press !== 'None') {
+                recommendations.recommended.push('PRESS', 'BROADCAST');
+           } else if (!userIsPlayer && !userIsMaster && !userIsObserver) {
+                recommendations.recommended.push('SIGN ON power', 'OBSERVE');
+           }
+           if (userIsMaster) recommendations.recommended.push('PROCESS', 'SET DEADLINE', 'PAUSE', 'EJECT', 'BECOME');
+           recommendations.recommended.push('LIST', 'HISTORY', 'SUMMARY', 'WHOGAME');
+       } else if (status === 'PAUSED') {
+            if (userIsMaster) recommendations.recommended.push('RESUME', 'TERMINATE');
+            if (gameState.settings?.press !== 'None' && (isActivePlayer || (userIsObserver && gameState.settings?.observerPress !== 'none'))) {
+                recommendations.recommended.push('PRESS', 'BROADCAST');
             }
-            // Add other Machiavelli commands to playerActions or settings if they fit better
-            // e.g., 'MAINTAIN' could be part of 'ORDERS' during adjustment.
-            // 'CONVERT', 'BESIEGE', 'LIFT SIEGE' are also part of 'ORDERS'.
-        }
-
-
-        if (status === 'FORMING') {
-            if (userIsPlayer) recommendations.recommended.push('SET PREFERENCE');
-            else if (!userIsMaster && !userIsObserver) recommendations.recommended.push('SIGN ON ?game');
-            if (userIsMaster) recommendations.recommended.push('FORCE BEGIN', 'SET');
-            recommendations.recommended.push('LIST', 'WHOGAME');
-        } else if (status === 'ACTIVE') {
-            if (isActivePlayer) {
-                if (phase.endsWith('M') || phase.endsWith('R') || phase.endsWith('B') || phase.endsWith('A')) recommendations.recommended.push('ORDERS');
-                if (gameState.settings?.press !== 'None') recommendations.recommended.push('PRESS', 'BROADCAST');
-                if (gameState.settings?.wait !== false) recommendations.recommended.push('SET WAIT'); // Standard
-                if (gameState.settings?.dias !== false || gameState.settings?.dias === undefined) recommendations.recommended.push('SET DRAW');
-                if (gameState.settings?.concessions !== false) recommendations.recommended.push('SET CONCEDE');
-                recommendations.recommended.push('DIARY');
-
-                // Add Machiavelli active phase commands to recommended
-                if (recommendations.machiavelli.length > 0) {
-                    recommendations.recommended.push(...recommendations.machiavelli.filter(cmd => ['BORROW', 'GIVE', 'PAY', 'ALLY', 'EXPENSE'].includes(cmd)));
-                }
-
-            } else if (userIsObserver && gameState.settings?.observerPress !== 'none' && gameState.settings?.press !== 'None') {
-                 recommendations.recommended.push('PRESS', 'BROADCAST');
-            } else if (!userIsPlayer && !userIsMaster && !userIsObserver) {
-                 recommendations.recommended.push('SIGN ON power', 'OBSERVE');
-            }
-            if (userIsMaster) recommendations.recommended.push('PROCESS', 'SET DEADLINE', 'PAUSE', 'EJECT', 'BECOME');
             recommendations.recommended.push('LIST', 'HISTORY', 'SUMMARY', 'WHOGAME');
-        } else if (status === 'PAUSED') {
-             if (userIsMaster) recommendations.recommended.push('RESUME', 'TERMINATE');
-             if (gameState.settings?.press !== 'None' && (isActivePlayer || (userIsObserver && gameState.settings?.observerPress !== 'none'))) {
-                 recommendations.recommended.push('PRESS', 'BROADCAST');
-             }
-             recommendations.recommended.push('LIST', 'HISTORY', 'SUMMARY', 'WHOGAME');
-        } else if (status === 'FINISHED' || status === 'TERMINATED') {
-             recommendations.recommended = ['HISTORY', 'SUMMARY', 'LIST'];
-             if (userIsMaster) recommendations.recommended.push('ROLLBACK', 'UNSTART');
-        } else {
-             recommendations.recommended = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME'];
-             if (!userIsPlayer && !userIsMaster && !userIsObserver) recommendations.recommended.push('SIGN ON power', 'OBSERVE');
-        }
-        if (userIsPlayer || userIsMaster || userIsObserver) recommendations.gameInfo = recommendations.gameInfo.filter(cmd => !joiningCmds.includes(cmd));
-        recommendations.gameInfo.push('LIST', 'HISTORY', 'SUMMARY', 'WHOGAME');
-        if (!userIsMaster) recommendations.master = [];
-        if (!userIsPlayer && !userIsObserver && !userIsMaster) { recommendations.playerActions = []; recommendations.settings = []; recommendations.machiavelli = []; }
-        else if (userIsObserver && !userIsMaster) { recommendations.playerActions = recommendations.playerActions.filter(cmd => ['RESIGN', 'WITHDRAW', 'PRESS', 'BROADCAST'].includes(cmd)); recommendations.settings = []; recommendations.machiavelli = []; }
-    }
-    if (!new Set([...recommendations.recommended, ...recommendations.playerActions, ...recommendations.settings, ...recommendations.gameInfo, ...recommendations.master, ...recommendations.general, ...recommendations.machiavelli]).has('MANUAL')) {
-        recommendations.general.push('MANUAL');
-    }
-    const uniqueCommands = new Set();
-    const filterUniqueAndSort = (arr) => arr.filter(cmd => { if (uniqueCommands.has(cmd) || cmd === 'REGISTER' || cmd === 'SIGN OFF') return false; uniqueCommands.add(cmd); return true; }).sort();
-    const finalRecommendations = {};
-    for (const key in recommendations) finalRecommendations[key] = filterUniqueAndSort(recommendations[key]);
-     console.log(`[getRecommendedCommands] Final Recommendations:`, finalRecommendations);
-    return finalRecommendations;
+       } else if (status === 'FINISHED' || status === 'TERMINATED') {
+            recommendations.recommended = ['HISTORY', 'SUMMARY', 'LIST'];
+            if (userIsMaster) recommendations.recommended.push('ROLLBACK', 'UNSTART');
+       } else {
+            recommendations.recommended = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME'];
+            if (!userIsPlayer && !userIsMaster && !userIsObserver) recommendations.recommended.push('SIGN ON power', 'OBSERVE');
+       }
+       if (userIsPlayer || userIsMaster || userIsObserver) recommendations.gameInfo = recommendations.gameInfo.filter(cmd => !joiningCmds.includes(cmd));
+       recommendations.gameInfo.push('LIST', 'HISTORY', 'SUMMARY', 'WHOGAME');
+       if (!userIsMaster) recommendations.master = [];
+       if (!userIsPlayer && !userIsObserver && !userIsMaster) { recommendations.playerActions = []; recommendations.settings = []; recommendations.machiavelli = []; }
+       else if (userIsObserver && !userIsMaster) { recommendations.playerActions = recommendations.playerActions.filter(cmd => ['RESIGN', 'WITHDRAW', 'PRESS', 'BROADCAST'].includes(cmd)); recommendations.settings = []; recommendations.machiavelli = []; }
+   }
+   if (!new Set([...recommendations.recommended, ...recommendations.playerActions, ...recommendations.settings, ...recommendations.gameInfo, ...recommendations.master, ...recommendations.general, ...recommendations.machiavelli]).has('MANUAL')) {
+       recommendations.general.push('MANUAL');
+   }
+   const uniqueCommands = new Set();
+   const filterUniqueAndSort = (arr) => arr.filter(cmd => { if (uniqueCommands.has(cmd) || cmd === 'REGISTER' || cmd === 'SIGN OFF') return false; uniqueCommands.add(cmd); return true; }).sort();
+   const finalRecommendations = {};
+   for (const key in recommendations) finalRecommendations[key] = filterUniqueAndSort(recommendations[key]);
+    console.log(`[getRecommendedCommands] Final Recommendations:`, finalRecommendations);
+   return finalRecommendations;
 };
 
 // --- Dip Execution Function ---
 const executeDipCommand = (email, command, targetGame = null, targetPassword = null, targetVariant = null) => {
-    return new Promise(async (resolve, reject) => {
-        const now = new Date();
-        let fullCommand = command.trim();
-        const commandParts = fullCommand.split(/\s+/);
-        const commandVerb = commandParts[0].toUpperCase();
-        const noContextCommands = [
-            'REGISTER', 'WHOIS', 'INFO', 'GET', 'VERSION', 'HELP', 'LIST',
-            'CREATE', 'SET PASSWORD', 'SET ADDRESS', 'MANUAL',
-            'I AM ALSO', 'GET DEDICATION', 'INFO PLAYER', 'SEND', 'MAP'
-        ];
-        const gameNameOptionalCommands = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'OBSERVE', 'WATCH'];
-        let requiresSignOn = false;
+   return new Promise(async (resolve, reject) => {
+       const now = new Date();
+       let fullCommand = command.trim();
+       const commandParts = fullCommand.split(/\s+/);
+       const commandVerb = commandParts[0].toUpperCase();
+       const noContextCommands = [
+           'REGISTER', 'WHOIS', 'INFO', 'GET', 'VERSION', 'HELP', 'LIST',
+           'CREATE', 'SET PASSWORD', 'SET ADDRESS', 'MANUAL',
+           'I AM ALSO', 'GET DEDICATION', 'INFO PLAYER', 'SEND', 'MAP'
+       ];
+       const gameNameOptionalCommands = ['LIST', 'HISTORY', 'SUMMARY', 'WHOGAME', 'OBSERVE', 'WATCH'];
+       let requiresSignOn = false;
 
-        if (commandVerb === 'SIGN' && command.toUpperCase().includes(' ON ')) {
-            requiresSignOn = false;
-        } else if (noContextCommands.includes(commandVerb)) {
-            requiresSignOn = false;
-        } else if (gameNameOptionalCommands.includes(commandVerb) && commandParts.length > 1) {
-            const potentialGameName = commandParts[1];
-            const keywords = ['FULL', 'FROM', 'TO', 'LINES', 'EXCLSTART', 'EXCLEND', 'BROAD'];
-            if (/^[a-zA-Z0-9]{1,8}$/.test(potentialGameName) && !keywords.includes(potentialGameName.toUpperCase())) {
-                 requiresSignOn = false;
-                 if (targetGame && targetGame !== potentialGameName) targetGame = potentialGameName;
-                 else if (!targetGame) targetGame = potentialGameName;
-            } else {
-                 requiresSignOn = !!targetGame;
-            }
-        } else {
-            requiresSignOn = !!targetGame;
-        }
+       if (commandVerb === 'SIGN' && command.toUpperCase().includes(' ON ')) {
+           requiresSignOn = false;
+       } else if (noContextCommands.includes(commandVerb)) {
+           requiresSignOn = false;
+       } else if (gameNameOptionalCommands.includes(commandVerb) && commandParts.length > 1) {
+           const potentialGameName = commandParts[1];
+           const keywords = ['FULL', 'FROM', 'TO', 'LINES', 'EXCLSTART', 'EXCLEND', 'BROAD'];
+           if (/^[a-zA-Z0-9]{1,8}$/.test(potentialGameName) && !keywords.includes(potentialGameName.toUpperCase())) {
+                requiresSignOn = false;
+                if (targetGame && targetGame !== potentialGameName) targetGame = potentialGameName;
+                else if (!targetGame) targetGame = potentialGameName;
+           } else {
+                requiresSignOn = !!targetGame;
+           }
+       } else {
+           requiresSignOn = !!targetGame;
+       }
 
-        let signOnPrefix = null;
-        if (requiresSignOn) {
-            if (!targetGame || !targetPassword) return reject({ success: false, output: `Error: Command "${commandVerb}" requires a target game and password.` });
+       let signOnPrefix = null;
+       if (requiresSignOn) {
+           if (!targetGame || !targetPassword) return reject({ success: false, output: `Error: Command "${commandVerb}" requires a target game and password.` });
 
-            let determinedUserPowerInitial = null;
-            let gameStateForSignOn = null;
+           let determinedUserPowerInitial = null;
+           let gameStateForSignOn = null;
 
-            // Attempt to get game state and player's power initial first
-            try {
-                gameStateForSignOn = await getGameState(targetGame);
-                if (gameStateForSignOn) {
-                    const myPlayerInfo = gameStateForSignOn.players?.find(p => p.email === email);
-                    if (myPlayerInfo && myPlayerInfo.power) {
-                        determinedUserPowerInitial = myPlayerInfo.power.charAt(0).toUpperCase();
-                    }
-                }
-            } catch (dbErr) {
-                console.error(`[Execute SignOn] DB error fetching gameState for ${targetGame} to determine power initial: ${dbErr.message}. Proceeding with fallback logic.`);
-                // Do not reject here; allow fallback to '?', Master, or Observer roles.
-            }
+           // Attempt to get game state and player's power initial first
+           try {
+               gameStateForSignOn = await getGameState(targetGame);
+               if (gameStateForSignOn) {
+                   const myPlayerInfo = gameStateForSignOn.players?.find(p => p.email === email);
+                   if (myPlayerInfo && myPlayerInfo.power) {
+                       determinedUserPowerInitial = myPlayerInfo.power.charAt(0).toUpperCase();
+                   }
+               }
+           } catch (dbErr) {
+               console.error(`[Execute SignOn] DB error fetching gameState for ${targetGame} to determine power initial: ${dbErr.message}. Proceeding with fallback logic.`);
+               // Do not reject here; allow fallback to '?', Master, or Observer roles.
+           }
 
-            const variant = targetVariant; // from req.body
+           const variant = targetVariant; // from req.body
 
-            if (determinedUserPowerInitial) {
-                // Player's power initial is found; use it. This is prioritized for in-game actions.
-                signOnPrefix = `SIGN ON ${determinedUserPowerInitial}${targetGame} ${targetPassword}`;
-            } else {
-                // No specific player power initial found.
-                // This could be because the user is not a player, not in this game,
-                // the game state couldn't be fetched, or the player has no power assigned yet.
-                if (variant && variant.trim() !== '') {
-                    // A variant is specified, typically for creating a new game or an explicit join attempt with variant.
-                    signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword} ${variant.trim()}`;
-                } else if (gameStateForSignOn) {
-                    // No variant specified, but game state was fetched.
-                    // Check for Master or Observer roles since player power wasn't found.
-                    const userIsMaster = gameStateForSignOn.masters?.includes(email);
-                    const isRegisteredObserver = gameStateForSignOn.observers?.includes(email);
-                    const myPlayerInfo = gameStateForSignOn.players?.find(p => p.email === email); // Re-check for context
-                    const isPlayerContext = !!myPlayerInfo; // True if user is listed as a player, even if power was missing
+           if (determinedUserPowerInitial) {
+               // Player's power initial is found; use it. This is prioritized for in-game actions.
+               signOnPrefix = `SIGN ON ${determinedUserPowerInitial}${targetGame} ${targetPassword}`;
+           } else {
+               // No specific player power initial found.
+               // This could be because the user is not a player, not in this game,
+               // the game state couldn't be fetched, or the player has no power assigned yet.
+               if (variant && variant.trim() !== '') {
+                   // A variant is specified, typically for creating a new game or an explicit join attempt with variant.
+                   signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword} ${variant.trim()}`;
+               } else if (gameStateForSignOn) {
+                   // No variant specified, but game state was fetched.
+                   // Check for Master or Observer roles since player power wasn't found.
+                   const userIsMaster = gameStateForSignOn.masters?.includes(email);
+                   const isRegisteredObserver = gameStateForSignOn.observers?.includes(email);
+                   const myPlayerInfo = gameStateForSignOn.players?.find(p => p.email === email); // Re-check for context
+                   const isPlayerContext = !!myPlayerInfo; // True if user is listed as a player, even if power was missing
 
-                    if (userIsMaster) {
-                        signOnPrefix = `SIGN ON M${targetGame} ${targetPassword}`;
-                    } else if (isRegisteredObserver && !isPlayerContext && !userIsMaster) {
-                        // User is an observer, not currently a player in context, and not a master.
-                        signOnPrefix = `SIGN ON O${targetGame} ${targetPassword}`;
-                    } else {
-                        // Game exists, but user is not a player with power, not master, not clearly an observer.
-                        // Default to '?' for joining or if role is ambiguous.
-                        signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword}`;
-                    }
-                } else {
-                    // No determined player power, no variant, and no game state (game likely new or unlisted).
-                    // This is a clear case for '?' (e.g., initial SIGN ON to a game not yet in DB).
-                    signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword}`;
-                }
-            }
-            if (signOnPrefix) fullCommand = `${signOnPrefix}\n${fullCommand}`;
-        }
-        if (!fullCommand.toUpperCase().endsWith('SIGN OFF')) fullCommand += '\nSIGN OFF';
-        const dipInput = `FROM: ${email}\nTO: ${judgeEmail}\nSubject: njudge-web via ${email}\nDate: ${now.toUTCString()}\n\n${fullCommand}\n`;
-        console.log(`[Execute] User ${email} executing: Command=${dipBinaryPath}, Args=${[...dipBinaryArgs].join(' ')}, Input=${dipInput.substring(0, 200).replace(/\n/g, '\\n')}...`);
-        let stdoutData = ''; let stderrData = ''; let processError = null;
-        const dipProcess = spawn(dipBinaryPath, dipBinaryArgs, { timeout: 30000, cwd: dipBinaryRootPath });
-        dipProcess.stdout.on('data', (data) => { stdoutData += data.toString(); });
-        dipProcess.stderr.on('data', (data) => { stderrData += data.toString(); console.error(`Stderr chunk for ${email} (${commandVerb}): ${data}`); });
-        dipProcess.on('error', (err) => { console.error(`[Execute Error] Spawn Error for ${email}: ${err.message}`); processError = err; if (!dipProcess.killed) dipProcess.kill(); });
-        dipProcess.on('close', (code, signal) => {
-             console.log(`[Execute] Dip process for ${email} closed with code ${code}, signal ${signal}`);
-            const output = `--- stdout ---\n${stdoutData}\n--- stderr ---\n${stderrData}`;
-            const executionSuccess = code === 0 && signal === null;
-            if (processError) return reject({ success: false, output: `Spawn failed: ${processError.message}\n\n${output}` });
-            if (!executionSuccess) {
-                 let errorMsg = `Execution failed: Exit code ${code}, Signal ${signal}`;
-                 if (stderrData.includes('command not found') || stderrData.includes('No such file')) errorMsg += `\n\nPossible cause: dip binary path incorrect or binary not executable.`;
-                 else if (stderrData.includes('timeout')) errorMsg += `\n\nPossible cause: Command took too long to execute.`;
-                 errorMsg += `\n\n${output}`;
-                 return reject({ success: false, output: errorMsg });
-            }
-            resolve({ success: true, output: output, stdout: stdoutData, stderr: stderrData });
-        });
-        try { dipProcess.stdin.write(dipInput); dipProcess.stdin.end(); }
-        catch (stdinError) { if (!dipProcess.killed) dipProcess.kill(); reject({ success: false, output: `Error communicating with adjudicator process: ${stdinError.message}` }); }
-    });
+                   if (userIsMaster) {
+                       signOnPrefix = `SIGN ON M${targetGame} ${targetPassword}`;
+                   } else if (isRegisteredObserver && !isPlayerContext && !userIsMaster) {
+                       // User is an observer, not currently a player in context, and not a master.
+                       signOnPrefix = `SIGN ON O${targetGame} ${targetPassword}`;
+                   } else {
+                       // Game exists, but user is not a player with power, not master, not clearly an observer.
+                       // Default to '?' for joining or if role is ambiguous.
+                       signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword}`;
+                   }
+               } else {
+                   // No determined player power, no variant, and no game state (game likely new or unlisted).
+                   // This is a clear case for '?' (e.g., initial SIGN ON to a game not yet in DB).
+                   signOnPrefix = `SIGN ON ?${targetGame} ${targetPassword}`;
+               }
+           }
+           if (signOnPrefix) fullCommand = `${signOnPrefix}\n${fullCommand}`;
+       }
+       if (!fullCommand.toUpperCase().endsWith('SIGN OFF')) fullCommand += '\nSIGN OFF';
+       const dipInput = `FROM: ${email}\nTO: ${judgeEmail}\nSubject: njudge-web via ${email}\nDate: ${now.toUTCString()}\n\n${fullCommand}\n`;
+       console.log(`[Execute] User ${email} executing: Command=${dipBinaryPath}, Args=${[...dipBinaryArgs].join(' ')}, Input=${dipInput.substring(0, 200).replace(/\n/g, '\\n')}...`);
+       let stdoutData = ''; let stderrData = ''; let processError = null;
+       const dipProcess = spawn(dipBinaryPath, dipBinaryArgs, { timeout: 30000, cwd: dipBinaryRootPath });
+       dipProcess.stdout.on('data', (data) => { stdoutData += data.toString(); });
+       dipProcess.stderr.on('data', (data) => { stderrData += data.toString(); console.error(`Stderr chunk for ${email} (${commandVerb}): ${data}`); });
+       dipProcess.on('error', (err) => { console.error(`[Execute Error] Spawn Error for ${email}: ${err.message}`); processError = err; if (!dipProcess.killed) dipProcess.kill(); });
+       dipProcess.on('close', (code, signal) => {
+            console.log(`[Execute] Dip process for ${email} closed with code ${code}, signal ${signal}`);
+           const output = `--- stdout ---\n${stdoutData}\n--- stderr ---\n${stderrData}`;
+           const executionSuccess = code === 0 && signal === null;
+           if (processError) return reject({ success: false, output: `Spawn failed: ${processError.message}\n\n${output}` });
+           if (!executionSuccess) {
+                let errorMsg = `Execution failed: Exit code ${code}, Signal ${signal}`;
+                if (stderrData.includes('command not found') || stderrData.includes('No such file')) errorMsg += `\n\nPossible cause: dip binary path incorrect or binary not executable.`;
+                else if (stderrData.includes('timeout')) errorMsg += `\n\nPossible cause: Command took too long to execute.`;
+                errorMsg += `\n\n${output}`;
+                return reject({ success: false, output: errorMsg });
+           }
+           resolve({ success: true, output: output, stdout: stdoutData, stderr: stderrData });
+       });
+       try { dipProcess.stdin.write(dipInput); dipProcess.stdin.end(); }
+       catch (stdinError) { if (!dipProcess.killed) dipProcess.kill(); reject({ success: false, output: `Error communicating with adjudicator process: ${stdinError.message}` }); }
+   });
 };
 
 // --- PNG Generation Function (using Ghostscript) ---
 async function generateMapPng(postscriptContent, outputPngPath) {
-    return new Promise((resolve, reject) => {
-        const gsArgs = [
-            '-dNOPAUSE', '-dBATCH', '-sDEVICE=png16m', '-r150',
-            '-dTextAlphaBits=4', '-dGraphicsAlphaBits=4',
-            `-sOutputFile=${outputPngPath}`, '-'
-        ];
-         console.log(`[generateMapPng] Running ${ghostscriptPath} with args: ${gsArgs.slice(0, -1).join(' ')} -sOutputFile=${outputPngPath} -`);
-        const gsProcess = spawn(ghostscriptPath, gsArgs);
-        let stdoutData = ''; let stderrData = ''; let processError = null;
-        gsProcess.stdout.on('data', (data) => { stdoutData += data.toString(); });
-        gsProcess.stderr.on('data', (data) => { stderrData += data.toString(); });
-        gsProcess.on('error', (err) => {
-            console.error(`[generateMapPng] Spawn Error: ${err.message}`);
-            processError = (err.code === 'ENOENT') ? new Error(`Ghostscript command ('${ghostscriptPath}') not found.`) : err;
-            if (!gsProcess.killed) gsProcess.kill();
-        });
-        gsProcess.on('close', (code, signal) => {
-            console.log(`[generateMapPng] Ghostscript process closed with code ${code}, signal ${signal}`);
-            if (processError) return reject(new Error(`Ghostscript spawn failed: ${processError.message}\nStderr: ${stderrData}`));
-            if (code !== 0) {
-                 console.error(`[generateMapPng] Ghostscript failed: Exit code ${code}, Signal ${signal}\nStderr:\n${stderrData}\nStdout:\n${stdoutData}`);
-                return reject(new Error(`Ghostscript execution failed with code ${code}.\nStderr: ${stderrData}`));
-            }
-            fs.access(outputPngPath, fs.constants.F_OK, (errAccess) => {
-                if (errAccess) return reject(new Error(`Ghostscript finished successfully but output file ${outputPngPath} was not created.`));
-                console.log(`[generateMapPng] Successfully generated ${outputPngPath}`);
-                resolve();
-            });
-        });
-        try { gsProcess.stdin.write(postscriptContent); gsProcess.stdin.end(); }
-        catch (stdinError) { if (!gsProcess.killed) gsProcess.kill(); reject(new Error(`Error communicating with Ghostscript process: ${stdinError.message}`)); }
-    });
+   return new Promise((resolve, reject) => {
+       const gsArgs = [
+           '-dNOPAUSE', '-dBATCH', '-sDEVICE=png16m', '-r150',
+           '-dTextAlphaBits=4', '-dGraphicsAlphaBits=4',
+           `-sOutputFile=${outputPngPath}`, '-'
+       ];
+        console.log(`[generateMapPng] Running ${ghostscriptPath} with args: ${gsArgs.slice(0, -1).join(' ')} -sOutputFile=${outputPngPath} -`);
+       const gsProcess = spawn(ghostscriptPath, gsArgs);
+       let stdoutData = ''; let stderrData = ''; let processError = null;
+       gsProcess.stdout.on('data', (data) => { stdoutData += data.toString(); });
+       gsProcess.stderr.on('data', (data) => { stderrData += data.toString(); });
+       gsProcess.on('error', (err) => {
+           console.error(`[generateMapPng] Spawn Error: ${err.message}`);
+           processError = (err.code === 'ENOENT') ? new Error(`Ghostscript command ('${ghostscriptPath}') not found.`) : err;
+           if (!gsProcess.killed) gsProcess.kill();
+       });
+       gsProcess.on('close', (code, signal) => {
+           console.log(`[generateMapPng] Ghostscript process closed with code ${code}, signal ${signal}`);
+           if (processError) return reject(new Error(`Ghostscript spawn failed: ${processError.message}\nStderr: ${stderrData}`));
+           if (code !== 0) {
+                console.error(`[generateMapPng] Ghostscript failed: Exit code ${code}, Signal ${signal}\nStderr:\n${stderrData}\nStdout:\n${stdoutData}`);
+               return reject(new Error(`Ghostscript execution failed with code ${code}.\nStderr: ${stderrData}`));
+           }
+           fs.access(outputPngPath, fs.constants.F_OK, (errAccess) => {
+               if (errAccess) return reject(new Error(`Ghostscript finished successfully but output file ${outputPngPath} was not created.`));
+               console.log(`[generateMapPng] Successfully generated ${outputPngPath}`);
+               resolve();
+           });
+       });
+       try { gsProcess.stdin.write(postscriptContent); gsProcess.stdin.end(); }
+       catch (stdinError) { if (!gsProcess.killed) gsProcess.kill(); reject(new Error(`Error communicating with Ghostscript process: ${stdinError.message}`)); }
+   });
 }
-
 // --- Map Data API Endpoint ---
-async function getMapData(userEmail, gameName, phase) {
-    console.log(`[getMapData PNG] Entering with gameName: ${gameName}, phase: ${phase}`);
+async function getMapData(userEmail, gameName, phase) { // Added userEmail parameter
+    console.log(`[getMapData PNG] Entering with userEmail: ${userEmail}, gameName: ${gameName}, phase: ${phase}`);
     try {
-        // Step 1: Execute LIST command to get fresh data
+        // Step 1: Execute LIST command to get fresh data, using the actual user's email
+        // Pass null for targetPassword and targetVariant as they are not strictly needed for a simple LIST,
+        // but userEmail provides context.
         const listResult = await executeDipCommand(userEmail, `LIST ${gameName}`, gameName, null, null);
         if (!listResult.success) {
-            console.error(`[getMapData PNG Error] Failed to fetch LIST data for ${gameName}:`, listResult.output);
+            console.error(`[getMapData PNG Error] Failed to fetch LIST data for ${gameName} (user: ${userEmail}):`, listResult.output);
             throw new Error(`LIST command failed for ${gameName}, cannot reliably determine variant for map generation. Output: ${listResult.output}`);
         }
 
@@ -1125,15 +1140,22 @@ async function getMapData(userEmail, gameName, phase) {
         console.log(`[getMapData PNG] Using PS template: ${usedTemplatePath}`);
 
         let unitPsCommands = [];
-        const psDrawFunctions = { "A": "DrawArmySymbol", "F": "DrawFleetSymbol", "W": "DrawWingSymbol", "R": "DrawArtillerySymbol", "G": "DrawGarrisonSymbol" };
+        const psDrawFunctions = {
+            "A": "DrawArmy",
+            "F": "DrawFleet",
+            "G": "DrawGarrison",
+            "W": "DrawCavalry",
+            "R": "DrawArmyR"
+        };
 
-        let powerToIndexMap = {};
+        let powerToIndexMap = {}; // Not strictly needed for the PS call if PowerName proc sets CountryLetter
+                                  // but can be kept for validation or if PS changes.
         if (lowerVariantForPath === 'machiavelli') {
             powerToIndexMap = {
                 'AUSTRIA': 1, 'FRANCE': 2, 'MILAN': 3, 'FLORENCE': 4,
                 'NAPLES': 5, 'PAPACY': 6, 'TURKEY': 7, 'VENICE': 8, 'AUTONOMOUS': 9
             };
-        } else { // Default to Standard Diplomacy (or other variants if added)
+        } else {
             powerToIndexMap = {
                 'AUSTRIA': 1, 'ENGLAND':2, 'FRANCE': 3, 'GERMANY':4,
                 'ITALY':5, 'RUSSIA':6, 'TURKEY': 7
@@ -1142,9 +1164,12 @@ async function getMapData(userEmail, gameName, phase) {
 
         const allUnits = currentGameState.units || [];
         let coordinateError = false;
+        console.log("[getMapData PNG] Parsed currentGameState.units for map:", JSON.stringify(currentGameState.units, null, 2));
+
 
         allUnits.forEach(unit => {
-            let unitLocationAbbr = unit.location; // Already an abbreviation from parseListOutput
+            console.log(`[getMapData PNG Unit] Processing unit: Power='${unit.power}', Type='${unit.type}', Loc='${unit.location}'`);
+            let unitLocationAbbr = unit.location;
             if (!provinceLookup[unitLocationAbbr] && unit.location && nameToAbbr) {
                 const resolved = nameToAbbr[unit.location.toLowerCase().trim()];
                 if (resolved) unitLocationAbbr = resolved;
@@ -1161,30 +1186,48 @@ async function getMapData(userEmail, gameName, phase) {
                 console.error(`[getMapData PNG Error] Unit coordinate data missing or invalid for province '${unitLocationAbbr}' (Unit: ${unit.type} ${unit.location} by ${unit.power}). UnitX: ${provinceData.unitX}, UnitY: ${provinceData.unitY}. Label coords: ${provinceData.labelX},${provinceData.labelY}. SC coords: ${provinceData.scX},${provinceData.scY}`);
                 coordinateError = true; return;
             }
-            const drawFunc = psDrawFunctions[unit.type.toUpperCase()] || 'DrawArmySymbol'; // Ensure unit.type is uppercase
+
+            const drawFunc = psDrawFunctions[unit.type.toUpperCase()];
+            
             const x = provinceData.unitX;
             const y = provinceData.unitY;
-            const powerIndex = powerToIndexMap[unit.power.toUpperCase()];
+            const powerNameForPS = unit.power.toUpperCase(); // Should already be uppercase from parser
+            // const powerIndex = powerToIndexMap[powerNameForPS]; // Not directly passed to DrawFunc if PowerNameProc sets CountryLetter
 
-            if (powerIndex === undefined) {
-                console.warn(`[getMapData PNG] Unknown power '${unit.power}' for unit in ${unitLocationAbbr}. Skipping unit. Check POWER_TO_INDEX for variant ${variantFromListOutput}.`);
+            // if (powerIndex === undefined) { // This check is still useful for validating power names
+            //     console.warn(`[getMapData PNG] Unknown power '${unit.power}' for unit in ${unitLocationAbbr}. Skipping unit. Check POWER_TO_INDEX for variant ${variantFromListOutput}.`);
+            //     return;
+            // }
+
+            if (!drawFunc) {
+                console.warn(`[getMapData PNG] No PostScript draw function defined in psDrawFunctions for unit type '${unit.type.toUpperCase()}'. Skipping unit ${unit.type} at ${unitLocationAbbr}.`);
                 return;
             }
-            unitPsCommands.push(`gsave ${x} ${y} translate ${powerIndex} ${drawFunc} grestore`);
+            
+            // Corrected PostScript command: PowerName X Y DrawFunction
+            // The DrawFunction itself will do the translate and use global CountryLetter set by PowerName
+            unitPsCommands.push(`${powerNameForPS} ${x} ${y} ${drawFunc}`);
         });
 
         let scPsCommands = [];
         if (isColored) {
             const scsByOwner = {};
+            console.log("[getMapData PNG] Parsed currentGameState.supplyCenters for map:", JSON.stringify(currentGameState.supplyCenters, null, 2));
             (currentGameState.supplyCenters || []).forEach(sc => {
-                if (!sc.location || !sc.owner || sc.owner.toUpperCase() === 'UNOWNED') {
+                const ownerKey = sc.owner.toUpperCase(); 
+                 console.log(`[getMapData PNG SC] Processing SC: Owner='${sc.owner}' (Key='${ownerKey}'), Loc='${sc.location}'`);
+                if (!sc.location || !sc.owner || ownerKey === 'UNOWNED') {
                     return;
                 }
-                const ownerKey = sc.owner.toUpperCase();
+
+                if (!powerToIndexMap[ownerKey] && ownerKey !== 'UNOWNED') { 
+                    console.warn(`[getMapData PNG SC] SC Owner '${ownerKey}' not in powerToIndexMap. SC color might be default or black if UNOWNEDCENTER is black.`);
+                }
+
                 if (!scsByOwner[ownerKey]) {
                     scsByOwner[ownerKey] = [];
                 }
-                const scAbbr = sc.location.toUpperCase(); // Should be an abbreviation
+                const scAbbr = sc.location.toUpperCase();
                 if (provinceLookup[scAbbr]) {
                     scsByOwner[ownerKey].push(scAbbr);
                 } else {
@@ -1193,18 +1236,13 @@ async function getMapData(userEmail, gameName, phase) {
             });
 
             const sortedOwners = Object.keys(scsByOwner).sort();
-            for (const owner of sortedOwners) {
+            for (const owner of sortedOwners) { 
                 if (scsByOwner[owner].length > 0) {
-                    scPsCommands.push(`${owner}CENTER`);
+                    scPsCommands.push(`${owner}CENTER`); 
                     scsByOwner[owner].sort().forEach(abbr => {
-                        scPsCommands.push(abbr);
+                        scPsCommands.push(abbr); 
                     });
                 }
-            }
-
-            if (scPsCommands.length > 0) {
-                scPsCommands.push("closepath newpath");
-                scPsCommands.push("Black");
             }
         }
 
@@ -1216,10 +1254,22 @@ async function getMapData(userEmail, gameName, phase) {
         ];
         const title = `${gameName}, ${targetPhase}`;
         let setupPsCommands = [`(${title}) DrawTitle`];
-        const combinedPsContent = `${basePsContent}\n${dynamicPsDefs.join("\n")}\n${setupPsCommands.join("\n")}\nDrawMap\nShowPage\n`;
+
+        const combinedPsContent = `${basePsContent}\n` + 
+                                  `${dynamicPsDefs.join("\n")}\n` +    
+                                  `${setupPsCommands.join("\n")}\n` + 
+                                  `DrawMap\n` +                       
+                                  `DrawDynamicSCs\n` +                
+                                  `DrawDynamicUnits\n` +              
+                                  `ShowPage\n`;                       
 
         const safeGameName = gameName.replace(/[^a-zA-Z0-9_-]/g, '_');
         const safePhase = targetPhase.replace(/[^a-zA-Z0-9_-]/g, '_');
+        
+        const debugPsPath = path.join(staticMapDir, `${safeGameName}_${safePhase}_debug.ps`);
+        try { await fsPromises.writeFile(debugPsPath, combinedPsContent); console.log(`[getMapData PNG Debug] Saved combined PostScript to ${debugPsPath}`); }
+        catch (writeErr) { console.error(`[getMapData PNG Debug] Failed to write debug PS file:`, writeErr); }
+
 
         const outputPngFilename = `${safeGameName}_${safePhase}.png`;
         const outputPngPath = path.join(staticMapDir, outputPngFilename);
@@ -1236,6 +1286,62 @@ async function getMapData(userEmail, gameName, phase) {
     }
 }
 
+// --- generateMapPng function - added logging for stderr on success
+async function generateMapPng(postscriptContent, outputPngPath) {
+    return new Promise((resolve, reject) => {
+        const gsArgs = [
+            '-dNOPAUSE', '-dBATCH', '-sDEVICE=png16m', '-r150',
+            '-dTextAlphaBits=4', '-dGraphicsAlphaBits=4',
+            `-sOutputFile=${outputPngPath}`, '-'
+        ];
+         console.log(`[generateMapPng] Running ${ghostscriptPath} with args: ${gsArgs.slice(0, -1).join(' ')} -sOutputFile=${outputPngPath} -`);
+        const gsProcess = spawn(ghostscriptPath, gsArgs);
+        let stdoutData = ''; let stderrData = ''; let processError = null;
+        gsProcess.stdout.on('data', (data) => { stdoutData += data.toString(); });
+        gsProcess.stderr.on('data', (data) => { stderrData += data.toString(); }); // Collect stderr
+        gsProcess.on('error', (err) => {
+            console.error(`[generateMapPng] Spawn Error: ${err.message}`);
+            processError = (err.code === 'ENOENT') ? new Error(`Ghostscript command ('${ghostscriptPath}') not found.`) : err;
+            if (!gsProcess.killed) gsProcess.kill();
+        });
+        gsProcess.on('close', (code, signal) => {
+            console.log(`[generateMapPng] Ghostscript process closed with code ${code}, signal ${signal}`);
+            if (stderrData.trim()) { // Log stderr even if successful, if it's not empty
+                console.log(`[generateMapPng] Ghostscript stderr:\n${stderrData}`);
+            }
+            if (processError) return reject(new Error(`Ghostscript spawn failed: ${processError.message}\nStderr: ${stderrData}`));
+            if (code !== 0) {
+                 console.error(`[generateMapPng] Ghostscript failed: Exit code ${code}, Signal ${signal}\nStdout:\n${stdoutData}`);
+                return reject(new Error(`Ghostscript execution failed with code ${code}.\nStderr: ${stderrData}`));
+            }
+            fs.access(outputPngPath, fs.constants.F_OK, (errAccess) => {
+                if (errAccess) return reject(new Error(`Ghostscript finished successfully but output file ${outputPngPath} was not created.`));
+                console.log(`[generateMapPng] Successfully generated ${outputPngPath}`);
+                resolve();
+            });
+        });
+        try { gsProcess.stdin.write(postscriptContent); gsProcess.stdin.end(); }
+        catch (stdinError) { if (!gsProcess.killed) gsProcess.kill(); reject(new Error(`Error communicating with Ghostscript process: ${stdinError.message}`)); }
+    });
+}
+
+
+// ... (rest of server.js, including API endpoints, startup, syncDipMaster, etc.)
+// Ensure the /api/map/:gameName/:phase? route correctly calls getMapData with req.session.email
+// (This was already corrected in the previous version you provided, so it should be fine)
+
+// ... (The rest of your server.js file from the previous correct version)
+// Ensure that the /api/map/:gameName/:phase? route handler correctly passes req.session.email
+// to getMapData. It should look like this:
+// app.get('/api/map/:gameName/:phase?', requireAuth, async (req, res) => {
+//     const { gameName, phase } = req.params;
+//     if (!gameName) return res.status(400).json({ success: false, message: 'Game name is required.' });
+//     try {
+//         const mapResult = await getMapData(req.session.email, gameName, phase); // Pass user's email
+//         // ... rest of the handler
+//     } // ...
+// });
+// (This was correct in your last provided version of server.js)
 
 // --- API Endpoints ---
 const app = express();
@@ -1429,7 +1535,7 @@ app.get('/api/map/:gameName/:phase?', requireAuth, async (req, res) => {
     const { gameName, phase } = req.params;
     if (!gameName) return res.status(400).json({ success: false, message: 'Game name is required.' });
     try {
-        const mapResult = await getMapData(req.session.email, gameName, phase);
+        const mapResult = await getMapData(req.session.email, gameName, phase); // Pass user's email
         if (mapResult && mapResult.success) res.json({ success: true, mapUrl: mapResult.mapUrl });
         else {
             // If mapResult is null or not success, it implies an error within getMapData
