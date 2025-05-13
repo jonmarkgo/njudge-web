@@ -849,7 +849,78 @@ const parseListOutput = (gameName, output, nameToAbbr) => {
     return gameState;
 };
 
-// ... (rest of the server.js file remains the same as the previous version) ...
+
+/**
+ * Parses a map.<variantname> file to extract province full names and their primary abbreviations.
+ * @param {string} variantName - The name of the variant.
+ * @returns {Promise<Array<{fullName: string, abbreviation: string}>>} - A promise that resolves to an array of province-abbreviation pairs.
+ * @throws {Error} If the map file cannot be read or parsed.
+ */
+async function parseMapVariantFileForAbbreviations(variantName) {
+    const lowerVariant = variantName.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    const filePath = path.join(gameDataDir, `map.${variantName}`); // Original case
+    const filePathLower = path.join(gameDataDir, `map.${lowerVariant}`); // Lowercase fallback
+
+    let fileContent;
+    let usedPath = filePath;
+
+    try {
+        fileContent = await fsPromises.readFile(filePath, 'utf-8');
+    } catch (errorOriginal) {
+        if (errorOriginal.code === 'ENOENT') {
+            console.log(`[Map Abbr Parse] Original file ${filePath} not found, trying ${filePathLower}`);
+            try {
+                fileContent = await fsPromises.readFile(filePathLower, 'utf-8');
+                usedPath = filePathLower;
+            } catch (errorLower) {
+                const errMsg = `Failed to read map abbreviation file for variant ${variantName}. Tried: ${filePath} and ${filePathLower}. Error: ${errorLower.message}`;
+                console.error(`[Map Abbr Parse Error] ${errMsg}`);
+                throw new Error(errMsg); // Propagate error if neither found
+            }
+        } else {
+            console.error(`[Map Abbr Parse Error] Could not read map abbreviation file ${filePath}:`, errorOriginal);
+            throw errorOriginal; // Propagate other errors
+        }
+    }
+
+    console.log(`[Map Abbr Parse] Parsing abbreviations from: ${usedPath}`);
+    const provinceAbbreviations = [];
+    const lines = fileContent.split(/\r?\n/);
+    // Regex: Full Name (capture 1), comma, metadata (ignore), first abbreviation (capture 2)
+    const provinceLineRegex = /^([^,]+?)\s*,\s*[^.]*\.\s*([a-zA-Z0-9]{3,})(?:\s+.*)?$/;
+
+    for (const line of lines) {
+        const trimmedLine = line.trim();
+        if (!trimmedLine || trimmedLine.startsWith('#')) {
+            continue; // Skip comments and empty lines
+        }
+        if (trimmedLine === '-1') {
+            break; // Stop parsing at the first separator line
+        }
+
+        const match = trimmedLine.match(provinceLineRegex);
+        if (match) {
+            const fullName = match[1].trim();
+            const abbreviation = match[2].trim(); // This is the first abbreviation
+            if (fullName && abbreviation) {
+                provinceAbbreviations.push({ fullName, abbreviation });
+            } else {
+                console.warn(`[Map Abbr Parse Warn] Partially matched line in ${usedPath}: "${trimmedLine}". FullName: '${fullName}', Abbr: '${abbreviation}'`);
+            }
+        } else {
+            // console.warn(`[Map Abbr Parse Warn] Line did not match province regex in ${usedPath}: "${trimmedLine}"`);
+        }
+    }
+
+    if (provinceAbbreviations.length === 0) {
+        console.warn(`[Map Abbr Parse Warn] No abbreviations parsed from ${usedPath} for variant ${variantName}. Check file format.`);
+    } else {
+        console.log(`[Map Abbr Parse Success] Parsed ${provinceAbbreviations.length} abbreviations for variant ${variantName}.`);
+    }
+
+    return provinceAbbreviations;
+}
+
 
 // --- Command Recommendation Logic ---
 const getRecommendedCommands = (gameState, userEmail) => {
@@ -1620,6 +1691,32 @@ console.log(`[Route Definition Check] Defining POST /api/user/preferences/reset`
 app.post('/api/user/preferences/reset', requireAuth, async (req, res) => { try { const count = await deleteAllUserPreferences(req.userId); res.json({ success: true, message: `Reset ${count} preferences.` }); } catch (error) { res.status(500).json({ success: false, message: 'Failed to reset preferences.' }); } });
 app.get('/api/stats/game-status', async (req, res) => { try { const gameCounts = await getGameCountsByStatus(); res.json({ success: true, stats: gameCounts }); } catch (error) { res.status(500).json({ success: false, message: "Failed to retrieve game status statistics." }); } });
 app.get('/api/game/:gameName/history', requireEmail, async (req, res) => { const gameName = req.params.gameName; const userEmail = req.session.email; if (!gameName) return res.status(400).json({ success: false, message: 'Game name is required.' }); try { const historyResult = await executeDipCommand(userEmail, `HISTORY ${gameName}`, gameName); if (!historyResult.success) { const statusCode = historyResult.output.includes('No such game') ? 404 : 500; return res.status(statusCode).json({ success: false, message: historyResult.output.trim() }); } const { nameToAbbr } = await ensureMapDataParsed( (await getGameState(gameName))?.variant || 'Standard' ); const parsedHistory = parseHistoryOutput(gameName, historyResult.stdout, nameToAbbr); res.json({ success: true, history: parsedHistory }); } catch (error) { const statusCode = error.output?.includes('Spawn failed') ? 503 : (error.message?.includes('No such game') ? 404 : 500); const errorMessage = error.message || 'Failed to retrieve game history.'; res.status(statusCode).json({ success: false, message: errorMessage, details: error.output || null }); } });
+
+app.get('/api/mapdata/:variantName/abbreviations', requireAuth, async (req, res) => {
+    const { variantName } = req.params;
+    if (!variantName) {
+        return res.status(400).json({ success: false, message: 'Variant name is required.' });
+    }
+
+    try {
+        const abbreviations = await parseMapVariantFileForAbbreviations(variantName);
+        if (abbreviations.length > 0) {
+            res.json({ success: true, variant: variantName, abbreviations: abbreviations });
+        } else {
+            // If no abbreviations found, it might mean the file was empty or format was unexpected,
+            // but not necessarily a file-not-found error if parseMapVariantFileForAbbreviations didn't throw.
+            res.status(404).json({ success: false, message: `No abbreviation data found or parsed for variant '${variantName}'. Check server logs and map file format.` });
+        }
+    } catch (error) {
+        console.error(`[API Error] /api/mapdata/${variantName}/abbreviations:`, error);
+        // Check if the error is due to file not found from our parser
+        if (error.message.startsWith('Failed to read map abbreviation file')) {
+            res.status(404).json({ success: false, message: error.message });
+        } else {
+            res.status(500).json({ success: false, message: `Error retrieving abbreviations for variant '${variantName}': ${error.message}` });
+        }
+    }
+});
 
 // --- Start Server ---
 app.use(express.static(path.join(__dirname, 'public')));
