@@ -515,280 +515,338 @@ const ensureMapDataParsed = async (variantName) => {
 
 // --- Parsing Helper Functions ---
 
+
 const parseListOutput = (gameName, output, nameToAbbr) => {
     console.log(`[Parser LIST] Attempting to parse LIST output for ${gameName}`);
-   const gameState = {
-       name: gameName, status: 'Unknown', variant: 'Standard', options: [],
-       currentPhase: 'Unknown', nextDeadline: null, players: [], masters: [],
-       observers: [], settings: {}, rawListOutput: output,
-       lastUpdated: Math.floor(Date.now() / 1000),
-       units: [], supplyCenters: [] // Ensure these are initialized
-   };
-   const lines = output.split('\n');
-   let currentSection = 'header';
-   let currentPowerForUnits = null; // Will store the CANONICAL (uppercase) power name
-   let currentPowerForSCs = null;   // Will store the CANONICAL (uppercase) power name
+    const gameState = {
+        name: gameName, status: 'Unknown', variant: 'Standard', options: [],
+        currentPhase: 'Unknown', nextDeadline: null, players: [], masters: [],
+        observers: [], settings: {}, rawListOutput: output,
+        lastUpdated: Math.floor(Date.now() / 1000),
+        units: [], supplyCenters: []
+    };
+    const lines = output.split('\n');
+    let currentSection = 'header'; // Start in header
+    let currentPowerForUnits = null;
+    let currentPowerForSCs = null;
 
-   const explicitDeadlineRegex = /::\s*Deadline:\s*([SFUW]\d{4}[MRBAX]?)\s+(.*)/i;
-   const activeStatusLineRegex = /Status of the (\w+) phase for (Spring|Summer|Fall|Winter) of (\d{4})\./i;
-   const variantRegex = /Variant:\s*(\S+)\s*(.*)/i;
-   const playerLineRegex = /^\s*([a-zA-Z]+)\s+\S+\s+\S+\s+\S+\s+([\w.-]+@[\w.-]+\.\w+).*$/i; // Power name here is as-is
-   const masterLineRegex = /^\s*(?:Master|Moderator)\s+\d+\s+([\w.-]+@[\w.-]+\.\w+).*$/i;
-   const observerLineRegex = /^\s*Observer\s*:\s*([\w.-]+@[\w.-]+\.\w+).*$/i;
-   const statusRegex = /Game status:\s*(.*)/i;
-   const settingsHeaderRegex = /The parameters for .*? are as follows:|Game settings:|flags:/i;
-   const pressSettingRegex = /Press:\s*(.*?)(?:,|\s*$)/i;
-   const diasSettingRegex = /\b(NoDIAS|DIAS)\b/i;
-   const nmrSettingRegex = /\b(NMR|NoNMR)\b/i;
-   const concessionSettingRegex = /\b(Concessions|No Concessions)\b/i;
-   const emailRegex = /[\w.-]+@[\w.-]+\.\w+/;
-   const unitHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s*$/i;
-   const unitLineRegex = /^\s+(A|F|W|G|R)\s+([A-Z]{3}(?:\/[NESW]C)?)\s*(?:\(([^)]+)\))?/i;
-   const scHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous)\s+\(\d+\):\s*$/i;
-   const directUnitLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s+(Army|Fleet|Garrison|Wing|Artillery)\s+(.+)\.\s*$/i;
-   const citiesControlledHeaderRegex = /^Cities Controlled:/i;
-   const playerListHeader = "The following players are signed up for game";
-   const flagsLineRegex = /^flags:\s*(.*)/i;
+    const explicitDeadlineRegex = /::\s*Deadline:\s*([SFUW]\d{4}[MRBAX]?)\s+(.*)/i;
+    const activeStatusLineRegex = /Status of the (\w+) phase for (Spring|Summer|Fall|Winter) of (\d{4})\./i;
+    const variantRegex = /Variant:\s*(\S+)\s*(.*)/i;
+    // Player line: PowerName potentially_spaces_and_numbers email (optional status)
+    const playerLineRegex = /^\s*([a-zA-Z]+)\s+[\s\S]*?([\w.-]+@[\w.-]+\.\w+)(?:\s*\(([^)]+)\))?.*$/i;
+    const masterLineRegex = /^\s*(?:Master|Moderator)\s+[\s\S]*?([\w.-]+@[\w.-]+\.\w+).*$/i;
+    const observerLineRegex = /^\s*Observer\s*:\s*([\w.-]+@[\w.-]+\.\w+).*$/i;
 
-   lines.forEach(line => {
-       const trimmedLine = line.trim();
-       let match;
+    const statusRegex = /Game status:\s*(.*)/i;
+    const settingsHeaderRegex = /The parameters for .*? are as follows:|Game settings:|flags:/i;
+    const pressSettingRegex = /Press:\s*(.*?)(?:,|\s*$)/i;
+    const diasSettingRegex = /\b(NoDIAS|DIAS)\b/i;
+    const nmrSettingRegex = /\b(NMR|NoNMR)\b/i;
+    const concessionSettingRegex = /\b(Concessions|No Concessions)\b/i;
+    const emailRegex = /[\w.-]+@[\w.-]+\.\w+/;
+    const unitHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s*$/i;
+    const unitLineRegex = /^\s+(A|F|W|G|R)\s+([A-Z]{3}(?:\/[NESW]C)?)\s*(?:\(([^)]+)\))?/i;
+    const scHeaderRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous)\s+\(\d+\):\s*$/i;
+    const directUnitLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s+(Army|Fleet|Garrison|Wing|Artillery)\s+(.+)\.\s*$/i;
+    const citiesControlledHeaderRegex = /^Cities Controlled:/i;
+    const playerListHeader = "The following players are signed up for game";
+    const flagsLineRegex = /^flags:\s*(.*)/i;
 
-       if (trimmedLine.startsWith(playerListHeader)) { currentSection = 'players'; return; }
-       if (settingsHeaderRegex.test(trimmedLine)) { currentSection = 'settings'; }
-       match = trimmedLine.match(unitHeaderRegex);
-       if (match) {
-           currentSection = 'units';
-           currentPowerForUnits = match[1].toUpperCase(); // Store canonical power name
-           console.log(`[Parser LIST ${gameName}] Switched to units section for power: ${currentPowerForUnits}`);
-           return;
-       }
-       match = trimmedLine.match(scHeaderRegex);
-       if (match) {
-           currentSection = 'scs';
-           currentPowerForSCs = match[1].toUpperCase(); // Store canonical power name
-           console.log(`[Parser LIST ${gameName}] Switched to SCs section for power: ${currentPowerForSCs}`);
-           return;
-       }
-       if (citiesControlledHeaderRegex.test(trimmedLine)) { currentSection = 'cities_controlled'; return; }
-       if (!trimmedLine) {
-           if (currentSection === 'units') {
-               console.log(`[Parser LIST ${gameName}] Exiting units section for power: ${currentPowerForUnits}`);
-               currentPowerForUnits = null;
-           }
-           if (currentSection === 'scs') {
-               console.log(`[Parser LIST ${gameName}] Exiting SCs section for power: ${currentPowerForSCs}`);
-               currentPowerForSCs = null;
-           }
-       }
+    for (const line of lines) {
+        const trimmedLine = line.trim();
+        let match;
 
-       match = trimmedLine.match(directUnitLineRegex);
-       if (match) {
-           const powerNameFromLine = match[1]; // e.g., "Austria"
-           const powerCanonical = powerNameFromLine.toUpperCase(); // e.g., "AUSTRIA"
-           const unitTypeFull = match[2];
-           let unitTypeChar = unitTypeFull.charAt(0).toUpperCase();
-           if (unitTypeFull.toUpperCase() === 'ARTILLERY') unitTypeChar = 'R';
-           else if (unitTypeFull.toUpperCase() === 'GARRISON') unitTypeChar = 'G';
-           else if (unitTypeFull.toUpperCase() === 'WING') unitTypeChar = 'W';
+        // Section switching logic - order can be important
+        if (trimmedLine.startsWith(playerListHeader)) {
+            currentSection = 'players';
+            console.log(`[Parser LIST ${gameName}] Switched to section: players`);
+            continue; // Consume this line, move to next
+        } else if (settingsHeaderRegex.test(trimmedLine)) {
+            currentSection = 'settings';
+            console.log(`[Parser LIST ${gameName}] Switched to section: settings`);
+            // Don't continue here, as the "flags:" line itself needs processing
+        } else if (citiesControlledHeaderRegex.test(trimmedLine)) {
+            currentSection = 'cities_controlled';
+            console.log(`[Parser LIST ${gameName}] Switched to section: cities_controlled`);
+            continue;
+        } else {
+            match = trimmedLine.match(unitHeaderRegex);
+            if (match) {
+                currentSection = 'units';
+                currentPowerForUnits = match[1].toUpperCase();
+                console.log(`[Parser LIST ${gameName}] Switched to section: units for power: ${currentPowerForUnits}`);
+                continue;
+            }
+            match = trimmedLine.match(scHeaderRegex);
+            if (match) {
+                currentSection = 'scs';
+                currentPowerForSCs = match[1].toUpperCase();
+                console.log(`[Parser LIST ${gameName}] Switched to section: scs for power: ${currentPowerForSCs}`);
+                continue;
+            }
+        }
 
-           const locationName = match[3].trim();
-           let locationAbbr = locationName.toUpperCase().substring(0,3);
-           if (nameToAbbr) {
-               const resolvedAbbr = nameToAbbr[locationName.toLowerCase()];
-               if (resolvedAbbr) {
-                   locationAbbr = resolvedAbbr;
-               } else {
-                   console.warn(`[Parser LIST ${gameName}] Direct Unit: Could not find abbr for location '${locationName}' (using '${locationAbbr}' as fallback) for power ${powerCanonical}. nameToAbbr keys: ${Object.keys(nameToAbbr).slice(0,10).join(',')}...`);
-               }
-           }
-           console.log(`[Parser LIST ${gameName}] Adding direct unit: ${powerCanonical} ${unitTypeChar} ${locationAbbr}`);
-           gameState.units.push({ power: powerCanonical, type: unitTypeChar, location: locationAbbr, status: null });
-           const player = gameState.players.find(p => p.power.toUpperCase() === powerCanonical); // Compare with canonical
-           if (player) { if (!player.units) player.units = []; player.units.push({ type: unitTypeChar, location: locationAbbr, status: null }); }
-           return;
-       }
+        // If it's an empty line, reset sub-section specific vars
+        if (!trimmedLine) {
+            if (currentSection === 'units' && currentPowerForUnits) {
+                console.log(`[Parser LIST ${gameName}] Exiting units sub-section for power: ${currentPowerForUnits} (empty line)`);
+                currentPowerForUnits = null;
+            }
+            if (currentSection === 'scs' && currentPowerForSCs) {
+                console.log(`[Parser LIST ${gameName}] Exiting scs sub-section for power: ${currentPowerForSCs} (empty line)`);
+                currentPowerForSCs = null;
+            }
+            // Potentially switch out of 'players' section if an empty line truly signifies its end
+            // if (currentSection === 'players') {
+            //     console.log(`[Parser LIST ${gameName}] Empty line in players section, potentially ending player list.`);
+            //     // currentSection = 'unknown_after_players'; // Or similar
+            // }
+            continue; // Skip further processing for empty lines
+        }
 
-       switch (currentSection) {
-           case 'header': case 'unknown':
-               match = line.match(explicitDeadlineRegex); if (match) { gameState.currentPhase = match[1].trim().toUpperCase(); gameState.nextDeadline = match[2].trim(); if (gameState.status === 'Unknown' || gameState.status === 'Forming') gameState.status = 'Active'; break; }
-               match = line.match(activeStatusLineRegex); if (match) { const [, phaseTypeStr, seasonStr, year] = match; let seasonCode = 'S'; if (seasonStr.toLowerCase() === 'fall') seasonCode = 'F'; else if (seasonStr.toLowerCase() === 'winter') seasonCode = 'W'; else if (seasonStr.toLowerCase() === 'summer') seasonCode = 'U'; let phaseCode = 'M'; if (phaseTypeStr.toLowerCase() === 'retreat') phaseCode = 'R'; else if (phaseTypeStr.toLowerCase() === 'adjustment' || phaseTypeStr.toLowerCase() === 'builds') phaseCode = 'A'; gameState.currentPhase = `${seasonCode}${year}${phaseCode}`; gameState.status = 'Active'; break; }
-               match = line.match(statusRegex); if (match) { const explicitStatus = match[1].trim(); if (explicitStatus !== 'Active' || gameState.status === 'Unknown') gameState.status = explicitStatus; break; }
-               match = line.match(variantRegex);
-               if (!match) {
-                   const idx = line.indexOf('Variant:');
-                   if (idx !== -1) {
-                       const sub = line.slice(idx);
-                       match = sub.match(variantRegex);
-                   }
-               }
-               if (match) { gameState.variant = match[1].trim(); const optionsStr = match[2].replace(/,/g, ' ').trim(); gameState.options = optionsStr.split(/\s+/).filter(opt => opt && opt !== 'Variant:'); if (gameState.options.includes('Gunboat')) gameState.settings.gunboat = true; if (gameState.options.includes('NMR')) gameState.settings.nmr = true; else gameState.settings.nmr = false; if (gameState.options.includes('Chaos')) gameState.settings.chaos = true; if (gameState.variant.toLowerCase().includes('machiavelli')) gameState.settings.isMachiavelli = true; break; }
-               break;
-           case 'players':
-               const playerMatch = line.match(playerLineRegex); const masterMatch = line.match(masterLineRegex); const observerMatch = line.match(observerLineRegex);
-               if (playerMatch) {
-                   const powerNameFromLine = playerMatch[1]; // This is the power name as it appears, e.g., "Austria"
-                   const email = playerMatch[2];
-                   let playerStatus = 'Playing';
-                   const statusMatch = line.match(/\(([^)]+)\)/);
-                   if (statusMatch) playerStatus = statusMatch[1];
-                   // Store power name as is, but comparison later might need toUpperCase()
-                   gameState.players.push({ power: powerNameFromLine, email: email || null, status: playerStatus, name: null, units: [], supplyCenters: [] });
-               }
-               else if (masterMatch) { const email = masterMatch[1]; if (email && !gameState.masters.includes(email)) gameState.masters.push(email); }
-               else if (observerMatch) { const email = observerMatch[1].trim().match(emailRegex)?.[0]; if (email && !gameState.observers.includes(email)) gameState.observers.push(email); }
-               break;
-           case 'settings':
-               match = line.match(pressSettingRegex); if (match) gameState.settings.press = match[1].trim();
-               match = line.match(diasSettingRegex); if (match) gameState.settings.dias = (match[1].toUpperCase() === 'DIAS');
-               match = line.match(nmrSettingRegex); if (match) gameState.settings.nmr = (match[1].toUpperCase() === 'NMR');
-               match = line.match(concessionSettingRegex); if (match) gameState.settings.concessions = (match[1].toLowerCase() === 'concessions');
-               if (line.toLowerCase().includes('gunboat')) gameState.settings.gunboat = true; if (line.toLowerCase().includes('chaos')) gameState.settings.chaos = true;
-               if (line.toLowerCase().includes('partial allowed')) gameState.settings.partialPress = true; if (line.toLowerCase().includes('no partial')) gameState.settings.partialPress = false;
-               if (line.toLowerCase().includes('observer any')) gameState.settings.observerPress = 'any'; if (line.toLowerCase().includes('observer white')) gameState.settings.observerPress = 'white'; if (line.toLowerCase().includes('observer none')) gameState.settings.observerPress = 'none';
-               if (line.toLowerCase().includes('strict convoy')) gameState.settings.strictConvoy = true; if (line.toLowerCase().includes('strict wait')) gameState.settings.strictWait = true; if (line.toLowerCase().includes('strict grace')) gameState.settings.strictGrace = true;
+        // Process direct unit lines if they appear outside a specific unit block (e.g. initial setup)
+        // This should ideally be conditional on not being in another specific parsing mode like 'players'
+        if (currentSection !== 'players' && currentSection !== 'settings') { // Avoid misinterpreting player/setting lines as units
+            match = trimmedLine.match(directUnitLineRegex);
+            if (match) {
+                const powerNameFromLine = match[1];
+                const powerCanonical = powerNameFromLine.toUpperCase();
+                const unitTypeFull = match[2];
+                let unitTypeChar = unitTypeFull.charAt(0).toUpperCase();
+                if (unitTypeFull.toUpperCase() === 'ARTILLERY') unitTypeChar = 'R';
+                else if (unitTypeFull.toUpperCase() === 'GARRISON') unitTypeChar = 'G';
+                else if (unitTypeFull.toUpperCase() === 'WING') unitTypeChar = 'W';
 
-               const flagsMatch = trimmedLine.match(flagsLineRegex);
-               if (flagsMatch) {
-                   const flagsStringInput = flagsMatch[1];
-                   let processedFlagsString = flagsStringInput;
-                   const settings = gameState.settings;
-                   const noCoastalConvoysRegex = /\bnocoastal convoys\b/gi;
-                   const coastalConvoysRegex = /\bcoastal convoys\b/gi;
-                   if (noCoastalConvoysRegex.test(processedFlagsString)) {
-                       settings.coastalConvoys = false;
-                       processedFlagsString = processedFlagsString.replace(noCoastalConvoysRegex, '');
-                   } else if (coastalConvoysRegex.test(processedFlagsString)) {
-                       settings.coastalConvoys = true;
-                       processedFlagsString = processedFlagsString.replace(coastalConvoysRegex, '');
-                   }
-                   const flagsArray = processedFlagsString.trim().split(/\s+/).filter(f => f.length > 0);
-                   flagsArray.forEach(originalFlag => {
-                       let flag = originalFlag;
-                       const lowerFlag = flag.toLowerCase();
-                       if (lowerFlag === 'bank' || lowerFlag === 'bankers') { flag = 'loans'; }
-                       else if (lowerFlag === 'nobank' || lowerFlag === 'nobankers') { flag = 'noloans'; }
-                       else if (lowerFlag === 'forts') { flag = 'fortresses'; }
-                       else if (lowerFlag === 'noforts') { flag = 'nofortresses'; }
-                       else if (lowerFlag === 'nocoastalconvoy') { flag = 'nocoastalConvoys'; }
+                const locationName = match[3].trim();
+                let locationAbbr = locationName.toUpperCase().substring(0, 3);
+                if (nameToAbbr) {
+                    const resolvedAbbr = nameToAbbr[locationName.toLowerCase()];
+                    if (resolvedAbbr) {
+                        locationAbbr = resolvedAbbr;
+                    } else {
+                        console.warn(`[Parser LIST ${gameName}] Direct Unit: Could not find abbr for location '${locationName}' (using '${locationAbbr}' as fallback) for power ${powerCanonical}. nameToAbbr keys: ${Object.keys(nameToAbbr).slice(0,10).join(',')}...`);
+                    }
+                }
+                console.log(`[Parser LIST ${gameName}] Adding direct unit: ${powerCanonical} ${unitTypeChar} ${locationAbbr}`);
+                gameState.units.push({ power: powerCanonical, type: unitTypeChar, location: locationAbbr, status: null });
+                const playerForUnit = gameState.players.find(p => p.power.toUpperCase() === powerCanonical);
+                if (playerForUnit) { if (!playerForUnit.units) playerForUnit.units = []; playerForUnit.units.push({ type: unitTypeChar, location: locationAbbr, status: null }); }
+                continue; // Consumed this line
+            }
+        }
 
-                       if (flag.startsWith('no')) {
-                           const baseFlag = flag.substring(2);
-                           settings[baseFlag] = false;
-                       } else if (flag.includes(':')) {
-                           const [key, ...values] = flag.split(':');
-                           if (key.toLowerCase() === 'transform') {
-                               settings.transform = settings.transform || {};
-                               values.join(':').split(',').forEach(tvPair => {
-                                   const [transformAction, transformValue] = tvPair.split(':');
-                                   if (transformAction && transformValue) {
-                                       settings.transform[transformAction.toLowerCase()] = transformValue;
-                                   } else if (transformAction) {
-                                       settings.transform[transformAction.toLowerCase()] = 'HOMECENTRE';
-                                   }
-                               });
-                           } else {
-                               settings[key] = values.join(':');
-                           }
-                       } else {
-                           settings[flag] = true;
-                       }
-                   });
-                   if (gameState.settings.mach2 === undefined && (gameState.variant?.toLowerCase().includes('machiavelli') || gameState.settings.isMachiavelli)) {
-                        if (gameState.settings.mach2 !== false) gameState.settings.mach2 = false;
-                   }
-               }
-               break;
-           case 'units':
-               if (!currentPowerForUnits) break; // currentPowerForUnits is already UPPERCASE
-               match = line.match(unitLineRegex);
-               if (match) {
-                   const unitType = match[1].toUpperCase();
-                   const locationAbbrFromList = match[2].toUpperCase();
-                   const unitStatus = match[3] ? match[3].trim() : null;
-                   console.log(`[Parser LIST ${gameName}] Adding unit: ${currentPowerForUnits} ${unitType} ${locationAbbrFromList}`);
-                   gameState.units.push({ power: currentPowerForUnits, type: unitType, location: locationAbbrFromList, status: unitStatus });
-                   const player = gameState.players.find(p => p.power.toUpperCase() === currentPowerForUnits);
-                   if (player) player.units.push({ type: unitType, location: locationAbbrFromList, status: unitStatus });
-               } else if (trimmedLine && !trimmedLine.startsWith('-')) {
-                   console.log(`[Parser LIST ${gameName}] Exiting units section for power (unmatched line): ${currentPowerForUnits}`);
-                   currentPowerForUnits = null; currentSection = 'unknown';
-               }
-               break;
-           case 'cities_controlled':
-               const cityLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s+(.*)\.?\s*$/i;
-               match = trimmedLine.match(cityLineRegex);
-               if (match) {
-                   const powerNameFromLine = match[1]; // e.g., "Austria"
-                   const powerCanonical = powerNameFromLine.toUpperCase(); // e.g., "AUSTRIA"
-                   const citiesStr = match[2];
-                   const cityEntries = citiesStr.split(',');
-                   cityEntries.forEach(entry => {
-                       const nameMatch = entry.trim().match(/^([^(*]+)/);
-                       if (nameMatch) {
-                           const cityName = nameMatch[1].trim();
-                           let provinceAbbr = cityName.toUpperCase().substring(0,3);
-                           if (nameToAbbr) {
-                               const resolvedAbbr = nameToAbbr[cityName.toLowerCase()];
-                               if (resolvedAbbr) {
-                                   provinceAbbr = resolvedAbbr;
-                               } else {
-                                   console.warn(`[Parser LIST ${gameName}] SC: Could not find abbr for SC name '${cityName}' for power ${powerCanonical} (using '${provinceAbbr}' as fallback). Original entry: '${entry.trim()}'. nameToAbbr keys: ${Object.keys(nameToAbbr).slice(0,10).join(',')}...`);
-                               }
-                           }
-                           console.log(`[Parser LIST ${gameName}] Adding SC: ${powerCanonical} owns ${provinceAbbr}`);
-                           gameState.supplyCenters.push({ owner: powerCanonical, location: provinceAbbr });
-                           const playerForSc = gameState.players.find(p => p.power.toUpperCase() === powerCanonical);
-                           if (playerForSc) {
-                                if (!playerForSc.supplyCenters) playerForSc.supplyCenters = [];
-                                if (!playerForSc.supplyCenters.includes(provinceAbbr)) playerForSc.supplyCenters.push(provinceAbbr);
-                           }
-                       } else {
-                           console.warn(`[Parser LIST ${gameName}] Could not parse SC entry '${entry.trim()}' for power ${powerCanonical}.`);
-                       }
-                   });
-               } else if (trimmedLine === 'Unowned:') { /* Ignore */ }
-               else if (trimmedLine && !trimmedLine.startsWith(' ') && !trimmedLine.startsWith('Unowned:') && !trimmedLine.startsWith('*')) {
-                   currentSection = 'unknown';
-               }
-               break;
-           case 'scs': // This section might be redundant if "Cities Controlled" is comprehensive
-               if (!currentPowerForSCs) break; // currentPowerForSCs is already UPPERCASE
-               const scLineRegex = /^\s+([A-Z]{3}(?:\/[NESW]C)?)\s*/i;
-               match = line.match(scLineRegex);
-               if (match) {
-                   const locationAbbrFromList = match[1].toUpperCase();
-                   console.log(`[Parser LIST ${gameName}] Adding SC (scs section): ${currentPowerForSCs} owns ${locationAbbrFromList}`);
-                   gameState.supplyCenters.push({ owner: currentPowerForSCs, location: locationAbbrFromList });
-                   const player = gameState.players.find(p => p.power.toUpperCase() === currentPowerForSCs);
-                   if (player) { if (!player.supplyCenters) player.supplyCenters = []; if (!player.supplyCenters.includes(locationAbbrFromList)) player.supplyCenters.push(locationAbbrFromList); }
-               } else if (trimmedLine && !trimmedLine.startsWith('-')) {
-                   console.log(`[Parser LIST ${gameName}] Exiting SCs section for power (unmatched line): ${currentPowerForSCs}`);
-                   currentPowerForSCs = null; currentSection = 'unknown';
-               }
-               break;
-       }
-   });
 
-   if (gameState.status === 'Unknown' && gameState.currentPhase && gameState.currentPhase !== 'Unknown') {
-       if (gameState.currentPhase.toUpperCase() === 'FORMING') gameState.status = 'Forming';
-       else gameState.status = 'Active';
-   }
-   if (gameState.settings.nmr === undefined) gameState.settings.nmr = false;
-   if (gameState.settings.dias === undefined) gameState.settings.dias = true;
-   if (gameState.settings.concessions === undefined) gameState.settings.concessions = true;
-   if (gameState.settings.gunboat === undefined) gameState.settings.gunboat = false;
-   if (gameState.settings.press === undefined) gameState.settings.press = 'White';
-   if (gameState.settings.partialPress === undefined) gameState.settings.partialPress = true;
-   if (gameState.settings.observerPress === undefined) gameState.settings.observerPress = 'any';
-   if (gameState.variant?.toLowerCase().includes('machiavelli') && gameState.settings.isMachiavelli === undefined) {
-       gameState.settings.isMachiavelli = true;
-   }
-   if (gameState.settings.isMachiavelli && gameState.settings.mach2 === undefined) {
-       gameState.settings.mach2 = false;
-   }
-   console.log(`[Parser LIST ${gameName}] Final parsed units: ${gameState.units.length}, SCs: ${gameState.supplyCenters.length}`);
-   return gameState;
+        switch (currentSection) {
+            case 'header': // Also 'unknown' can fall here
+            case 'unknown':
+                match = line.match(explicitDeadlineRegex); if (match) { gameState.currentPhase = match[1].trim().toUpperCase(); gameState.nextDeadline = match[2].trim(); if (gameState.status === 'Unknown' || gameState.status === 'Forming') gameState.status = 'Active'; break; }
+                match = line.match(activeStatusLineRegex); if (match) { const [, phaseTypeStr, seasonStr, year] = match; let seasonCode = 'S'; if (seasonStr.toLowerCase() === 'fall') seasonCode = 'F'; else if (seasonStr.toLowerCase() === 'winter') seasonCode = 'W'; else if (seasonStr.toLowerCase() === 'summer') seasonCode = 'U'; let phaseCode = 'M'; if (phaseTypeStr.toLowerCase() === 'retreat') phaseCode = 'R'; else if (phaseTypeStr.toLowerCase() === 'adjustment' || phaseTypeStr.toLowerCase() === 'builds') phaseCode = 'A'; gameState.currentPhase = `${seasonCode}${year}${phaseCode}`; gameState.status = 'Active'; break; }
+                match = line.match(statusRegex); if (match) { const explicitStatus = match[1].trim(); if (explicitStatus !== 'Active' || gameState.status === 'Unknown') gameState.status = explicitStatus; break; }
+                match = line.match(variantRegex);
+                if (!match) {
+                    const idx = line.indexOf('Variant:');
+                    if (idx !== -1) {
+                        const sub = line.slice(idx);
+                        match = sub.match(variantRegex);
+                    }
+                }
+                if (match) { gameState.variant = match[1].trim(); const optionsStr = match[2].replace(/,/g, ' ').trim(); gameState.options = optionsStr.split(/\s+/).filter(opt => opt && opt !== 'Variant:'); if (gameState.options.includes('Gunboat')) gameState.settings.gunboat = true; if (gameState.options.includes('NMR')) gameState.settings.nmr = true; else gameState.settings.nmr = false; if (gameState.options.includes('Chaos')) gameState.settings.chaos = true; if (gameState.variant.toLowerCase().includes('machiavelli')) gameState.settings.isMachiavelli = true; break; }
+                break;
+            case 'players':
+                console.log(`[Parser LIST ${gameName}] In 'players' section, processing line: "${trimmedLine}"`);
+                let playerMatch = trimmedLine.match(playerLineRegex);
+                let masterMatch = trimmedLine.match(masterLineRegex);
+                let observerMatch = trimmedLine.match(observerLineRegex);
+
+                if (playerMatch) {
+                    const powerNameFromLine = playerMatch[1];
+                    const email = playerMatch[2];
+                    const statusFromRegex = playerMatch[3]; // Status captured from regex if present
+                    let playerStatus = statusFromRegex ? statusFromRegex.trim() : 'Playing'; // Use captured status or default
+
+                    console.log(`[Parser LIST ${gameName}] Player match: Power=${powerNameFromLine}, Email=${email}, Status=${playerStatus}`);
+                    gameState.players.push({
+                        power: powerNameFromLine,
+                        email: email || null,
+                        status: playerStatus,
+                        name: null,
+                        units: [],
+                        supplyCenters: []
+                    });
+                } else if (masterMatch) {
+                    const email = masterMatch[1];
+                    if (email && !gameState.masters.includes(email)) {
+                        console.log(`[Parser LIST ${gameName}] Master match: Email=${email}`);
+                        gameState.masters.push(email);
+                    }
+                } else if (observerMatch) {
+                    const email = observerMatch[1].trim().match(emailRegex)?.[0];
+                    if (email && !gameState.observers.includes(email)) {
+                        console.log(`[Parser LIST ${gameName}] Observer match: Email=${email}`);
+                        gameState.observers.push(email);
+                    }
+                } else {
+                    if (trimmedLine && !trimmedLine.startsWith("---") && !trimmedLine.includes("signed up for game")) { // Avoid logging separators or re-logging header
+                        console.log(`[Parser LIST ${gameName}] In 'players' section, no match for line: "${trimmedLine}"`);
+                    }
+                }
+                break;
+            case 'settings':
+                // ... (settings parsing logic remains the same)
+                match = line.match(pressSettingRegex); if (match) gameState.settings.press = match[1].trim();
+                match = line.match(diasSettingRegex); if (match) gameState.settings.dias = (match[1].toUpperCase() === 'DIAS');
+                match = line.match(nmrSettingRegex); if (match) gameState.settings.nmr = (match[1].toUpperCase() === 'NMR');
+                match = line.match(concessionSettingRegex); if (match) gameState.settings.concessions = (match[1].toLowerCase() === 'concessions');
+                if (line.toLowerCase().includes('gunboat')) gameState.settings.gunboat = true; if (line.toLowerCase().includes('chaos')) gameState.settings.chaos = true;
+                if (line.toLowerCase().includes('partial allowed')) gameState.settings.partialPress = true; if (line.toLowerCase().includes('no partial')) gameState.settings.partialPress = false;
+                if (line.toLowerCase().includes('observer any')) gameState.settings.observerPress = 'any'; if (line.toLowerCase().includes('observer white')) gameState.settings.observerPress = 'white'; if (line.toLowerCase().includes('observer none')) gameState.settings.observerPress = 'none';
+                if (line.toLowerCase().includes('strict convoy')) gameState.settings.strictConvoy = true; if (line.toLowerCase().includes('strict wait')) gameState.settings.strictWait = true; if (line.toLowerCase().includes('strict grace')) gameState.settings.strictGrace = true;
+
+                const flagsMatch = trimmedLine.match(flagsLineRegex);
+                if (flagsMatch) {
+                    const flagsStringInput = flagsMatch[1];
+                    let processedFlagsString = flagsStringInput;
+                    const settings = gameState.settings;
+                    const noCoastalConvoysRegex = /\bnocoastal convoys\b/gi;
+                    const coastalConvoysRegex = /\bcoastal convoys\b/gi;
+                    if (noCoastalConvoysRegex.test(processedFlagsString)) {
+                        settings.coastalConvoys = false;
+                        processedFlagsString = processedFlagsString.replace(noCoastalConvoysRegex, '');
+                    } else if (coastalConvoysRegex.test(processedFlagsString)) {
+                        settings.coastalConvoys = true;
+                        processedFlagsString = processedFlagsString.replace(coastalConvoysRegex, '');
+                    }
+                    const flagsArray = processedFlagsString.trim().split(/\s+/).filter(f => f.length > 0);
+                    flagsArray.forEach(originalFlag => {
+                        let flag = originalFlag;
+                        const lowerFlag = flag.toLowerCase();
+                        if (lowerFlag === 'bank' || lowerFlag === 'bankers') { flag = 'loans'; }
+                        else if (lowerFlag === 'nobank' || lowerFlag === 'nobankers') { flag = 'noloans'; }
+                        else if (lowerFlag === 'forts') { flag = 'fortresses'; }
+                        else if (lowerFlag === 'noforts') { flag = 'nofortresses'; }
+                        else if (lowerFlag === 'nocoastalconvoy') { flag = 'nocoastalConvoys'; }
+
+                        if (flag.startsWith('no')) {
+                            const baseFlag = flag.substring(2);
+                            settings[baseFlag] = false;
+                        } else if (flag.includes(':')) {
+                            const [key, ...values] = flag.split(':');
+                            if (key.toLowerCase() === 'transform') {
+                                settings.transform = settings.transform || {};
+                                values.join(':').split(',').forEach(tvPair => {
+                                    const [transformAction, transformValue] = tvPair.split(':');
+                                    if (transformAction && transformValue) {
+                                        settings.transform[transformAction.toLowerCase()] = transformValue;
+                                    } else if (transformAction) {
+                                        settings.transform[transformAction.toLowerCase()] = 'HOMECENTRE';
+                                    }
+                                });
+                            } else {
+                                settings[key] = values.join(':');
+                            }
+                        } else {
+                            settings[flag] = true;
+                        }
+                    });
+                    if (gameState.settings.mach2 === undefined && (gameState.variant?.toLowerCase().includes('machiavelli') || gameState.settings.isMachiavelli)) {
+                         if (gameState.settings.mach2 !== false) gameState.settings.mach2 = false;
+                    }
+                }
+                break;
+            case 'units':
+                if (!currentPowerForUnits) break;
+                match = line.match(unitLineRegex);
+                if (match) {
+                    const unitType = match[1].toUpperCase();
+                    const locationAbbrFromList = match[2].toUpperCase();
+                    const unitStatus = match[3] ? match[3].trim() : null;
+                    console.log(`[Parser LIST ${gameName}] Adding unit (units section): ${currentPowerForUnits} ${unitType} ${locationAbbrFromList}`);
+                    gameState.units.push({ power: currentPowerForUnits, type: unitType, location: locationAbbrFromList, status: unitStatus });
+                    const playerForUnit = gameState.players.find(p => p.power.toUpperCase() === currentPowerForUnits);
+                    if (playerForUnit) playerForUnit.units.push({ type: unitType, location: locationAbbrFromList, status: unitStatus });
+                } else if (trimmedLine && !trimmedLine.startsWith('-')) {
+                    console.log(`[Parser LIST ${gameName}] Exiting units section for power (unmatched line): ${currentPowerForUnits}`);
+                    currentPowerForUnits = null; currentSection = 'unknown'; // Revert to unknown if line doesn't fit unit pattern
+                }
+                break;
+            case 'cities_controlled':
+                const cityLineRegex = /^\s*(Austria|England|France|Germany|Italy|Russia|Turkey|Milan|Florence|Naples|Papacy|Venice|Autonomous):\s+(.*)\.?\s*$/i;
+                match = trimmedLine.match(cityLineRegex);
+                if (match) {
+                    const powerNameFromLine = match[1];
+                    const powerCanonical = powerNameFromLine.toUpperCase();
+                    const citiesStr = match[2];
+                    const cityEntries = citiesStr.split(',');
+                    cityEntries.forEach(entry => {
+                        const nameMatch = entry.trim().match(/^([^(*]+)/);
+                        if (nameMatch) {
+                            const cityName = nameMatch[1].trim();
+                            let provinceAbbr = cityName.toUpperCase().substring(0,3);
+                            if (nameToAbbr) {
+                                const resolvedAbbr = nameToAbbr[cityName.toLowerCase()];
+                                if (resolvedAbbr) {
+                                    provinceAbbr = resolvedAbbr;
+                                } else {
+                                    console.warn(`[Parser LIST ${gameName}] SC: Could not find abbr for SC name '${cityName}' for power ${powerCanonical} (using '${provinceAbbr}' as fallback). Original entry: '${entry.trim()}'. nameToAbbr keys: ${Object.keys(nameToAbbr).slice(0,10).join(',')}...`);
+                                }
+                            }
+                            console.log(`[Parser LIST ${gameName}] Adding SC (cities_controlled): ${powerCanonical} owns ${provinceAbbr}`);
+                            gameState.supplyCenters.push({ owner: powerCanonical, location: provinceAbbr });
+                            const playerForSc = gameState.players.find(p => p.power.toUpperCase() === powerCanonical);
+                            if (playerForSc) {
+                                 if (!playerForSc.supplyCenters) playerForSc.supplyCenters = [];
+                                 if (!playerForSc.supplyCenters.includes(provinceAbbr)) playerForSc.supplyCenters.push(provinceAbbr);
+                            }
+                        } else {
+                            console.warn(`[Parser LIST ${gameName}] Could not parse SC entry '${entry.trim()}' for power ${powerCanonical}.`);
+                        }
+                    });
+                } else if (trimmedLine === 'Unowned:') { /* Ignore */ }
+                else if (trimmedLine && !trimmedLine.startsWith(' ') && !trimmedLine.startsWith('Unowned:') && !trimmedLine.startsWith('*')) {
+                    // If line in cities_controlled doesn't match power: city list, and isn't Unowned, it might be end of section
+                    console.log(`[Parser LIST ${gameName}] Exiting cities_controlled section (unmatched line): "${trimmedLine}"`);
+                    currentSection = 'unknown';
+                }
+                break;
+            case 'scs': // This section might be redundant if "Cities Controlled" is comprehensive
+                if (!currentPowerForSCs) break;
+                const scLineRegex = /^\s+([A-Z]{3}(?:\/[NESW]C)?)\s*/i;
+                match = line.match(scLineRegex);
+                if (match) {
+                    const locationAbbrFromList = match[1].toUpperCase();
+                    console.log(`[Parser LIST ${gameName}] Adding SC (scs section): ${currentPowerForSCs} owns ${locationAbbrFromList}`);
+                    gameState.supplyCenters.push({ owner: currentPowerForSCs, location: locationAbbrFromList });
+                    const playerForSc = gameState.players.find(p => p.power.toUpperCase() === currentPowerForSCs);
+                    if (playerForSc) { if (!playerForSc.supplyCenters) playerForSc.supplyCenters = []; if (!playerForSc.supplyCenters.includes(locationAbbrFromList)) playerForSc.supplyCenters.push(locationAbbrFromList); }
+                } else if (trimmedLine && !trimmedLine.startsWith('-')) {
+                    console.log(`[Parser LIST ${gameName}] Exiting scs section for power (unmatched line): ${currentPowerForSCs}`);
+                    currentPowerForSCs = null; currentSection = 'unknown';
+                }
+                break;
+        }
+    } // End forEach line
+
+    if (gameState.status === 'Unknown' && gameState.currentPhase && gameState.currentPhase !== 'Unknown') {
+        if (gameState.currentPhase.toUpperCase() === 'FORMING') gameState.status = 'Forming';
+        else gameState.status = 'Active';
+    }
+    if (gameState.settings.nmr === undefined) gameState.settings.nmr = false;
+    if (gameState.settings.dias === undefined) gameState.settings.dias = true;
+    if (gameState.settings.concessions === undefined) gameState.settings.concessions = true;
+    if (gameState.settings.gunboat === undefined) gameState.settings.gunboat = false;
+    if (gameState.settings.press === undefined) gameState.settings.press = 'White';
+    if (gameState.settings.partialPress === undefined) gameState.settings.partialPress = true;
+    if (gameState.settings.observerPress === undefined) gameState.settings.observerPress = 'any';
+    if (gameState.variant?.toLowerCase().includes('machiavelli') && gameState.settings.isMachiavelli === undefined) {
+        gameState.settings.isMachiavelli = true;
+    }
+    if (gameState.settings.isMachiavelli && gameState.settings.mach2 === undefined) {
+        gameState.settings.mach2 = false;
+    }
+    console.log(`[Parser LIST ${gameName}] BEFORE FINAL RETURN - Players array:`, JSON.stringify(gameState.players, null, 2));
+    console.log(`[Parser LIST ${gameName}] Final parsed units: ${gameState.units.length}, SCs: ${gameState.supplyCenters.length}`);
+    return gameState;
 };
 
 // ... (rest of the server.js file remains the same as the previous version) ...
@@ -1378,12 +1436,10 @@ app.get('/api/game/:gameName', requireEmail, async (req, res) => {
     let warningMessage = null;
 
     try {
-        // Step 1: Execute LIST command
         const listResult = await executeDipCommand(userEmail, `LIST ${gameName}`, gameName, null, null);
 
         if (listResult.success) {
-            // Step 2: Tentatively parse the variant from the LIST output.
-            let variantFromListOutput = 'Standard'; // Default
+            let variantFromListOutput = 'Standard';
             const lines = listResult.stdout.split('\n');
             const variantRegex = /Variant:\s*(\S+)/i;
             for (const line of lines) {
@@ -1395,19 +1451,17 @@ app.get('/api/game/:gameName', requireEmail, async (req, res) => {
             }
             console.log(`[API /api/game/${gameName}] Variant tentatively parsed from LIST output: ${variantFromListOutput}`);
 
-            // Step 3: Use this parsed variant to load map data.
             const { nameToAbbr } = await ensureMapDataParsed(variantFromListOutput);
-
-            // Step 4: Now fully parse the LIST output with the correct nameToAbbr map.
             refreshedGameState = parseListOutput(gameName, listResult.stdout, nameToAbbr);
 
             if (refreshedGameState) {
-                // Ensure the variant in refreshedGameState is the one from LIST output
                 if (refreshedGameState.variant !== variantFromListOutput) {
                     console.warn(`[API /api/game/${gameName}] Mismatch: Variant from LIST output (${variantFromListOutput}) vs parseListOutput result (${refreshedGameState.variant}). Correcting to LIST output's variant.`);
                     refreshedGameState.variant = variantFromListOutput;
                 }
-                await saveGameState(gameName, refreshedGameState); // Save the fresh state
+                // ADD LOG HERE TO CHECK refreshedGameState.players BEFORE SAVING
+                console.log(`[API /api/game/${gameName}] Players parsed by parseListOutput:`, JSON.stringify(refreshedGameState.players, null, 2));
+                await saveGameState(gameName, refreshedGameState);
                 recommendedCommands = getRecommendedCommands(refreshedGameState, userEmail);
             } else {
                 errorOccurred = `LIST command for '${gameName}' succeeded but parsing the output failed (after map data load).`;
@@ -1418,27 +1472,27 @@ app.get('/api/game/:gameName', requireEmail, async (req, res) => {
             console.error(`[API Error] /api/game/${gameName}: ${errorOccurred}`);
         }
     } catch (listRefreshError) {
-        // This catch block now handles errors from executeDipCommand, ensureMapDataParsed, or parseListOutput.
         errorOccurred = `Error during LIST refresh process for '${gameName}': ${listRefreshError.message}`;
         console.error(`[API Error] /api/game/${gameName} (Refresh Process Catch):`, listRefreshError);
     }
 
-    // Fallback logic if refresh failed or didn't produce a game state
     if (errorOccurred || !refreshedGameState) {
         warningMessage = errorOccurred || "Could not obtain fresh game state.";
         console.warn(`[API Warning] /api/game/${gameName}: ${warningMessage}. Attempting to use stored data.`);
         const dbGameState = await getGameState(gameName);
         if (dbGameState) {
-            refreshedGameState = dbGameState; // Use DB state
+            refreshedGameState = dbGameState;
+            // ADD LOG HERE TO CHECK dbGameState.players
+            console.log(`[API /api/game/${gameName}] Players from DB fallback:`, JSON.stringify(refreshedGameState.players, null, 2));
             recommendedCommands = getRecommendedCommands(refreshedGameState, userEmail);
-            // If we're falling back, ensure the warning reflects that the displayed state might be stale.
             warningMessage = `${warningMessage} Displaying potentially stale data from database.`;
         } else {
-            // If DB state also doesn't exist
             return res.status(404).json({ success: false, message: `Game '${gameName}' not found in database and live refresh failed. ${warningMessage}` });
         }
     }
 
+    // ADD LOG HERE TO CHECK final refreshedGameState.players BEFORE SENDING RESPONSE
+    console.log(`[API /api/game/${gameName}] Final players in gameState being sent to client:`, JSON.stringify(refreshedGameState.players, null, 2));
     res.json({ success: true, gameState: refreshedGameState, recommendedCommands, warning: warningMessage });
 });
 
